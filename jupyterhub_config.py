@@ -41,7 +41,9 @@ def discover_oidc(max_retries=30, initial_delay=2, max_delay=60):
             resp.raise_for_status()
             hugr_auth = resp.json()
 
-            issuer = hugr_auth["issuer"]
+            # Allow override via env (needed when Hugr returns localhost
+            # but Hub runs in a different container)
+            issuer = os.environ.get("OIDC_ISSUER", hugr_auth["issuer"])
             client_id = os.environ.get(
                 "OIDC_CLIENT_ID", hugr_auth.get("client_id", "hugr")
             )
@@ -114,6 +116,7 @@ c.GenericOAuthenticator.enable_auth_state = True
 c.GenericOAuthenticator.refresh_pre_spawn = True
 c.GenericOAuthenticator.auth_refresh_age = 120
 c.GenericOAuthenticator.username_claim = "preferred_username"
+c.GenericOAuthenticator.allow_all = True
 
 # ===========================================================================
 # Spawner
@@ -126,6 +129,8 @@ c.DockerSpawner.image = os.environ.get(
 )
 c.DockerSpawner.network_name = os.environ.get("DOCKER_NETWORK", "hub-network")
 c.DockerSpawner.remove = True
+c.DockerSpawner.use_internal_ip = True
+c.JupyterHub.hub_connect_ip = os.environ.get("HUB_CONNECT_IP", "")
 
 # Persistent user data
 c.DockerSpawner.volumes = {

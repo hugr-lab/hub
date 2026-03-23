@@ -1,57 +1,116 @@
 # =============================================================================
-# Build stage: hugr-kernel (Go binary)
+# Analytics Hub — Single-user workspace image
+#
+# Builds Go kernel binaries and JupyterLab extensions from source repos
+# at pinned versions (branches/tags).
 # =============================================================================
-FROM golang:1.23 AS hugr-kernel-builder
-WORKDIR /build
-COPY hugr-kernel/ .
-RUN CGO_ENABLED=1 go build -o /hugr-kernel ./cmd/hugr-kernel/
+
+ARG HUGR_KERNEL_REF=main
+ARG DUCKDB_KERNEL_REF=main
 
 # =============================================================================
-# Build stage: duckdb-kernel (Go binary)
+# Stage 1: Build hugr-kernel Go binary
 # =============================================================================
-FROM golang:1.23 AS duckdb-kernel-builder
-WORKDIR /build
-COPY duckdb-kernel/ .
-RUN CGO_ENABLED=1 go build -o /duckdb-kernel ./cmd/duckdb-kernel/
+FROM golang:1.26 AS hugr-kernel-go
+ARG HUGR_KERNEL_REF
+RUN git clone --depth 1 --branch ${HUGR_KERNEL_REF} \
+    https://github.com/hugr-lab/hugr-kernel.git /src
+WORKDIR /src
+RUN CGO_ENABLED=0 go build -o /hugr-kernel ./cmd/hugr-kernel/
 
 # =============================================================================
-# Final image: JupyterLab + kernels + connection service
+# Stage 2: Build duckdb-kernel Go binary (CGO required for DuckDB C library)
 # =============================================================================
-FROM quay.io/jupyterhub/singleuser:4.1
+FROM golang:1.26 AS duckdb-kernel-go
+ARG DUCKDB_KERNEL_REF
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc g++ \
+    && rm -rf /var/lib/apt/lists/*
+RUN git clone --depth 1 --branch ${DUCKDB_KERNEL_REF} \
+    https://github.com/hugr-lab/duckdb-kernel.git /src
+WORKDIR /src
+RUN CGO_ENABLED=1 go build -tags duckdb_arrow -o /duckdb-kernel ./cmd/duckdb-kernel/
+
+# =============================================================================
+# Stage 3: Build hugr-graphql-ide JupyterLab extension (wheel)
+# =============================================================================
+FROM node:24-slim AS hugr-kernel-ext
+ARG HUGR_KERNEL_REF
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-pip python3-venv git \
+    && rm -rf /var/lib/apt/lists/*
+RUN pip3 install --break-system-packages "jupyterlab>=4.4,<5" build hatchling hatch-jupyter-builder hatch-nodejs-version
+
+RUN git clone --depth 1 --branch ${HUGR_KERNEL_REF} \
+    https://github.com/hugr-lab/hugr-kernel.git /src
+WORKDIR /src/extensions/jupyterlab
+
+RUN jlpm install && jlpm build:prod
+RUN cp -r /src/hugr_connection_service .
+RUN python3 -m build --wheel --no-isolation
+
+# =============================================================================
+# Stage 4: Build hugr-perspective-viewer JupyterLab extension (wheel)
+# =============================================================================
+FROM node:24-slim AS duckdb-kernel-ext
+ARG DUCKDB_KERNEL_REF
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-pip python3-venv git \
+    && rm -rf /var/lib/apt/lists/*
+RUN pip3 install --break-system-packages "jupyterlab>=4.4,<5" build hatchling hatch-jupyter-builder hatch-nodejs-version
+
+RUN git clone --depth 1 --branch ${DUCKDB_KERNEL_REF} \
+    https://github.com/hugr-lab/duckdb-kernel.git /src
+WORKDIR /src/extensions/jupyterlab
+
+RUN jlpm install && jlpm build:prod
+RUN python3 -m build --wheel --no-isolation
+
+# =============================================================================
+# Stage 5: Final image
+# =============================================================================
+FROM quay.io/jupyterhub/singleuser:latest
 
 USER root
 
-# System dependencies for Go kernels (ZMQ)
+
+# System build deps for pip packages with C extensions
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libzmq3-dev \
+    gcc g++ libgdal-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# setuptools needed for Python 3.13 (pkg_resources removed from stdlib)
+RUN pip install --no-cache-dir --break-system-packages setuptools
+
 # Go kernel binaries
-COPY --from=hugr-kernel-builder /hugr-kernel /usr/local/bin/hugr-kernel
-COPY --from=duckdb-kernel-builder /duckdb-kernel /usr/local/bin/duckdb-kernel
+COPY --from=hugr-kernel-go /hugr-kernel /usr/local/bin/hugr-kernel
+COPY --from=duckdb-kernel-go /duckdb-kernel /usr/local/bin/duckdb-kernel
 
-# hugr-kernel Python package (connection service + JupyterLab extensions)
-COPY hugr-kernel/ /tmp/hugr-kernel/
-RUN pip install --no-cache-dir /tmp/hugr-kernel/ \
-    && rm -rf /tmp/hugr-kernel/
+# JupyterLab extensions (wheels include Python packages + labextension assets)
+COPY --from=hugr-kernel-ext /src/extensions/jupyterlab/dist/*.whl /tmp/wheels/
+COPY --from=duckdb-kernel-ext /src/extensions/jupyterlab/dist/*.whl /tmp/wheels/
 
-# Python data science packages + hugr client
-RUN pip install --no-cache-dir \
-    hugr-client \
-    pandas \
-    pyarrow \
-    geopandas \
-    matplotlib \
-    plotly
+# Install extensions + core packages
+# hugr-client installed without deps first, then deps manually (keplergl pins old pyarrow)
+RUN pip install --no-cache-dir --break-system-packages \
+    /tmp/wheels/*.whl \
+    pandas pyarrow geopandas matplotlib \
+    && pip install --no-cache-dir --break-system-packages --no-deps hugr-client \
+    && rm -rf /tmp/wheels
 
 # Register kernel specs
-RUN mkdir -p /usr/local/share/jupyter/kernels/hugr \
-    && mkdir -p /usr/local/share/jupyter/kernels/duckdb
-COPY hugr-kernel/kernel/kernel.json /usr/local/share/jupyter/kernels/hugr/
-COPY duckdb-kernel/kernel/kernel.json /usr/local/share/jupyter/kernels/duckdb/
+COPY --from=hugr-kernel-go /src/kernel/kernel.json /usr/local/share/jupyter/kernels/hugr/kernel.json
+COPY --from=hugr-kernel-go /src/kernel/logo-32x32.png /usr/local/share/jupyter/kernels/hugr/logo-32x32.png
+COPY --from=hugr-kernel-go /src/kernel/logo-64x64.png /usr/local/share/jupyter/kernels/hugr/logo-64x64.png
+COPY --from=duckdb-kernel-go /src/kernel/kernel.json /usr/local/share/jupyter/kernels/duckdb/kernel.json
+COPY --from=duckdb-kernel-go /src/kernel/logo-32x32.png /usr/local/share/jupyter/kernels/duckdb/logo-32x32.png
+COPY --from=duckdb-kernel-go /src/kernel/logo-64x64.png /usr/local/share/jupyter/kernels/duckdb/logo-64x64.png
 
-# Enable hugr_connection_service server extension
-RUN jupyter server extension enable hugr_connection_service
+# Enable server extensions (write config files directly)
+RUN echo '{"ServerApp":{"jpserver_extensions":{"hugr_connection_service":true}}}' \
+    > /opt/conda/etc/jupyter/jupyter_server_config.d/hugr_connection_service.json
+RUN echo '{"ServerApp":{"jpserver_extensions":{"hugr_perspective":true}}}' \
+    > /opt/conda/etc/jupyter/jupyter_server_config.d/hugr_perspective.json
 
 USER jovyan
 WORKDIR /home/jovyan
