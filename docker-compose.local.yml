@@ -1,0 +1,41 @@
+services:
+  jupyter:
+    build:
+      context: .
+      dockerfile: Dockerfile.singleuser
+    environment:
+      HUGR_URL: "${HUGR_URL:-http://hugr:15000}"
+      HUGR_AUTH_MODE: "management"
+      HUGR_SECRET_KEY: "${HUGR_SECRET_KEY:-local-dev-secret}"
+      HUGR_CONNECTION_NAME: "${HUGR_CONNECTION_NAME:-default}"
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./work:/home/jovyan/work
+    networks:
+      - hub-network
+    command: jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --ServerApp.token='' --ServerApp.allow_origin='*'
+    depends_on:
+      hugr:
+        condition: service_started
+    restart: unless-stopped
+
+  hugr:
+    image: ${HUGR_IMAGE:-ghcr.io/hugr-lab/hugr:latest}
+    environment:
+      SECRET_KEY: "${HUGR_SECRET_KEY:-local-dev-secret}"
+      ALLOWED_ANONYMOUS: "false"
+    volumes:
+      - hugr-data:/data
+    ports:
+      - "15000:15000"
+    networks:
+      - hub-network
+    restart: unless-stopped
+
+volumes:
+  hugr-data:
+
+networks:
+  hub-network:
+    name: hub-network

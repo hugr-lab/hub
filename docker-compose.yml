@@ -1,0 +1,82 @@
+services:
+  hub:
+    build:
+      context: .
+      dockerfile: Dockerfile.hub
+    environment:
+      HUGR_URL: "${HUGR_URL:-http://hugr:15000}"
+      OIDC_CLIENT_SECRET: "${OIDC_CLIENT_SECRET}"
+      OIDC_CLIENT_ID: "${OIDC_CLIENT_ID:-hugr-hub}"
+      HUB_BASE_URL: "${HUB_BASE_URL:-http://localhost:8000}"
+      JUPYTERHUB_CRYPT_KEY: "${JUPYTERHUB_CRYPT_KEY}"
+      SINGLEUSER_IMAGE: "${SINGLEUSER_IMAGE:-hugr-lab/hub-singleuser:latest}"
+      DOCKER_NETWORK: "hub-network"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - hub-data:/srv/jupyterhub
+    ports:
+      - "8000:8000"
+    networks:
+      - hub-network
+    depends_on:
+      keycloak:
+        condition: service_healthy
+      hugr:
+        condition: service_started
+    restart: unless-stopped
+
+  hugr:
+    image: ${HUGR_IMAGE:-ghcr.io/hugr-lab/hugr:latest}
+    environment:
+      OIDC_ISSUER: "${OIDC_ISSUER:-http://keycloak:8080/realms/hugr}"
+      OIDC_CLIENT_ID: "${OIDC_CLIENT_ID:-hugr}"
+      OIDC_TLS_INSECURE: "true"
+      SECRET_KEY: "${HUGR_SECRET_KEY:-local-dev-secret}"
+    volumes:
+      - hugr-data:/data
+    ports:
+      - "15000:15000"
+    networks:
+      - hub-network
+    depends_on:
+      keycloak:
+        condition: service_healthy
+    restart: unless-stopped
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    command:
+      - start-dev
+      - --http-relative-path=/
+      - --import-realm
+      - --http-port=8080
+    environment:
+      KC_HEALTH_ENABLED: "true"
+      KC_HOSTNAME_STRICT: "false"
+      KC_HOSTNAME_STRICT_HTTPS: "false"
+      KC_HTTP_ENABLED: "true"
+      KC_BOOTSTRAP_ADMIN_USERNAME: "${KEYCLOAK_ADMIN:-admin}"
+      KC_BOOTSTRAP_ADMIN_PASSWORD: "${KEYCLOAK_ADMIN_PASSWORD:-admin}"
+      KC_DB: dev-file
+    volumes:
+      - ./keycloak/realm-config.json:/opt/keycloak/data/import/realm.json:ro
+      - ./keycloak/HealthCheck.java:/opt/keycloak/HealthCheck.java:ro
+    ports:
+      - "18070:8080"
+    networks:
+      - hub-network
+    healthcheck:
+      test: ["CMD-SHELL", "java /opt/keycloak/HealthCheck.java http://localhost:9000/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  hub-data:
+  hugr-data:
+
+networks:
+  hub-network:
+    name: hub-network

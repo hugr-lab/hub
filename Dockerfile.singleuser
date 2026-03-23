@@ -1,0 +1,59 @@
+# =============================================================================
+# Build stage: hugr-kernel (Go binary)
+# =============================================================================
+FROM golang:1.23 AS hugr-kernel-builder
+WORKDIR /build
+COPY hugr-kernel/ .
+RUN CGO_ENABLED=1 go build -o /hugr-kernel ./cmd/hugr-kernel/
+
+# =============================================================================
+# Build stage: duckdb-kernel (Go binary)
+# =============================================================================
+FROM golang:1.23 AS duckdb-kernel-builder
+WORKDIR /build
+COPY duckdb-kernel/ .
+RUN CGO_ENABLED=1 go build -o /duckdb-kernel ./cmd/duckdb-kernel/
+
+# =============================================================================
+# Final image: JupyterLab + kernels + connection service
+# =============================================================================
+FROM quay.io/jupyterhub/singleuser:4.1
+
+USER root
+
+# System dependencies for Go kernels (ZMQ)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libzmq3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Go kernel binaries
+COPY --from=hugr-kernel-builder /hugr-kernel /usr/local/bin/hugr-kernel
+COPY --from=duckdb-kernel-builder /duckdb-kernel /usr/local/bin/duckdb-kernel
+
+# hugr-kernel Python package (connection service + JupyterLab extensions)
+COPY hugr-kernel/ /tmp/hugr-kernel/
+RUN pip install --no-cache-dir /tmp/hugr-kernel/ \
+    && rm -rf /tmp/hugr-kernel/
+
+# Python data science packages + hugr client
+RUN pip install --no-cache-dir \
+    hugr-client \
+    pandas \
+    pyarrow \
+    geopandas \
+    matplotlib \
+    plotly
+
+# Register kernel specs
+RUN mkdir -p /usr/local/share/jupyter/kernels/hugr \
+    && mkdir -p /usr/local/share/jupyter/kernels/duckdb
+COPY hugr-kernel/kernel/kernel.json /usr/local/share/jupyter/kernels/hugr/
+COPY duckdb-kernel/kernel/kernel.json /usr/local/share/jupyter/kernels/duckdb/
+
+# Enable hugr_connection_service server extension
+RUN jupyter server extension enable hugr_connection_service
+
+USER jovyan
+WORKDIR /home/jovyan
+
+CMD ["jupyterhub-singleuser"]

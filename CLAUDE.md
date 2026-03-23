@@ -1,0 +1,54 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project Overview
+
+Analytics Hub — a corporate analytics platform built on JupyterHub that provides isolated user workspaces with Hugr-connected Jupyter kernels (GraphQL, DuckDB, Python), an AI agent assistant, interactive data visualizations (Dives), and task scheduling. Part of the hugr-lab ecosystem.
+
+## Architecture
+
+Three-layer architecture: **Control Plane** (JupyterHub + Hub Service) → **User Plane** (workspace + agent containers per user) → **Data Plane** (Hugr server, external).
+
+**Two auth paths:**
+- Workspace (interactive): OIDC tokens, refreshed by polling JupyterHub API. Refresh token never enters containers.
+- Agent/scheduler (programmatic): Hub Service uses Hugr management secret (`x-hugr-secret-key`) with user identity headers. No token expiry.
+
+**Hub Service** is a Go service built on `airport-go` that registers with Hugr as an Arrow Flight data source. Hub metadata (agent memory, query registry, dives, scheduler) is accessible via standard Hugr GraphQL API.
+
+**Agent** runs in a separate container with sandboxed tools (Python, bash). Connects to Hub Service as MCP client — has no credentials. Hub Service adds auth to all Hugr requests.
+
+**OIDC auto-discovery**: Hub needs only `HUGR_URL` (base, without `/ipc`) + `OIDC_CLIENT_SECRET` + `HUB_BASE_URL`. Discovers OIDC endpoints from `GET {HUGR_URL}/auth/config` → `{issuer}/.well-known/openid-configuration`.
+
+## Key Conventions
+
+- `HUGR_URL` is the base URL (e.g., `http://hugr:15000`). Kernel IPC endpoint is `{HUGR_URL}/ipc` — appended automatically by connection service.
+- Managed connections (`managed: true` in connections.json) are created by the Hub, immutable by users.
+- Design documents live in `design/` (gitignored, local only).
+- Hub Service Go code will live in `cmd/` and `pkg/` directories.
+- Docker images: `Dockerfile.hub` (JupyterHub), `Dockerfile.singleuser` (workspace), `Dockerfile.hub-service` (Go service), `Dockerfile.hub-agent` (agent).
+
+## Related Repositories (~/projects/hugr-lab/)
+
+- `hugr` — Core DataMesh server (Go). GraphQL API, DuckDB engine, auth, OIDC validation.
+- `query-engine` — GraphQL query engine library (Go). Auth middleware, RBAC, permissions.
+- `hugr-kernel` — Jupyter kernel for Hugr GraphQL (Go + Python). Connection service with OIDC token management. **Key integration point for Stage 1** — needs hub mode + managed connections.
+- `duckdb-kernel` — DuckDB Jupyter kernel (Go).
+- `hugr-client` — Python client for Hugr IPC protocol.
+- `airport-go` — Arrow Flight server library (Go). Used to build Hub Service.
+- `mcp` — MCP server exposing Hugr data sources to AI agents (Go).
+
+## Implementation Stages
+
+1. **JupyterHub + OIDC + Kernels** — DockerSpawner, OIDC auto-discovery from Hugr, managed connections, token refresh via JupyterHub API polling (spec in `design/001-analytics-hub/stage-1-spec.md`)
+2. **Hub Service** — Go/airport-go, Flight server for hub.* data, Agent Manager (Docker/K8s), per-user MCP endpoints
+3. **Agent Runtime** — Sandboxed container, MCP client to Hub Service, skills (SKILL.md), memory (local + pgvector), tool policies
+4. **Dives** — React data apps, hugr-dive-sdk, viewer-identity query proxy, JupyterLab WebView preview
+5. **Scheduler** — User-level (in workspace), system-level (Hub Service, management auth)
+
+## Active Technologies
+- Python 3.12+ (JupyterHub config, connection service), Go 1.26.1 (kernel changes in hugr-kernel repo) + jupyterhub 4.x, oauthenticator, dockerspawner, httpx (Hub); hugr_connection_service (workspace) (001-jupyterhub-oidc-workspace)
+- Docker named volumes for user data persistence; connections.json for token state (001-jupyterhub-oidc-workspace)
+
+## Recent Changes
+- 001-jupyterhub-oidc-workspace: Added Python 3.12+ (JupyterHub config, connection service), Go 1.26.1 (kernel changes in hugr-kernel repo) + jupyterhub 4.x, oauthenticator, dockerspawner, httpx (Hub); hugr_connection_service (workspace)
