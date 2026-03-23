@@ -1,3 +1,9 @@
+# Project docs (local only)
+design/
+.claude/
+.specify/
+specs/
+
 # Environment
 .env
 *.env.local
