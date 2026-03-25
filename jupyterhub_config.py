@@ -54,6 +54,14 @@ def discover_oidc(max_retries=30, initial_delay=2, max_delay=60):
                 if scope not in scopes:
                     scopes.append(scope)
 
+            # Extra scopes from env (e.g., Entra API scope for correct audience)
+            extra_scopes = os.environ.get("OIDC_EXTRA_SCOPES", "")
+            if extra_scopes:
+                for s in extra_scopes.split(","):
+                    s = s.strip()
+                    if s and s not in scopes:
+                        scopes.append(s)
+
             # Step 2: Discover OIDC endpoints from provider
             oidc_resp = httpx.get(
                 f"{issuer}/.well-known/openid-configuration", timeout=10
@@ -106,16 +114,23 @@ c.JupyterHub.authenticator_class = GenericOAuthenticator
 c.GenericOAuthenticator.oauth_callback_url = f"{HUB_BASE_URL}/hub/oauth_callback"
 c.GenericOAuthenticator.authorize_url = oidc["authorize_url"]
 c.GenericOAuthenticator.token_url = oidc["token_url"]
-c.GenericOAuthenticator.userdata_url = oidc["userinfo_url"]
+# Entra with custom API scope: userinfo endpoint requires Graph token which
+# conflicts with our API audience. Use id_token claims instead.
+if os.environ.get("OIDC_USERDATA_FROM_ID_TOKEN"):
+    c.GenericOAuthenticator.userdata_from_id_token = True
+else:
+    c.GenericOAuthenticator.userdata_url = oidc["userinfo_url"]
 c.GenericOAuthenticator.client_id = oidc["client_id"]
-c.GenericOAuthenticator.client_secret = os.environ["OIDC_CLIENT_SECRET"]
+c.GenericOAuthenticator.client_secret = os.environ.get("OIDC_CLIENT_SECRET", "")
 c.GenericOAuthenticator.scope = oidc["scopes"]
 c.GenericOAuthenticator.login_service = "Hugr SSO"
 
 c.GenericOAuthenticator.enable_auth_state = True
 c.GenericOAuthenticator.refresh_pre_spawn = True
 c.GenericOAuthenticator.auth_refresh_age = 120
-c.GenericOAuthenticator.username_claim = "preferred_username"
+c.GenericOAuthenticator.username_claim = os.environ.get(
+    "OIDC_USERNAME_CLAIM", "preferred_username"
+)
 c.GenericOAuthenticator.allow_all = True
 
 # ===========================================================================
@@ -131,6 +146,11 @@ c.DockerSpawner.network_name = os.environ.get("DOCKER_NETWORK", "hub-network")
 c.DockerSpawner.remove = True
 c.DockerSpawner.use_internal_ip = True
 c.JupyterHub.hub_connect_ip = os.environ.get("HUB_CONNECT_IP", "")
+
+# Allow spawned containers to reach host services (Hugr, Keycloak in dev)
+c.DockerSpawner.extra_host_config = {
+    "extra_hosts": {"host.docker.internal": "host-gateway"},
+}
 
 # Persistent user data
 c.DockerSpawner.volumes = {
