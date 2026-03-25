@@ -1,0 +1,36 @@
+# Dev: JupyterHub only. Hugr and Keycloak run on host.
+#
+# Prerequisites:
+#   - Hugr dev server on localhost:15004
+#   - Keycloak on localhost:18070
+#   - Singleuser image built: docker compose -f docker-compose.local.yml build
+#
+# Usage:
+#   docker compose -f docker-compose.dev.yml up -d
+#   open http://localhost:8000
+
+services:
+  hub:
+    build:
+      context: .
+      dockerfile: Dockerfile.hub
+    env_file: ${HUB_ENV_FILE:-.env}
+    environment:
+      HUB_CONNECT_IP: hub
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - hub-data:/srv/jupyterhub
+    ports:
+      - "8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - hub-dev-network
+    restart: unless-stopped
+
+volumes:
+  hub-data:
+
+networks:
+  hub-dev-network:
+    name: hub-dev-network
