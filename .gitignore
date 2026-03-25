@@ -6,6 +6,7 @@ specs/
 
 # Environment
 .env
+.entra.env
 *.env.local
 
 # Python
