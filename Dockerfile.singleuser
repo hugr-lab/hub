@@ -5,8 +5,8 @@
 # and JupyterLab extensions from PyPI.
 # =============================================================================
 
-ARG HUGR_KERNEL_VERSION=v0.2.5
-ARG DUCKDB_KERNEL_VERSION=v0.3.0
+ARG HUGR_KERNEL_VERSION=v0.2.8
+ARG DUCKDB_KERNEL_VERSION=v0.3.1
 
 FROM quay.io/jupyterhub/singleuser:latest
 
@@ -71,17 +71,21 @@ RUN ARCH=${TARGETARCH:-$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')} \
 # -----------------------------------------------------------------------------
 # JupyterLab extensions + Python packages (all from PyPI)
 # -----------------------------------------------------------------------------
-# hugr-perspective-viewer: spool proxy + Perspective result viewer (shared by both kernels)
-# hugr-graphql-ide: GraphQL IDE, connection manager, OIDC auth (hugr-kernel)
-# hugr-duckdb-explorer: DuckDB schema sidebar (duckdb-kernel)
-# hugr-client: installed without deps (keplergl pins old pyarrow)
-RUN pip install --no-cache-dir --break-system-packages \
+# hugr-client pulls keplergl which requires old pyarrow — install without deps
+# hugr-graphql-ide depends on hugr-client — also install without deps
+# Their real dependencies (authlib, httpx, requests-toolbelt) are installed explicitly
+RUN pip install --no-cache-dir --break-system-packages --no-deps \
+    hugr-client \
+    && pip install --no-cache-dir --break-system-packages \
+    requests-toolbelt websockets requests \
+    && pip install --no-cache-dir --break-system-packages \
     "hugr-perspective-viewer==${DUCKDB_KERNEL_VERSION#v}" \
-    "hugr-graphql-ide==${HUGR_KERNEL_VERSION#v}" \
     "hugr-duckdb-explorer==${DUCKDB_KERNEL_VERSION#v}" \
     jupyter-resource-usage psutil \
+    authlib httpx \
     pandas pyarrow geopandas matplotlib \
-    && pip install --no-cache-dir --break-system-packages --no-deps hugr-client requests-toolbelt
+    && pip install --no-cache-dir --break-system-packages --no-deps \
+    "hugr-graphql-ide==${HUGR_KERNEL_VERSION#v}"
 
 # Enable CPU and disk monitoring (RAM is enabled by default)
 RUN echo '{"ResourceUseDisplay":{"track_cpu_percent":true,"track_disk_usage":true}}' \
