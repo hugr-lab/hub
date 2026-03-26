@@ -5,8 +5,8 @@
 # and JupyterLab extensions from PyPI.
 # =============================================================================
 
-ARG HUGR_KERNEL_VERSION=v0.2.8
-ARG DUCKDB_KERNEL_VERSION=v0.3.1
+ARG HUGR_KERNEL_VERSION=v0.2.9
+ARG DUCKDB_KERNEL_VERSION=v0.3.3
 
 FROM quay.io/jupyterhub/singleuser:latest
 
@@ -71,26 +71,26 @@ RUN ARCH=${TARGETARCH:-$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')} \
 # -----------------------------------------------------------------------------
 # JupyterLab extensions + Python packages (all from PyPI)
 # -----------------------------------------------------------------------------
-# hugr-client pulls keplergl which requires old pyarrow — install without deps
-# hugr-graphql-ide depends on hugr-client — also install without deps
-# Their real dependencies (authlib, httpx, requests-toolbelt) are installed explicitly
-RUN pip install --no-cache-dir --break-system-packages --no-deps \
-    hugr-client \
-    && pip install --no-cache-dir --break-system-packages \
-    requests-toolbelt websockets requests \
-    && pip install --no-cache-dir --break-system-packages \
+# Core data packages first (ensure binary wheels, no source builds)
+RUN pip install --no-cache-dir --break-system-packages \
+    pyarrow pandas numpy geopandas shapely matplotlib
+
+# JupyterLab extensions + hugr packages
+# hugr-client v0.2.0+ has keplergl as optional [viz] — no --no-deps needed
+RUN pip install --no-cache-dir --break-system-packages \
     "hugr-perspective-viewer==${DUCKDB_KERNEL_VERSION#v}" \
+    "hugr-graphql-ide==${HUGR_KERNEL_VERSION#v}" \
     "hugr-duckdb-explorer==${DUCKDB_KERNEL_VERSION#v}" \
+    hugr-client \
     jupyter-resource-usage psutil \
-    jupyterlab-git jupyterlab-execute-time jupyterlab-favorites jupyterlab-spreadsheet-editor \
-    authlib httpx \
-    pandas pyarrow geopandas matplotlib \
-    && pip install --no-cache-dir --break-system-packages --no-deps \
-    "hugr-graphql-ide==${HUGR_KERNEL_VERSION#v}"
+    jupyterlab-git jupyterlab-execute-time jupyterlab-favorites jupyterlab-spreadsheet-editor
 
 # Enable CPU and disk monitoring (RAM is enabled by default)
 RUN echo '{"ResourceUseDisplay":{"track_cpu_percent":true,"track_disk_usage":true}}' \
     > /opt/conda/etc/jupyter/jupyter_server_config.d/resource_usage.json
+
+# Enable hugr-client spool files for Perspective viewer
+ENV HUGR_SPOOL_EXTRA_DIRS=hugr-client
 
 USER jovyan
 WORKDIR /home/jovyan
