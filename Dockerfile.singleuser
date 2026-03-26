@@ -18,7 +18,7 @@ USER root
 
 # System build deps for pip packages with C extensions (geopandas/pyproj need GDAL)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc g++ libgdal-dev curl \
+    gcc g++ libgdal-dev curl git \
     && rm -rf /var/lib/apt/lists/*
 
 # setuptools needed for Python 3.13 (pkg_resources removed from stdlib)
@@ -82,6 +82,7 @@ RUN pip install --no-cache-dir --break-system-packages --no-deps \
     "hugr-perspective-viewer==${DUCKDB_KERNEL_VERSION#v}" \
     "hugr-duckdb-explorer==${DUCKDB_KERNEL_VERSION#v}" \
     jupyter-resource-usage psutil \
+    jupyterlab-git jupyterlab-execute-time jupyterlab-favorites jupyterlab-spreadsheet-editor \
     authlib httpx \
     pandas pyarrow geopandas matplotlib \
     && pip install --no-cache-dir --break-system-packages --no-deps \
