@@ -20,6 +20,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - hub-data:/srv/jupyterhub
+      - ./config:/srv/jupyterhub/config
     ports:
       - "8000:8000"
     extra_hosts:

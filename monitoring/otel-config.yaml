@@ -1,0 +1,32 @@
+receivers:
+  docker_stats:
+    endpoint: unix:///var/run/docker.sock
+    collection_interval: 15s
+    provide_per_core_cpu_metrics: false
+    timeout: 10s
+
+  filelog:
+    include:
+      - /var/lib/docker/containers/*/*.log
+    include_file_name: true
+    operators:
+      - type: json_parser
+        timestamp:
+          parse_from: attributes.time
+          layout: '%Y-%m-%dT%H:%M:%S.%LZ'
+
+exporters:
+  prometheus:
+    endpoint: "0.0.0.0:9464"
+
+  otlphttp/loki:
+    endpoint: "http://loki:3100/otlp"
+
+service:
+  pipelines:
+    metrics:
+      receivers: [docker_stats]
+      exporters: [prometheus]
+    logs:
+      receivers: [filelog]
+      exporters: [otlphttp/loki]

@@ -1,0 +1,55 @@
+# Opt-in monitoring stack — metrics + logs.
+#
+# Usage:
+#   docker compose -f docker-compose.dev.yml -f docker-compose.monitoring.yml up -d
+#
+# Endpoints:
+#   :9464/metrics  — Prometheus (container CPU/mem/net/disk)
+#   :3100          — Loki API (logs query)
+#   :8000/hub/metrics — JupyterHub native metrics (no extra config)
+#
+# Query logs:
+#   curl -s 'http://localhost:3100/loki/api/v1/query_range?query={job="docker"}&limit=10' | python3 -m json.tool
+#
+# Labels available:
+#   {filename="/var/lib/docker/containers/<id>/<id>-json.log"}
+
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    user: "0:0"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - ./monitoring/otel-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "9464:9464"
+    depends_on:
+      - loki
+    networks:
+      - hub-dev-network
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:latest
+    volumes:
+      - ./monitoring/loki-config.yaml:/etc/loki/local-config.yaml:ro
+      - loki-data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+    ports:
+      - "3100:3100"
+    networks:
+      - hub-dev-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3100/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  loki-data:
+
+networks:
+  hub-dev-network:
+    name: hub-dev-network
