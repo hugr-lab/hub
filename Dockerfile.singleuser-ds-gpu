@@ -1,0 +1,28 @@
+# =============================================================================
+# Analytics Hub — Data Science GPU workspace image
+#
+# Extends DS image with CUDA support for PyTorch/TensorFlow GPU acceleration.
+# NOT in CI — build manually when needed:
+#
+#   docker build -f Dockerfile.singleuser-ds-gpu -t hub-singleuser-ds-gpu .
+#
+# Requires: nvidia-container-toolkit on host, GPU profile in profiles.json
+# Only linux/amd64 — CUDA not available for arm64
+# =============================================================================
+
+ARG BASE_IMAGE=ghcr.io/hugr-lab/hub-singleuser-ds:latest
+
+FROM ${BASE_IMAGE}
+
+USER root
+
+# Replace CPU-only torch with CUDA version
+RUN pip install --no-cache-dir --break-system-packages \
+    --force-reinstall \
+    torch torchvision torchaudio \
+    --index-url https://download.pytorch.org/whl/cu124
+
+# Optional: TensorFlow with GPU
+# RUN pip install --no-cache-dir --break-system-packages tensorflow[and-cuda]
+
+USER jovyan

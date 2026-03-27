@@ -1,0 +1,51 @@
+# =============================================================================
+# Analytics Hub — Data Science workspace image
+#
+# Extends singleuser with Python data science libraries.
+# For ML, geospatial analysis, and advanced visualization.
+# =============================================================================
+
+ARG BASE_IMAGE=ghcr.io/hugr-lab/hub-singleuser:latest
+
+FROM ${BASE_IMAGE}
+
+USER root
+
+# System deps for ML/geo libraries
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libhdf5-dev libnetcdf-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Data science Python packages
+RUN pip install --no-cache-dir --break-system-packages \
+    # ML frameworks
+    scikit-learn \
+    xgboost \
+    lightgbm \
+    # Deep learning (CPU only — GPU image would use torch+cuda)
+    torch --index-url https://download.pytorch.org/whl/cpu \
+    # Visualization
+    seaborn \
+    plotly \
+    altair \
+    # Geospatial
+    osmnx \
+    folium \
+    mapclassify \
+    # Data processing
+    polars \
+    dask[dataframe] \
+    sqlalchemy \
+    openpyxl \
+    xlsxwriter \
+    # Statistics
+    statsmodels \
+    scipy \
+    # NLP
+    nltk \
+    # Notebook utilities
+    tqdm \
+    ipywidgets \
+    rich
+
+USER jovyan
