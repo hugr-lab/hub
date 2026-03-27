@@ -3,8 +3,7 @@ FROM quay.io/jupyterhub/jupyterhub:latest
 RUN pip install --no-cache-dir --break-system-packages \
     oauthenticator \
     dockerspawner \
-    httpx \
-    jupyterhub-idle-culler
+    httpx
 
 COPY hub_profiles/ /srv/jupyterhub/hub_profiles/
 COPY scripts/ /srv/jupyterhub/scripts/

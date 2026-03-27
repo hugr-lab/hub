@@ -19,7 +19,11 @@ USER root
 # System build deps for pip packages with C extensions (geopandas/pyproj need GDAL)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc g++ libgdal-dev curl git \
-    s3fs fuse \
+    s3fs fuse wget apt-transport-https lsb-release gnupg \
+    && curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/microsoft.gpg] https://packages.microsoft.com/repos/microsoft-$(lsb_release -is | tr '[:upper:]' '[:lower:]')-$(lsb_release -cs)-prod $(lsb_release -cs) main" \
+       > /etc/apt/sources.list.d/microsoft.list \
+    && apt-get update && apt-get install -y --no-install-recommends blobfuse2 \
     && rm -rf /var/lib/apt/lists/*
 
 # setuptools needed for Python 3.13 (pkg_resources removed from stdlib)
