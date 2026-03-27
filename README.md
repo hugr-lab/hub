@@ -85,8 +85,40 @@ See [config/README.md](config/README.md) for full schema documentation.
 | `HUGR_PROFILE_CLAIM` | no | OIDC claim for profile assignment |
 | `HUGR_ROLE_CLAIM` | no | OIDC claim for Hugr role (default: `x-hugr-role`) |
 | `SINGLEUSER_IMAGE` | no | Custom workspace image |
+| `HUGR_TLS_SKIP_VERIFY` | no | Skip TLS cert verification for Hugr (self-signed certs) |
+| `OIDC_TLS_SKIP_VERIFY` | no | Skip TLS cert verification for OIDC provider |
+| `HUB_SSL_CERT` | no | Path to TLS cert for Hub HTTPS |
+| `HUB_SSL_KEY` | no | Path to TLS key for Hub HTTPS |
 
 See `.env.example` for all options.
+
+### TLS
+
+Hub supports TLS for both incoming (Hub HTTPS) and outgoing (Hugr, OIDC) connections.
+
+**Hub on HTTPS** (self-signed cert for dev):
+
+```bash
+# Generate certs
+openssl req -x509 -newkey rsa:2048 -keyout certs/key.pem -out certs/cert.pem \
+  -days 365 -nodes -subj "/CN=localhost" \
+  -addext "subjectAltName=DNS:localhost,DNS:host.docker.internal,IP:127.0.0.1"
+```
+
+```env
+HUB_BASE_URL=https://localhost:8000
+HUB_SSL_CERT=/srv/jupyterhub/certs/cert.pem
+HUB_SSL_KEY=/srv/jupyterhub/certs/key.pem
+```
+
+**Hugr with self-signed cert:**
+
+```env
+HUGR_URL=https://host.docker.internal:15004
+HUGR_TLS_SKIP_VERIFY=true
+```
+
+`HUGR_TLS_SKIP_VERIFY` is passed to workspace containers — connection service and kernels use it for all Hugr connections.
 
 ### OIDC Providers
 
