@@ -8,6 +8,7 @@ work/
 *.md
 .env
 .env.*
+*.env
 .DS_Store
 .idea/
 .vscode/
