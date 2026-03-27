@@ -375,11 +375,15 @@ c.JupyterHub.services = [
     {
         "name": "idle-culler",
         "command": [
-            sys.executable, "-m", "jupyterhub_idle_culler",
-            f"--timeout={_idle_timeout}",
-            f"--max-age={_max_age}",
-            f"--cull-every={_cull_interval}",
-        ] + (["--cull-admin-users"] if _cull_admins else []),
+            sys.executable, "/srv/jupyterhub/scripts/idle-culler-with-notify.py",
+        ],
+        "environment": {
+            "HUGR_IDLE_TIMEOUT": str(_idle_timeout),
+            "HUGR_MAX_SERVER_AGE": str(_max_age),
+            "HUGR_CULL_INTERVAL": str(_cull_interval),
+            "HUGR_CULL_ADMINS": "true" if _cull_admins else "false",
+            "HUGR_CULL_WARN_BEFORE": os.environ.get("HUGR_CULL_WARN_BEFORE", "300"),
+        },
     }
 ]
 

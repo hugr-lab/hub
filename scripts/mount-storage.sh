@@ -48,7 +48,55 @@ for var in $(env | grep '^MOUNT_' | cut -d= -f1); do
             ;;
 
         azure)
-            echo "[mount-storage] WARN: Azure blobfuse2 not yet installed"
+            account=$(echo "$config" | python3 -c "import sys,json; print(json.load(sys.stdin).get('account',''))" 2>/dev/null)
+            container=$(echo "$config" | python3 -c "import sys,json; print(json.load(sys.stdin).get('container',''))" 2>/dev/null)
+            read_only=$(echo "$config" | python3 -c "import sys,json; print('-o ro' if json.load(sys.stdin).get('read_only') else '')" 2>/dev/null)
+            account_key=$(echo "$config" | python3 -c "import sys,json; c=json.load(sys.stdin).get('credentials',{}); print(c.get('account_key',''))" 2>/dev/null)
+            access_token=$(echo "$config" | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null)
+
+            if [ -z "$account" ] || [ -z "$container" ]; then
+                echo "[mount-storage] WARN: Azure mount $var missing account or container"
+                continue
+            fi
+
+            # Write blobfuse2 config
+            cat > /tmp/blobfuse2-${var}.yaml <<BFEOF
+logging:
+  type: syslog
+  level: log_warning
+components:
+  - libfuse
+  - file_cache
+  - attr_cache
+  - azstorage
+libfuse:
+  attribute-expiration-sec: 120
+  entry-expiration-sec: 120
+file_cache:
+  path: /tmp/blobfuse2-cache-${var}
+  timeout-sec: 120
+  max-size-mb: 4096
+azstorage:
+  type: block
+  account-name: ${account}
+  container: ${container}
+  endpoint: https://${account}.blob.core.windows.net
+BFEOF
+
+            # Auth: account key or OAuth token
+            if [ -n "$account_key" ]; then
+                echo "  account-key: ${account_key}" >> /tmp/blobfuse2-${var}.yaml
+            elif [ -n "$access_token" ]; then
+                echo "  oauth-token: ${access_token}" >> /tmp/blobfuse2-${var}.yaml
+            fi
+
+            mkdir -p "/tmp/blobfuse2-cache-${var}"
+
+            echo "[mount-storage] Mounting Azure blob '${account}/${container}' at $mount"
+            blobfuse2 mount "$mount" --config-file=/tmp/blobfuse2-${var}.yaml \
+                -o allow_other \
+                -o uid=$(id -u jovyan) -o gid=$(id -g jovyan) \
+                $read_only 2>&1 || echo "[mount-storage] WARN: Failed to mount Azure ${account}/${container}"
             ;;
 
         gcs)
