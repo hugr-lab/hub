@@ -1,0 +1,26 @@
+# Opt-in monitoring stack — OTel Collector for container metrics + logs.
+#
+# Usage:
+#   docker compose -f docker-compose.dev.yml -f docker-compose.monitoring.yml up -d
+#
+# Endpoints:
+#   :9464/metrics  — Prometheus (container CPU/mem/net/disk)
+#   :4317          — OTLP gRPC (logs + metrics)
+#   :4318          — OTLP HTTP
+#
+# Hub native metrics at :8000/hub/metrics (no extra config needed)
+
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - ./monitoring/otel-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "9464:9464"
+      - "4317:4317"
+      - "4318:4318"
+    networks:
+      - hub-dev-network
+    restart: unless-stopped

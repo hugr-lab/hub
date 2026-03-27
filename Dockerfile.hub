@@ -3,9 +3,13 @@ FROM quay.io/jupyterhub/jupyterhub:latest
 RUN pip install --no-cache-dir --break-system-packages \
     oauthenticator \
     dockerspawner \
-    httpx
+    httpx \
+    jupyterhub-idle-culler
 
+COPY hub_profiles/ /srv/jupyterhub/hub_profiles/
+COPY scripts/ /srv/jupyterhub/scripts/
 COPY jupyterhub_config.py /srv/jupyterhub/jupyterhub_config.py
+ENV PYTHONPATH="/srv/jupyterhub:${PYTHONPATH}"
 
 WORKDIR /srv/jupyterhub
 

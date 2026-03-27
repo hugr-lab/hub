@@ -1,0 +1,147 @@
+{
+  "default_profile": "small",
+  "hub_limits": {
+    "max_memory": "128G",
+    "max_cpu": 32,
+    "max_servers": 20
+  },
+  "profiles": {
+    "small": {
+      "display_name": "Small",
+      "description": "2 CPU, 4GB RAM — for browsing and light queries",
+      "mem_limit": "4G",
+      "mem_guarantee": "512M",
+      "cpu_limit": 2.0,
+      "cpu_guarantee": 0.25,
+      "swap_factor": 1.5,
+      "user_max_servers": 3,
+      "user_max_memory": "12G",
+      "user_max_cpu": 6.0,
+      "idle_timeout": 7200,
+      "max_age": 86400,
+      "rank": 1,
+      "volumes": {
+        "shared-data": {
+          "mount": "/home/jovyan/shared",
+          "mode": "ro"
+        },
+        "s3-data": {
+          "mount": "/home/jovyan/s3/data",
+          "mode": "rw"
+        }
+      }
+    },
+    "medium": {
+      "display_name": "Medium",
+      "description": "4 CPU, 8GB RAM — for data analysis",
+      "mem_limit": "8G",
+      "mem_guarantee": "1G",
+      "cpu_limit": 4.0,
+      "cpu_guarantee": 0.5,
+      "swap_factor": 1.5,
+      "user_max_servers": 2,
+      "user_max_memory": "16G",
+      "user_max_cpu": 8.0,
+      "idle_timeout": 3600,
+      "max_age": 43200,
+      "rank": 2,
+      "volumes": {
+        "shared-data": {
+          "mount": "/home/jovyan/shared",
+          "mode": "ro"
+        },
+        "s3-data": {
+          "mount": "/home/jovyan/s3/data",
+          "mode": "rw"
+        },
+        "s3-ducklake": {
+          "mount": "/home/jovyan/s3/ducklake-taxi",
+          "mode": "ro"
+        }
+      }
+    },
+    "large": {
+      "display_name": "Large",
+      "description": "8 CPU, 32GB RAM — for heavy computation",
+      "mem_limit": "32G",
+      "mem_guarantee": "2G",
+      "cpu_limit": 8.0,
+      "cpu_guarantee": 1.0,
+      "swap_factor": 1.5,
+      "user_max_servers": 1,
+      "user_max_memory": "32G",
+      "user_max_cpu": 8.0,
+      "idle_timeout": 1800,
+      "max_age": 21600,
+      "rank": 3,
+      "volumes": {
+        "hub-config": {
+          "mount": "/home/jovyan/hub-config",
+          "mode": "rw"
+        },
+        "shared-data": {
+          "mount": "/home/jovyan/shared",
+          "mode": "ro"
+        },
+        "s3-data": {
+          "mount": "/home/jovyan/s3/data",
+          "mode": "rw"
+        },
+        "s3-ducklake": {
+          "mount": "/home/jovyan/s3/ducklake-taxi",
+          "mode": "rw"
+        },
+        "s3-iceberg": {
+          "mount": "/home/jovyan/s3/iceberg-warehouse",
+          "mode": "rw"
+        }
+      }
+    }
+  },
+  "role_map": {
+    "admin": "large",
+    "analyst": "medium",
+    "viewer": "small"
+  },
+  "storage": {
+    "volumes": {
+      "hub-config": {
+        "type": "local",
+        "path": "/Users/vgribanov/projects/hugr-lab/hub/config"
+      },
+      "shared-data": {
+        "type": "local",
+        "path": "/Users/vgribanov/projects/hugr-lab/hub/shared"
+      },
+      "s3-data": {
+        "type": "s3",
+        "auth": "shared",
+        "credentials_ref": "minio",
+        "bucket": "data"
+      },
+      "s3-ducklake": {
+        "type": "s3",
+        "auth": "shared",
+        "credentials_ref": "minio",
+        "bucket": "ducklake-taxi"
+      },
+      "s3-iceberg": {
+        "type": "s3",
+        "auth": "shared",
+        "credentials_ref": "minio",
+        "bucket": "iceberg-warehouse"
+      }
+    },
+    "credentials": {
+      "minio": {
+        "access_key_id": "${secret:MINIO_USER}",
+        "secret_access_key": "${secret:MINIO_PASSWORD}",
+        "endpoint_url": "${secret:MINIO_ENDPOINT}"
+      }
+    }
+  },
+  "idle_policy": {
+    "cull_admins": false,
+    "cull_interval": 300
+  }
+}

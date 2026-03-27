@@ -5,8 +5,8 @@
 # and JupyterLab extensions from PyPI.
 # =============================================================================
 
-ARG HUGR_KERNEL_VERSION=v0.2.9
-ARG DUCKDB_KERNEL_VERSION=v0.3.3
+ARG HUGR_KERNEL_VERSION=v0.2.10
+ARG DUCKDB_KERNEL_VERSION=v0.3.4
 
 FROM quay.io/jupyterhub/singleuser:latest
 
@@ -19,6 +19,7 @@ USER root
 # System build deps for pip packages with C extensions (geopandas/pyproj need GDAL)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc g++ libgdal-dev curl git \
+    s3fs fuse \
     && rm -rf /var/lib/apt/lists/*
 
 # setuptools needed for Python 3.13 (pkg_resources removed from stdlib)
@@ -78,12 +79,13 @@ RUN pip install --no-cache-dir --break-system-packages \
 # JupyterLab extensions + hugr packages
 # hugr-client v0.2.0+ has keplergl as optional [viz] — no --no-deps needed
 RUN pip install --no-cache-dir --break-system-packages \
-    "hugr-perspective-viewer==${DUCKDB_KERNEL_VERSION#v}" \
-    "hugr-graphql-ide==${HUGR_KERNEL_VERSION#v}" \
-    "hugr-duckdb-explorer==${DUCKDB_KERNEL_VERSION#v}" \
-    hugr-client \
-    jupyter-resource-usage psutil \
-    jupyterlab-git jupyterlab-execute-time jupyterlab-favorites jupyterlab-spreadsheet-editor
+   hugr-client \
+   "hugr-perspective-viewer==${DUCKDB_KERNEL_VERSION#v}" \
+   "hugr-graphql-ide==${HUGR_KERNEL_VERSION#v}" \
+   "hugr-duckdb-explorer==${DUCKDB_KERNEL_VERSION#v}" \
+   jupyter-resource-usage psutil \
+   jupyterlab-git jupyterlab-execute-time jupyterlab-favorites jupyterlab-spreadsheet-editor \
+   boto3
 
 # Enable CPU and disk monitoring (RAM is enabled by default)
 RUN echo '{"ResourceUseDisplay":{"track_cpu_percent":true,"track_disk_usage":true}}' \
@@ -92,7 +94,13 @@ RUN echo '{"ResourceUseDisplay":{"track_cpu_percent":true,"track_disk_usage":tru
 # Enable hugr-client spool files for Perspective viewer
 ENV HUGR_SPOOL_EXTRA_DIRS=hugr-client
 
-USER jovyan
+# Storage mount entrypoint (runs as root for FUSE, drops to jovyan for CMD)
+COPY scripts/mount-storage.sh /usr/local/bin/mount-storage.sh
+RUN chmod +x /usr/local/bin/mount-storage.sh && \
+    apt-get update && apt-get install -y --no-install-recommends gosu && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /home/jovyan
 
-CMD ["jupyterhub-singleuser"]
+# Entrypoint runs as root (for FUSE mounts), then drops to jovyan
+ENTRYPOINT ["/usr/local/bin/mount-storage.sh"]
+CMD ["gosu", "jovyan", "jupyterhub-singleuser"]
