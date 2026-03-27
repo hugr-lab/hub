@@ -1,10 +1,8 @@
-"""Custom idle culler that notifies users before stopping their servers.
+"""Custom idle culler with pre-shutdown warning.
 
-Wraps jupyterhub-idle-culler logic:
-1. Finds servers idle beyond (timeout - warn_before) seconds
-2. Sends notification to user's server via JupyterHub API
-3. Waits warn_before seconds
-4. Stops the server
+1. Finds servers idle beyond timeout or exceeding max_age
+2. Logs a warning (warn_before seconds before shutdown)
+3. After warning period — stops the server
 
 Runs as a JupyterHub managed service.
 """
@@ -14,6 +12,8 @@ import json
 import logging
 import os
 import time
+from datetime import datetime
+from urllib.parse import quote
 
 import httpx
 
@@ -38,32 +38,24 @@ async def get_users(client: httpx.AsyncClient) -> list:
     return resp.json()
 
 
-async def notify_user(client: httpx.AsyncClient, username: str, minutes_left: int):
-    """Send notification to user's running server via JupyterHub API."""
-    try:
-        # Post to the user's server notification endpoint
-        # JupyterLab picks this up via its notification system
-        resp = await client.post(
-            f"{HUB_API_URL}/users/{username}/notify",
-            json={
-                "message": f"Your workspace will shut down in {minutes_left} minutes due to inactivity. Save your work.",
-                "type": "warning",
-            },
-        )
-        if resp.status_code == 404:
-            # Notification endpoint may not exist — fall back to activity message
-            log.debug("Notification endpoint not available for %s", username)
-        else:
-            log.info("Notified %s: shutdown in %d minutes", username, minutes_left)
-    except Exception as e:
-        log.warning("Failed to notify %s: %s", username, e)
+async def notify_user(username: str, minutes_left: int):
+    """Log upcoming shutdown for user.
+
+    TODO: When Hub Service is available, send real-time notification
+    via WebSocket or JupyterLab notification API.
+    """
+    log.warning(
+        "User %s: workspace will shut down in %d minutes due to inactivity",
+        username, minutes_left,
+    )
 
 
 async def stop_server(client: httpx.AsyncClient, username: str, server_name: str = ""):
     """Stop a user's server."""
-    url = f"{HUB_API_URL}/users/{username}/server"
+    safe_name = quote(username, safe="")
+    url = f"{HUB_API_URL}/users/{safe_name}/server"
     if server_name:
-        url = f"{HUB_API_URL}/users/{username}/servers/{server_name}"
+        url = f"{HUB_API_URL}/users/{safe_name}/servers/{quote(server_name, safe='')}"
     try:
         resp = await client.delete(url)
         if resp.status_code in (200, 202, 204):
@@ -88,7 +80,9 @@ async def check_and_cull():
                 continue
 
             for server_name, server in user.get("servers", {}).items():
+                server_key = f"{username}/{server_name}"
                 if not server.get("ready"):
+                    _warned.pop(server_key, None)
                     continue
 
                 last_activity = server.get("last_activity")
@@ -96,7 +90,6 @@ async def check_and_cull():
                     continue
 
                 # Parse ISO timestamp
-                from datetime import datetime, timezone
                 try:
                     activity_time = datetime.fromisoformat(last_activity.replace("Z", "+00:00"))
                     idle_seconds = now - activity_time.timestamp()
@@ -124,7 +117,6 @@ async def check_and_cull():
                     reason = f"age {int(age_seconds)}s (limit: {MAX_AGE}s)"
 
                 if should_cull:
-                    server_key = f"{username}/{server_name}"
                     warned_at = _warned.get(server_key)
 
                     if warned_at and (now - warned_at) >= WARN_BEFORE:
@@ -136,21 +128,19 @@ async def check_and_cull():
                         # First detection — warn
                         minutes = WARN_BEFORE // 60
                         log.info("Warning %s: will cull in %d minutes (%s)", username, minutes, reason)
-                        await notify_user(client, username, minutes)
+                        await notify_user(username, minutes)
                         _warned[server_key] = now
 
                 elif IDLE_TIMEOUT and idle_seconds > (IDLE_TIMEOUT - WARN_BEFORE):
                     # Approaching timeout — warn
-                    server_key = f"{username}/{server_name}"
                     if server_key not in _warned:
                         remaining = int(IDLE_TIMEOUT - idle_seconds)
                         minutes = max(remaining // 60, 1)
                         log.info("Pre-warning %s: %d minutes until cull", username, minutes)
-                        await notify_user(client, username, minutes)
+                        await notify_user(username, minutes)
                         _warned[server_key] = now
                 else:
                     # Active — clear warning
-                    server_key = f"{username}/{server_name}"
                     _warned.pop(server_key, None)
 
 
