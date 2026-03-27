@@ -16,36 +16,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libhdf5-dev libnetcdf-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# PyTorch CPU (separate install — --index-url applies to all packages in same pip call)
+RUN pip install --no-cache-dir --break-system-packages \
+    torch --index-url https://download.pytorch.org/whl/cpu
+
 # Data science Python packages
 RUN pip install --no-cache-dir --break-system-packages \
-    # ML frameworks
-    scikit-learn \
-    xgboost \
-    lightgbm \
-    # Deep learning (CPU only — GPU image would use torch+cuda)
-    torch --index-url https://download.pytorch.org/whl/cpu \
-    # Visualization
-    seaborn \
-    plotly \
-    altair \
-    # Geospatial
-    osmnx \
-    folium \
-    mapclassify \
-    # Data processing
-    polars \
-    dask[dataframe] \
-    sqlalchemy \
-    openpyxl \
-    xlsxwriter \
-    # Statistics
-    statsmodels \
-    scipy \
-    # NLP
+    scikit-learn xgboost lightgbm \
+    seaborn plotly altair \
+    osmnx folium mapclassify \
+    polars "dask[dataframe]" sqlalchemy openpyxl xlsxwriter \
+    statsmodels scipy \
     nltk \
-    # Notebook utilities
-    tqdm \
-    ipywidgets \
-    rich
+    tqdm ipywidgets rich
 
 USER jovyan
