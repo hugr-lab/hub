@@ -102,18 +102,72 @@ See `.env.example` for all options.
 | `docker-compose.yml` | Full stack (Hub + Hugr + Keycloak) |
 | `docker-compose.monitoring.yml` | OTel Collector (opt-in) |
 
-## Monitoring
+## Monitoring & Logging
 
-Opt-in OTel Collector for container metrics and logs:
+Opt-in monitoring stack: OTel Collector (container metrics + logs) → Prometheus endpoint + Loki.
+
+### Quick Start
 
 ```bash
+# Start Hub + monitoring together:
 docker compose -f docker-compose.dev.yml -f docker-compose.monitoring.yml up -d
+
+# Or add monitoring to running Hub:
+docker compose -f docker-compose.dev.yml -f docker-compose.monitoring.yml up -d otel-collector loki
 ```
 
-Endpoints:
-- `:9464/metrics` — Prometheus (container CPU/mem/net)
-- `:8000/hub/metrics` — JupyterHub metrics (users, servers, spawns)
-- `:4317` / `:4318` — OTLP gRPC/HTTP (logs)
+### Endpoints
+
+| Endpoint | Protocol | Content |
+|----------|----------|---------|
+| `:9464/metrics` | Prometheus | Container CPU, memory, network, disk I/O |
+| `:8000/hub/metrics` | Prometheus | Active users, running servers, spawn times |
+| `:3100` | Loki API | Container logs (all workspace + Hub containers) |
+
+### Query Metrics
+
+Connect Prometheus to scrape:
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: hub-containers
+    static_configs:
+      - targets: ['localhost:9464']
+  - job_name: jupyterhub
+    static_configs:
+      - targets: ['localhost:8000']
+    metrics_path: /hub/metrics
+```
+
+### Query Logs
+
+Loki API at `:3100`. Query all logs:
+
+```bash
+# All logs from last 5 minutes
+curl -s "http://localhost:3100/loki/api/v1/query_range?\
+query=%7Bservice_name%3D~%22.%2B%22%7D&limit=10&\
+start=$(date -u -v-5M +%s)000000000&end=$(date -u +%s)000000000"
+```
+
+Connect Grafana to Loki at `http://loki:3100` (within Docker network) or `http://localhost:3100` (from host).
+
+### Architecture
+
+```
+Container logs (/var/lib/docker/containers/*/*.log)
+    ↓ filelog receiver
+OTel Collector
+    ├─ docker_stats receiver → :9464/metrics (Prometheus)
+    └─ filelog receiver → Loki (:3100)
+
+JupyterHub → :8000/hub/metrics (Prometheus native)
+```
+
+### Without Monitoring
+
+Hub operates normally without the monitoring stack. No performance impact, no errors.
 
 ## Singleuser Image
 
