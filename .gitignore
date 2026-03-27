@@ -7,7 +7,11 @@ specs/
 # Environment
 .env
 .entra.env
+.tls.env
 *.env.local
+
+# TLS certs (dev only)
+certs/
 
 # Python
 __pycache__/

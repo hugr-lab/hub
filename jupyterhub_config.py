@@ -21,6 +21,17 @@ logger = logging.getLogger(__name__)
 
 HUGR_URL = os.environ["HUGR_URL"]  # e.g. http://hugr:15000
 HUB_BASE_URL = os.environ["HUB_BASE_URL"]  # e.g. http://localhost:8000
+HUGR_TLS_SKIP_VERIFY = os.environ.get("HUGR_TLS_SKIP_VERIFY", "false").lower() == "true"
+OIDC_TLS_SKIP_VERIFY = os.environ.get("OIDC_TLS_SKIP_VERIFY", "false").lower() == "true"
+_hugr_tls_verify = not HUGR_TLS_SKIP_VERIFY
+_oidc_tls_verify = not OIDC_TLS_SKIP_VERIFY
+
+# Hub TLS (optional — for direct HTTPS without reverse proxy)
+_hub_ssl_cert = os.environ.get("HUB_SSL_CERT", "")
+_hub_ssl_key = os.environ.get("HUB_SSL_KEY", "")
+if _hub_ssl_cert and _hub_ssl_key:
+    c.JupyterHub.ssl_cert = _hub_ssl_cert
+    c.JupyterHub.ssl_key = _hub_ssl_key
 
 # ===========================================================================
 # OIDC Auto-Discovery from Hugr
@@ -37,7 +48,7 @@ def discover_oidc(max_retries=30, initial_delay=2, max_delay=60):
     for attempt in range(1, max_retries + 1):
         try:
             # Step 1: Get OIDC params from Hugr
-            resp = httpx.get(f"{HUGR_URL}/auth/config", timeout=10)
+            resp = httpx.get(f"{HUGR_URL}/auth/config", timeout=10, verify=_hugr_tls_verify)
             resp.raise_for_status()
             hugr_auth = resp.json()
 
@@ -64,7 +75,8 @@ def discover_oidc(max_retries=30, initial_delay=2, max_delay=60):
 
             # Step 2: Discover OIDC endpoints from provider
             oidc_resp = httpx.get(
-                f"{issuer}/.well-known/openid-configuration", timeout=10
+                f"{issuer}/.well-known/openid-configuration", timeout=10,
+                verify=_oidc_tls_verify,
             )
             oidc_resp.raise_for_status()
             oidc_config = oidc_resp.json()
@@ -334,6 +346,8 @@ async def pre_spawn_hook(spawner, auth_state):
     # 6. Pass Hugr connection
     spawner.environment["HUGR_URL"] = HUGR_URL
     spawner.environment["HUGR_CONNECTION_NAME"] = HUGR_CONNECTION_NAME
+    if HUGR_TLS_SKIP_VERIFY:
+        spawner.environment["HUGR_TLS_SKIP_VERIFY"] = "true"
     if access_token:
         spawner.environment["HUGR_INITIAL_ACCESS_TOKEN"] = access_token
 
@@ -408,7 +422,7 @@ if HUB_SERVICE_URL:
 
     async def post_auth_hook(authenticator, handler, authentication):
         auth_state = authentication.get("auth_state", {})
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(verify=_hugr_tls_verify) as client:
             try:
                 await client.post(
                     f"{HUB_SERVICE_URL}/api/user/login",
