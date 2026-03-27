@@ -18,10 +18,8 @@ exporters:
   prometheus:
     endpoint: "0.0.0.0:9464"
 
-  otlp:
-    endpoint: "${OTLP_ENDPOINT:-localhost:4317}"
-    tls:
-      insecure: true
+  debug:
+    verbosity: basic
 
 service:
   pipelines:
@@ -30,4 +28,4 @@ service:
       exporters: [prometheus]
     logs:
       receivers: [filelog]
-      exporters: [otlp]
+      exporters: [debug]
