@@ -204,9 +204,12 @@ c.DockerSpawner.remove = True
 c.DockerSpawner.use_internal_ip = True
 c.JupyterHub.hub_connect_ip = os.environ.get("HUB_CONNECT_IP", "")
 
-# Allow spawned containers to reach host services (Hugr, Keycloak in dev)
+# Allow spawned containers to reach host services + FUSE for storage mounts
 c.DockerSpawner.extra_host_config = {
     "extra_hosts": {"host.docker.internal": "host-gateway"},
+    "cap_add": ["SYS_ADMIN"],
+    "devices": ["/dev/fuse:/dev/fuse:rwm"],
+    "security_opt": ["apparmor:unconfined"],
 }
 
 # ---------------------------------------------------------------------------
