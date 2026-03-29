@@ -24,7 +24,7 @@ hub:
 
 singleuser:
   image:
-    name: "hugr-lab/hub-singleuser"
+    name: "hub-jupyter"
     tag: "latest"
     pullPolicy: "Never"             # Use locally loaded images
   storage:
@@ -34,9 +34,14 @@ singleuser:
 jupyterhub:
   hub:
     image:
-      name: "hugr-lab/hub"
+      name: "hub-jupyterhub"
       tag: "latest"
       pullPolicy: "Never"          # Use locally loaded images
+    existingSecret: hugr-hub-secrets
+    config: {}
+    extraConfig:
+      zz-load-hub-config: |
+        load_subconfig('/opt/hub/jupyterhub_config.py')
     extraEnv:
       HUGR_SPAWNER:
         value: "kubernetes"
@@ -56,8 +61,10 @@ jupyterhub:
         value: "x-hub-profile"
       HUGR_CONNECTION_NAME:
         value: "default"
+      HUGR_PROFILES_PATH:
+        value: "/opt/hub/config/profiles.json"
       SINGLEUSER_IMAGE:
-        value: "hugr-lab/hub-singleuser:latest"
+        value: "hub-jupyter:latest"
       OIDC_CLIENT_SECRET:
         valueFrom:
           secretKeyRef:
@@ -72,13 +79,19 @@ jupyterhub:
 
   singleuser:
     image:
-      name: "hugr-lab/hub-singleuser"
+      name: "hub-jupyter"
       tag: "latest"
       pullPolicy: "Never"
     storage:
       type: dynamic
       capacity: "2Gi"
       homeMountPath: /home/jovyan
+
+  prePuller:
+    hook:
+      enabled: false
+    continuous:
+      enabled: false
 
   scheduling:
     userScheduler:

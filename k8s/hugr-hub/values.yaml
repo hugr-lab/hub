@@ -62,7 +62,7 @@ jupyterhub:
           name: hugr-hub-profiles
     extraVolumeMounts:
       - name: profiles-config
-        mountPath: /srv/jupyterhub/config/profiles.json
+        mountPath: /opt/hub/config/profiles.json
         subPath: profiles.json
         readOnly: true
 

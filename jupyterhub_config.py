@@ -403,7 +403,7 @@ c.JupyterHub.services = [
     {
         "name": "idle-culler",
         "command": [
-            sys.executable, "/srv/jupyterhub/scripts/idle-culler-with-notify.py",
+            sys.executable, "/opt/hub/scripts/idle-culler-with-notify.py",
         ],
         "environment": {
             "HUGR_IDLE_TIMEOUT": str(_idle_timeout),
