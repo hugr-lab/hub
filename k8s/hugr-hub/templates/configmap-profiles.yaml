@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "hugr-hub.fullname" . }}-profiles
+  labels:
+    {{- include "hugr-hub.labels" . | nindent 4 }}
+data:
+  profiles.json: |
+    {{- if .Values.profiles }}
+    {{- .Values.profiles | toJson | nindent 4 }}
+    {{- else }}
+    {}
+    {{- end }}

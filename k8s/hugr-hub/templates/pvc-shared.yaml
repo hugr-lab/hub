@@ -1,0 +1,19 @@
+{{- range $name, $vol := .Values.sharedVolumes }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $name | replace "_" "-" | lower }}
+  labels:
+    {{- include "hugr-hub.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: shared-storage
+spec:
+  accessModes:
+    - {{ $vol.accessMode | default "ReadWriteMany" }}
+  resources:
+    requests:
+      storage: {{ $vol.capacity | default "10Gi" }}
+  {{- if $vol.storageClassName }}
+  storageClassName: {{ $vol.storageClassName | quote }}
+  {{- end }}
+{{- end }}

@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "hugr-hub.fullname" . }}-config
+  labels:
+    {{- include "hugr-hub.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 64Mi
+  {{- if .Values.hub.config_storage.storageClassName }}
+  storageClassName: {{ .Values.hub.config_storage.storageClassName | quote }}
+  {{- end }}

@@ -1,0 +1,75 @@
+# =============================================================================
+# Production example — customize for your environment
+# =============================================================================
+
+hub:
+  hugrUrl: "http://hugr-cluster:15000"
+  baseDomain: "https://hub.example.com"
+  oidc:
+    clientSecret: ""                # Set via --set or external secret manager
+    tlsSkipVerify: false
+  admin:
+    claim: "x-hugr-role"
+    values: "admin"
+  profiles:
+    claim: "x-hub-profile"
+    roleClaim: "x-hugr-role"
+  secretProvider: "k8s"
+
+singleuser:
+  image:
+    name: "ghcr.io/hugr-lab/hub-singleuser"
+    tag: "latest"
+    pullPolicy: "Always"
+  storage:
+    capacity: "50Gi"
+    storageClassName: "gp3"         # AWS EBS gp3 / Azure managed-premium / GCP pd-ssd
+
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+  hosts:
+    - "hub.example.com"
+  tls:
+    - secretName: "hub-tls"
+      hosts:
+        - "hub.example.com"
+
+jupyterhub:
+  hub:
+    image:
+      name: "ghcr.io/hugr-lab/hub"
+      tag: "latest"
+      pullPolicy: "Always"
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: 2
+        memory: 2Gi
+
+  proxy:
+    service:
+      type: ClusterIP              # Behind ingress
+
+  singleuser:
+    image:
+      name: "ghcr.io/hugr-lab/hub-singleuser"
+      tag: "latest"
+      pullPolicy: "Always"
+    storage:
+      type: dynamic
+      capacity: "50Gi"
+      dynamic:
+        storageClassName: "gp3"
+      homeMountPath: /home/jovyan
+
+  scheduling:
+    userScheduler:
+      enabled: true
+
+  cull:
+    enabled: false                  # Using custom culler

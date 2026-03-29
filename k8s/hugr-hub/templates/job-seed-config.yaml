@@ -1,0 +1,41 @@
+{{- if .Values.profiles }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "hugr-hub.fullname" . }}-seed-config
+  labels:
+    {{- include "hugr-hub.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": hook-succeeded
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: seed
+          image: busybox:latest
+          command:
+            - sh
+            - -c
+            - |
+              if [ ! -f /config/profiles.json ]; then
+                echo "Seeding profiles.json"
+                cp /seed/profiles.json /config/profiles.json
+              else
+                echo "profiles.json already exists, skipping seed"
+              fi
+          volumeMounts:
+            - name: hub-config
+              mountPath: /config
+            - name: seed-data
+              mountPath: /seed
+      volumes:
+        - name: hub-config
+          persistentVolumeClaim:
+            claimName: {{ include "hugr-hub.fullname" . }}-config
+        - name: seed-data
+          configMap:
+            name: {{ include "hugr-hub.fullname" . }}-profiles
+{{- end }}

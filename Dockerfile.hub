@@ -3,13 +3,16 @@ FROM quay.io/jupyterhub/jupyterhub:latest
 RUN pip install --no-cache-dir --break-system-packages \
     oauthenticator \
     dockerspawner \
+    jupyterhub-kubespawner \
     httpx
 
-COPY hub_profiles/ /srv/jupyterhub/hub_profiles/
-COPY scripts/ /srv/jupyterhub/scripts/
-COPY jupyterhub_config.py /srv/jupyterhub/jupyterhub_config.py
-ENV PYTHONPATH="/srv/jupyterhub"
+# Copy to /opt/hub (z2jh mounts PVC over /srv/jupyterhub, so we use a separate path)
+COPY hub_profiles/ /opt/hub/hub_profiles/
+COPY scripts/ /opt/hub/scripts/
+COPY jupyterhub_config.py /opt/hub/jupyterhub_config.py
+ENV PYTHONPATH="/opt/hub"
 
+# Docker mode: run directly with our config
+# K8s mode: z2jh launches jupyterhub, loads our config via hub.extraConfig
 WORKDIR /srv/jupyterhub
-
-CMD ["jupyterhub", "-f", "/srv/jupyterhub/jupyterhub_config.py"]
+CMD ["jupyterhub", "-f", "/opt/hub/jupyterhub_config.py"]

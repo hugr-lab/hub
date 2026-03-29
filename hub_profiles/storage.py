@@ -18,9 +18,10 @@ def build_volumes(
 ) -> dict:
     """Build volume mounts for spawner from profile + storage config.
 
-    Returns Docker volume dict: {source: {bind: path, mode: ro/rw}}
-    Also sets MOUNT_* env vars for FUSE mounts (S3, Azure, GCS).
+    Docker: Returns volume dict {source: {bind: path, mode: ro/rw}} + MOUNT_* env vars.
+    K8s: Appends to spawner.volume_mounts / spawner.volumes + MOUNT_* env vars for FUSE.
     """
+    spawner_type = os.environ.get("HUGR_SPAWNER", "docker")
     storage = config.get("storage", {})
     all_volumes = storage.get("volumes", {})
     credentials = storage.get("credentials", {})
@@ -59,19 +60,31 @@ def build_volumes(
                 )
                 continue
 
-        if vol_type == "nfs":
-            _add_nfs_volume(volumes, vol_name, vol_def, mount_path, mode)
-        elif vol_type == "local":
-            _add_local_volume(volumes, vol_def, mount_path, mode)
-        elif vol_type in ("s3", "azure", "gcs"):
-            _add_fuse_volume(
-                spawner, vol_name, vol_def, mount_path, mode,
-                auth_mode, resolved_creds, access_token,
-            )
-            # FUSE mounts need SYS_ADMIN + /dev/fuse
-            _ensure_fuse_capabilities(spawner)
+        if spawner_type == "kubernetes":
+            if vol_type in ("nfs", "local"):
+                # PVC-backed volume — assumes PVC pre-created by Helm chart or admin
+                _add_k8s_pvc_volume(spawner, vol_name, mount_path, mode)
+            elif vol_type in ("s3", "azure", "gcs"):
+                # FUSE via entrypoint script (same as Docker) — pass MOUNT_* env vars
+                _add_fuse_volume(
+                    spawner, vol_name, vol_def, mount_path, mode,
+                    auth_mode, resolved_creds, access_token,
+                )
+            else:
+                log.warning("Unknown storage type '%s' for volume '%s'", vol_type, vol_name)
         else:
-            log.warning("Unknown storage type '%s' for volume '%s'", vol_type, vol_name)
+            if vol_type == "nfs":
+                _add_nfs_volume(volumes, vol_name, vol_def, mount_path, mode)
+            elif vol_type == "local":
+                _add_local_volume(volumes, vol_def, mount_path, mode)
+            elif vol_type in ("s3", "azure", "gcs"):
+                _add_fuse_volume(
+                    spawner, vol_name, vol_def, mount_path, mode,
+                    auth_mode, resolved_creds, access_token,
+                )
+                _ensure_fuse_capabilities(spawner)
+            else:
+                log.warning("Unknown storage type '%s' for volume '%s'", vol_type, vol_name)
 
     return volumes
 
@@ -98,6 +111,40 @@ def _ensure_fuse_capabilities(spawner):
         spawner.extra_host_config["security_opt"] = ["apparmor:unconfined"]
     _fuse_enabled = True
     log.info("FUSE capabilities enabled for container")
+
+
+def _add_k8s_pvc_volume(spawner, vol_name: str, mount_path: str, mode: str):
+    """K8s: add PVC-backed volume mount to KubeSpawner."""
+    safe_name = vol_name.replace(".", "-").replace("_", "-").lower()
+
+    # KubeSpawner volume_mounts/volumes — ensure list, deduplicate by name/mountPath
+    mounts = list(getattr(spawner, "volume_mounts", None) or [])
+    mounts = [m for m in mounts if isinstance(m, dict)]
+    # Skip if already mounted at this path
+    if any(m.get("mountPath") == mount_path for m in mounts):
+        log.info("K8s volume mount at %s already exists, skipping", mount_path)
+        return
+    mounts.append({
+        "name": safe_name,
+        "mountPath": mount_path,
+        "readOnly": mode == "ro",
+    })
+    spawner.volume_mounts = mounts
+
+    vols = list(getattr(spawner, "volumes", None) or [])
+    vols = [v for v in vols if isinstance(v, dict)]
+    # Skip if volume with same name already exists
+    if not any(v.get("name") == safe_name for v in vols):
+        vols.append({
+            "name": safe_name,
+            "persistentVolumeClaim": {
+                "claimName": safe_name,
+                "readOnly": mode == "ro",
+            },
+        })
+    spawner.volumes = vols
+
+    log.info("K8s PVC volume '%s' at %s (mode=%s)", safe_name, mount_path, mode)
 
 
 def _add_nfs_volume(volumes: dict, vol_name: str, vol_def: dict, mount_path: str, mode: str):
@@ -137,7 +184,12 @@ def _add_fuse_volume(
         mount_config["access_token"] = access_token
 
     env_name = f"MOUNT_{vol_name.upper().replace('-', '_').replace('.', '_')}"
-    spawner.environment[env_name] = json.dumps(mount_config)
+    value = json.dumps(mount_config)
+    # KubeSpawner runs .format() on env values — escape braces
+    spawner_type = os.environ.get("HUGR_SPAWNER", "docker")
+    if spawner_type == "kubernetes":
+        value = value.replace("{", "{{").replace("}", "}}")
+    spawner.environment[env_name] = value
 
 
 def _has_scope(access_token: str, required_scope: str) -> bool:

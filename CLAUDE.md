@@ -27,6 +27,9 @@ Three-layer architecture: **Control Plane** (JupyterHub + Hub Service) → **Use
 - Design documents live in `design/` (gitignored, local only).
 - Hub Service Go code will live in `cmd/` and `pkg/` directories.
 - Docker images: `Dockerfile.hub` (JupyterHub), `Dockerfile.singleuser` (workspace), `Dockerfile.hub-service` (Go service), `Dockerfile.hub-agent` (agent).
+- `HUGR_SPAWNER` env var selects spawner: `docker` (default, DockerSpawner) or `kubernetes` (KubeSpawner).
+- Helm chart for K8s deployment lives in `k8s/hugr-hub/`. Uses z2jh as subchart.
+- For minikube: use `host.minikube.internal` to reach host services (Hugr, Keycloak).
 
 ## Related Repositories (~/projects/hugr-lab/)
 
@@ -49,6 +52,10 @@ Three-layer architecture: **Control Plane** (JupyterHub + Hub Service) → **Use
 ## Active Technologies
 - Python 3.12+ (JupyterHub config, connection service), Go 1.26.1 (kernel changes in hugr-kernel repo) + jupyterhub 4.x, oauthenticator, dockerspawner, httpx (Hub); hugr_connection_service (workspace) (001-jupyterhub-oidc-workspace)
 - Docker named volumes for user data persistence; connections.json for token state (001-jupyterhub-oidc-workspace)
+- Python 3.12+ (JupyterHub config, server extensions), Go 1.26.1 (hub-service future) + `jupyterhub 5.x`, `dockerspawner`, `oauthenticator`, `jupyterhub-idle-culler`, `hugr-client>=0.2.0` (002-resource-limits)
+- profiles.json (file-based config), Docker named volumes, NFS, S3/Azure/GCS FUSE (002-resource-limits)
+- Python 3.12+ (JupyterHub config, hub_profiles module), Helm/YAML (chart templates) + z2jh Helm chart 4.x (subchart), kubespawner, jupyterhub 5.x, oauthenticator, httpx (003-k8s-deployment)
+- PVC (user home), ConfigMap (profiles.json), K8s Secrets (credentials), FUSE init containers (S3/Azure on minikube) (003-k8s-deployment)
 
 ## Recent Changes
 - 001-jupyterhub-oidc-workspace: Added Python 3.12+ (JupyterHub config, connection service), Go 1.26.1 (kernel changes in hugr-kernel repo) + jupyterhub 4.x, oauthenticator, dockerspawner, httpx (Hub); hugr_connection_service (workspace)

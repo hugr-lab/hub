@@ -1,0 +1,99 @@
+# =============================================================================
+# Analytics Hub — Helm Values
+# =============================================================================
+
+# --- Hub Configuration ---
+hub:
+  hugrUrl: ""                       # Required: Hugr server URL (e.g., http://hugr:15000)
+  baseDomain: ""                    # Hub external URL for OIDC redirect
+  oidc:
+    clientId: ""                    # OIDC client ID (auto-discovered from Hugr if empty)
+    clientSecret: ""                # Required: OIDC client secret
+    tlsSkipVerify: false
+  hugrTlsSkipVerify: false
+  hugrSecretKey: ""                 # Management secret (optional, for Hub Service)
+  admin:
+    users: ""                       # Comma-separated admin usernames
+    claim: ""                       # OIDC claim for admin detection
+    values: "admin"                 # Claim values that grant admin
+  profiles:
+    claim: ""                       # OIDC claim for profile assignment
+    roleClaim: "x-hugr-role"        # OIDC claim for Hugr role
+  secretProvider: "k8s"             # Secret provider: env, k8s
+  connectionName: "default"         # Managed connection name in workspace
+  # PVC for hub config (profiles.json). Admin edits live, hot-reload on every spawn.
+  config_storage:
+    storageClassName: ""            # Empty = cluster default
+
+# --- Profiles (seed data for config PVC) ---
+# Initial profiles.json content. Written to PVC on first install only.
+# After that, admin edits profiles.json directly on the PVC.
+# If empty, hub_profiles auto-creates a default profile.
+profiles: {}
+
+# --- Shared Volumes ---
+# PVCs created for shared data. Referenced by name in profiles.json volumes.
+# Example:
+#   sharedVolumes:
+#     shared-data:
+#       capacity: "50Gi"
+#       storageClassName: "nfs"
+#       accessMode: "ReadWriteMany"
+sharedVolumes: {}
+
+# --- Singleuser ---
+singleuser:
+  image:
+    name: "hugr-lab/hub-singleuser"
+    tag: "latest"
+    pullPolicy: "IfNotPresent"
+  storage:
+    capacity: "10Gi"
+    storageClassName: ""            # Empty = cluster default
+
+# --- Ingress ---
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts: []
+  tls: []
+
+# --- z2jh subchart configuration ---
+jupyterhub:
+  hub:
+    image:
+      name: "hugr-lab/hub"
+      tag: "latest"
+      pullPolicy: "IfNotPresent"
+    extraEnv:
+      HUGR_SPAWNER:
+        value: "kubernetes"
+      HUGR_SECRET_PROVIDER:
+        value: "k8s"
+      HUGR_PROFILES_PATH:
+        value: "/opt/hub/config/profiles.json"
+    extraVolumes:
+      - name: hub-config
+        persistentVolumeClaim:
+          claimName: hugr-hub-config
+    extraVolumeMounts:
+      - name: hub-config
+        mountPath: /opt/hub/config
+
+  proxy:
+    service:
+      type: ClusterIP
+
+  singleuser:
+    storage:
+      type: dynamic
+      capacity: "10Gi"
+      homeMountPath: /home/jovyan
+
+  scheduling:
+    userScheduler:
+      enabled: false
+
+  cull:
+    enabled: false  # We use our own culler (idle-culler-with-notify.py)

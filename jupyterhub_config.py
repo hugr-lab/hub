@@ -11,7 +11,8 @@ import logging
 
 import httpx
 from oauthenticator.generic import GenericOAuthenticator
-from dockerspawner import DockerSpawner
+
+SPAWNER_TYPE = os.environ.get("HUGR_SPAWNER", "docker")
 
 logger = logging.getLogger(__name__)
 
@@ -206,23 +207,60 @@ if oidc.get("end_session_url"):
 # Spawner
 # ===========================================================================
 
-c.JupyterHub.spawner_class = DockerSpawner
+if SPAWNER_TYPE == "kubernetes":
+    from kubespawner import KubeSpawner
 
-c.DockerSpawner.image = os.environ.get(
-    "SINGLEUSER_IMAGE", "hugr-lab/hub-singleuser:latest"
-)
-c.DockerSpawner.network_name = os.environ.get("DOCKER_NETWORK", "hub-network")
-c.DockerSpawner.remove = True
-c.DockerSpawner.use_internal_ip = True
-c.JupyterHub.hub_connect_ip = os.environ.get("HUB_CONNECT_IP", "")
+    c.JupyterHub.spawner_class = KubeSpawner
 
-# Allow spawned containers to reach host services + FUSE for storage mounts
-c.DockerSpawner.extra_host_config = {
-    "extra_hosts": {"host.docker.internal": "host-gateway"},
-    "cap_add": ["SYS_ADMIN"],
-    "devices": ["/dev/fuse:/dev/fuse:rwm"],
-    "security_opt": ["apparmor:unconfined"],
-}
+    c.KubeSpawner.image = os.environ.get(
+        "SINGLEUSER_IMAGE", "hugr-lab/hub-singleuser:latest"
+    )
+
+    # PVC for user home directory
+    c.KubeSpawner.storage_pvc_ensure = True
+    _storage_class = os.environ.get("STORAGE_CLASS", "")
+    if _storage_class:
+        c.KubeSpawner.storage_class = _storage_class
+    c.KubeSpawner.storage_capacity = os.environ.get("STORAGE_CAPACITY", "10Gi")
+    c.KubeSpawner.storage_access_modes = ["ReadWriteOnce"]
+
+    # FUSE mounts require privileged container (s3fs, blobfuse2)
+    # Entrypoint runs as root for FUSE, then gosu drops to jovyan
+    _fuse_enabled = os.environ.get("HUGR_FUSE_ENABLED", "false").lower() == "true"
+    if _fuse_enabled:
+        c.KubeSpawner.extra_container_config = {
+            "securityContext": {
+                "privileged": True,
+                "capabilities": {"add": ["SYS_ADMIN"]},
+            }
+        }
+
+    # Profile list from profiles.json
+    from hub_profiles import load_profiles
+    from hub_profiles.spawner import build_k8s_profiles
+    _k8s_config = load_profiles()
+    c.KubeSpawner.profile_list = build_k8s_profiles(_k8s_config)
+
+else:
+    from dockerspawner import DockerSpawner
+
+    c.JupyterHub.spawner_class = DockerSpawner
+
+    c.DockerSpawner.image = os.environ.get(
+        "SINGLEUSER_IMAGE", "hugr-lab/hub-singleuser:latest"
+    )
+    c.DockerSpawner.network_name = os.environ.get("DOCKER_NETWORK", "hub-network")
+    c.DockerSpawner.remove = True
+    c.DockerSpawner.use_internal_ip = True
+    c.JupyterHub.hub_connect_ip = os.environ.get("HUB_CONNECT_IP", "")
+
+    # Allow spawned containers to reach host services + FUSE for storage mounts
+    c.DockerSpawner.extra_host_config = {
+        "extra_hosts": {"host.docker.internal": "host-gateway"},
+        "cap_add": ["SYS_ADMIN"],
+        "devices": ["/dev/fuse:/dev/fuse:rwm"],
+        "security_opt": ["apparmor:unconfined"],
+    }
 
 # ---------------------------------------------------------------------------
 # Profile selection UI (when user has multiple profile matches)
@@ -284,12 +322,12 @@ def _options_form(spawner):
     html += '</div>'
     return html
 
-c.DockerSpawner.options_form = _options_form
+c.Spawner.options_form = _options_form
 
 def _options_from_form(formdata):
     return {"profile": formdata.get("profile", [""])[0]}
 
-c.DockerSpawner.options_from_form = _options_from_form
+c.Spawner.options_from_form = _options_from_form
 
 # Persistent user data — base volume set here, additional mounts from profiles.json in pre_spawn_hook
 
@@ -338,10 +376,11 @@ async def pre_spawn_hook(spawner, auth_state):
         auth_state=auth_state,
         access_token=access_token,
     )
-    # Merge with base volumes (user workspace)
-    base_volumes = {"hub-user-{username}": "/home/jovyan/work"}
-    base_volumes.update(storage_volumes)
-    spawner.volumes = base_volumes
+    # Merge with base volumes (Docker only — K8s uses PVC via KubeSpawner)
+    if SPAWNER_TYPE != "kubernetes":
+        base_volumes = {"hub-user-{username}": "/home/jovyan/work"}
+        base_volumes.update(storage_volumes)
+        spawner.volumes = base_volumes
 
     # 6. Pass Hugr connection
     spawner.environment["HUGR_URL"] = HUGR_URL
@@ -375,7 +414,7 @@ c.JupyterHub.services = [
     {
         "name": "idle-culler",
         "command": [
-            sys.executable, "/srv/jupyterhub/scripts/idle-culler-with-notify.py",
+            sys.executable, "/opt/hub/scripts/idle-culler-with-notify.py",
         ],
         "environment": {
             "HUGR_IDLE_TIMEOUT": str(_idle_timeout),
