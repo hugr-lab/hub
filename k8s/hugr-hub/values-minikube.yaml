@@ -4,8 +4,10 @@
 # Prerequisites:
 #   - Hugr on host at localhost:15004
 #   - Keycloak on host at localhost:18070
-#   - Images loaded: minikube image load hugr-lab/hub:latest
-#                    minikube image load hugr-lab/hub-singleuser:latest
+#   - Images built inside minikube docker:
+#     eval $(minikube docker-env)
+#     docker build -f Dockerfile.hub -t hub-jupyterhub:latest .
+#     docker build -f Dockerfile.singleuser -t hub-jupyter:latest .
 # =============================================================================
 
 hub:
@@ -19,24 +21,67 @@ hub:
   profiles:
     claim: "x-hub-profile"
     roleClaim: "x-hugr-role"
-  secretProvider: "env"             # Use env vars on minikube (no K8s secret mounts)
+  secretProvider: "env"
   connectionName: "default"
+
+# Initial profiles.json — seeded to PVC on first install
+profiles:
+  default_profile: "small"
+  profiles:
+    small:
+      display_name: "Small"
+      description: "2 CPU, 4GB RAM"
+      mem_limit: "4G"
+      mem_guarantee: "512M"
+      cpu_limit: 2.0
+      cpu_guarantee: 0.25
+      rank: 1
+      volumes:
+        shared-data:
+          mount: "/home/jovyan/shared"
+          mode: "ro"
+    medium:
+      display_name: "Medium"
+      description: "4 CPU, 8GB RAM"
+      mem_limit: "8G"
+      mem_guarantee: "1G"
+      cpu_limit: 4.0
+      cpu_guarantee: 0.5
+      rank: 2
+      volumes:
+        shared-data:
+          mount: "/home/jovyan/shared"
+          mode: "rw"
+  role_map:
+    admin: "medium"
+    analyst: "small"
+  storage:
+    volumes:
+      shared-data:
+        type: "local"
+    credentials: {}
+
+# Shared PVCs — referenced by profiles.json storage.volumes
+sharedVolumes:
+  shared-data:
+    capacity: "1Gi"
+    accessMode: "ReadWriteMany"
 
 singleuser:
   image:
     name: "hub-jupyter"
     tag: "latest"
-    pullPolicy: "Never"             # Use locally loaded images
+    pullPolicy: "Never"
   storage:
     capacity: "2Gi"
-    storageClassName: ""            # minikube default (hostpath)
+    storageClassName: ""
 
 jupyterhub:
   hub:
     image:
       name: "hub-jupyterhub"
       tag: "latest"
-      pullPolicy: "Never"          # Use locally loaded images
+      pullPolicy: "Never"
     existingSecret: hugr-hub-secrets
     config: {}
     extraConfig:
@@ -70,6 +115,13 @@ jupyterhub:
           secretKeyRef:
             name: hugr-hub-secrets
             key: OIDC_CLIENT_SECRET
+    extraVolumes:
+      - name: hub-config
+        persistentVolumeClaim:
+          claimName: hugr-hub-config
+    extraVolumeMounts:
+      - name: hub-config
+        mountPath: /opt/hub/config
 
   proxy:
     service:

@@ -21,10 +21,25 @@ hub:
     roleClaim: "x-hugr-role"        # OIDC claim for Hugr role
   secretProvider: "k8s"             # Secret provider: env, k8s
   connectionName: "default"         # Managed connection name in workspace
+  # PVC for hub config (profiles.json). Admin edits live, hot-reload on every spawn.
+  config_storage:
+    storageClassName: ""            # Empty = cluster default
 
-# --- Profiles (becomes ConfigMap) ---
-# Entire profiles.json content. If empty, default is auto-created by hub_profiles.
+# --- Profiles (seed data for config PVC) ---
+# Initial profiles.json content. Written to PVC on first install only.
+# After that, admin edits profiles.json directly on the PVC.
+# If empty, hub_profiles auto-creates a default profile.
 profiles: {}
+
+# --- Shared Volumes ---
+# PVCs created for shared data. Referenced by name in profiles.json volumes.
+# Example:
+#   sharedVolumes:
+#     shared-data:
+#       capacity: "50Gi"
+#       storageClassName: "nfs"
+#       accessMode: "ReadWriteMany"
+sharedVolumes: {}
 
 # --- Singleuser ---
 singleuser:
@@ -56,15 +71,15 @@ jupyterhub:
         value: "kubernetes"
       HUGR_SECRET_PROVIDER:
         value: "k8s"
+      HUGR_PROFILES_PATH:
+        value: "/opt/hub/config/profiles.json"
     extraVolumes:
-      - name: profiles-config
-        configMap:
-          name: hugr-hub-profiles
+      - name: hub-config
+        persistentVolumeClaim:
+          claimName: hugr-hub-config
     extraVolumeMounts:
-      - name: profiles-config
-        mountPath: /opt/hub/config/profiles.json
-        subPath: profiles.json
-        readOnly: true
+      - name: hub-config
+        mountPath: /opt/hub/config
 
   proxy:
     service:
