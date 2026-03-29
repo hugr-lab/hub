@@ -1,0 +1,11 @@
+apiVersion: v2
+name: hugr-hub
+description: Analytics Hub — JupyterHub with Hugr-connected kernels
+version: 0.1.0
+appVersion: "1.0.0"
+type: application
+
+dependencies:
+  - name: jupyterhub
+    version: "4.*"
+    repository: "https://hub.jupyter.org/helm-chart/"

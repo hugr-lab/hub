@@ -1,0 +1,11 @@
+.git
+.gitignore
+.DS_Store
+*.swp
+*.tmp
+specs/
+design/
+bench/
+shared/
+*.md
+!Chart.yaml

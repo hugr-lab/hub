@@ -1,0 +1,15 @@
+Analytics Hub has been deployed!
+
+To access JupyterHub:
+
+  kubectl port-forward -n {{ .Release.Namespace }} svc/proxy-public 8000:80
+
+Then open http://localhost:8000
+
+To check hub pod status:
+
+  kubectl get pods -n {{ .Release.Namespace }} -l component=hub
+
+To view hub logs:
+
+  kubectl logs -n {{ .Release.Namespace }} -l component=hub

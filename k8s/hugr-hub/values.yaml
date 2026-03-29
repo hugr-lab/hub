@@ -1,0 +1,84 @@
+# =============================================================================
+# Analytics Hub — Helm Values
+# =============================================================================
+
+# --- Hub Configuration ---
+hub:
+  hugrUrl: ""                       # Required: Hugr server URL (e.g., http://hugr:15000)
+  baseDomain: ""                    # Hub external URL for OIDC redirect
+  oidc:
+    clientId: ""                    # OIDC client ID (auto-discovered from Hugr if empty)
+    clientSecret: ""                # Required: OIDC client secret
+    tlsSkipVerify: false
+  hugrTlsSkipVerify: false
+  hugrSecretKey: ""                 # Management secret (optional, for Hub Service)
+  admin:
+    users: ""                       # Comma-separated admin usernames
+    claim: ""                       # OIDC claim for admin detection
+    values: "admin"                 # Claim values that grant admin
+  profiles:
+    claim: ""                       # OIDC claim for profile assignment
+    roleClaim: "x-hugr-role"        # OIDC claim for Hugr role
+  secretProvider: "k8s"             # Secret provider: env, k8s
+  connectionName: "default"         # Managed connection name in workspace
+
+# --- Profiles (becomes ConfigMap) ---
+# Entire profiles.json content. If empty, default is auto-created by hub_profiles.
+profiles: {}
+
+# --- Singleuser ---
+singleuser:
+  image:
+    name: "hugr-lab/hub-singleuser"
+    tag: "latest"
+    pullPolicy: "IfNotPresent"
+  storage:
+    capacity: "10Gi"
+    storageClassName: ""            # Empty = cluster default
+
+# --- Ingress ---
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts: []
+  tls: []
+
+# --- z2jh subchart configuration ---
+jupyterhub:
+  hub:
+    image:
+      name: "hugr-lab/hub"
+      tag: "latest"
+      pullPolicy: "IfNotPresent"
+    extraEnv:
+      HUGR_SPAWNER:
+        value: "kubernetes"
+      HUGR_SECRET_PROVIDER:
+        value: "k8s"
+    extraVolumes:
+      - name: profiles-config
+        configMap:
+          name: hugr-hub-profiles
+    extraVolumeMounts:
+      - name: profiles-config
+        mountPath: /srv/jupyterhub/config/profiles.json
+        subPath: profiles.json
+        readOnly: true
+
+  proxy:
+    service:
+      type: ClusterIP
+
+  singleuser:
+    storage:
+      type: dynamic
+      capacity: "10Gi"
+      homeMountPath: /home/jovyan
+
+  scheduling:
+    userScheduler:
+      enabled: false
+
+  cull:
+    enabled: false  # We use our own culler (idle-culler-with-notify.py)

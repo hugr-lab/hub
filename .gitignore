@@ -32,6 +32,10 @@ hub-data/
 hugr-data/
 hub-db-data/
 
+# Helm (downloaded dependencies)
+k8s/*/charts/
+k8s/*/Chart.lock
+
 # IDE
 .idea/
 .vscode/

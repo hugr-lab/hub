@@ -1,0 +1,88 @@
+# =============================================================================
+# Minikube development overrides
+#
+# Prerequisites:
+#   - Hugr on host at localhost:15004
+#   - Keycloak on host at localhost:18070
+#   - Images loaded: minikube image load hugr-lab/hub:latest
+#                    minikube image load hugr-lab/hub-singleuser:latest
+# =============================================================================
+
+hub:
+  hugrUrl: "http://host.minikube.internal:15004"
+  baseDomain: "http://localhost:8000"
+  oidc:
+    clientId: "hugr-hub"
+    clientSecret: "change-me"       # Override with --set hub.oidc.clientSecret=...
+  admin:
+    users: "admin"
+  profiles:
+    claim: "x-hub-profile"
+    roleClaim: "x-hugr-role"
+  secretProvider: "env"             # Use env vars on minikube (no K8s secret mounts)
+  connectionName: "default"
+
+singleuser:
+  image:
+    name: "hugr-lab/hub-singleuser"
+    tag: "latest"
+    pullPolicy: "Never"             # Use locally loaded images
+  storage:
+    capacity: "2Gi"
+    storageClassName: ""            # minikube default (hostpath)
+
+jupyterhub:
+  hub:
+    image:
+      name: "hugr-lab/hub"
+      tag: "latest"
+      pullPolicy: "Never"          # Use locally loaded images
+    extraEnv:
+      HUGR_SPAWNER:
+        value: "kubernetes"
+      HUGR_URL:
+        value: "http://host.minikube.internal:15004"
+      HUB_BASE_URL:
+        value: "http://localhost:8000"
+      HUGR_SECRET_PROVIDER:
+        value: "env"
+      OIDC_CLIENT_ID:
+        value: "hugr-hub"
+      HUGR_ADMIN_USERS:
+        value: "admin"
+      HUGR_ROLE_CLAIM:
+        value: "x-hugr-role"
+      HUGR_PROFILE_CLAIM:
+        value: "x-hub-profile"
+      HUGR_CONNECTION_NAME:
+        value: "default"
+      SINGLEUSER_IMAGE:
+        value: "hugr-lab/hub-singleuser:latest"
+      OIDC_CLIENT_SECRET:
+        valueFrom:
+          secretKeyRef:
+            name: hugr-hub-secrets
+            key: OIDC_CLIENT_SECRET
+
+  proxy:
+    service:
+      type: NodePort
+      nodePorts:
+        http: 30080
+
+  singleuser:
+    image:
+      name: "hugr-lab/hub-singleuser"
+      tag: "latest"
+      pullPolicy: "Never"
+    storage:
+      type: dynamic
+      capacity: "2Gi"
+      homeMountPath: /home/jovyan
+
+  scheduling:
+    userScheduler:
+      enabled: false
+
+  cull:
+    enabled: false
