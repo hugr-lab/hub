@@ -115,6 +115,15 @@ jupyterhub:
           secretKeyRef:
             name: hugr-hub-secrets
             key: OIDC_CLIENT_SECRET
+      # Storage credentials (resolved by hub_profiles via ${secret:KEY})
+      MINIO_USER:
+        value: "minio_admin"
+      MINIO_PASSWORD:
+        value: "minio_password123"
+      MINIO_ENDPOINT:
+        value: "http://host.minikube.internal:18080"
+      AZURE_HUGRHUBTEST_KEY:
+        value: ""  # Override with --set
     extraVolumes:
       - name: hub-config
         persistentVolumeClaim:
@@ -138,6 +147,12 @@ jupyterhub:
       type: dynamic
       capacity: "2Gi"
       homeMountPath: /home/jovyan
+    # FUSE mounts (s3fs, blobfuse2) require root + SYS_ADMIN
+    uid: 0
+    allowPrivilegeEscalation: true
+    extraPodConfig:
+      securityContext:
+        fsGroup: 0
 
   prePuller:
     hook:
