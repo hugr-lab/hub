@@ -224,6 +224,17 @@ if SPAWNER_TYPE == "kubernetes":
     c.KubeSpawner.storage_capacity = os.environ.get("STORAGE_CAPACITY", "10Gi")
     c.KubeSpawner.storage_access_modes = ["ReadWriteOnce"]
 
+    # FUSE mounts require privileged container (s3fs, blobfuse2)
+    # Entrypoint runs as root for FUSE, then gosu drops to jovyan
+    _fuse_enabled = os.environ.get("HUGR_FUSE_ENABLED", "false").lower() == "true"
+    if _fuse_enabled:
+        c.KubeSpawner.extra_container_config = {
+            "securityContext": {
+                "privileged": True,
+                "capabilities": {"add": ["SYS_ADMIN"]},
+            }
+        }
+
     # Profile list from profiles.json
     from hub_profiles import load_profiles
     from hub_profiles.spawner import build_k8s_profiles

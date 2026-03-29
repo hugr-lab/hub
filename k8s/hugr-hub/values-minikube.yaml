@@ -110,6 +110,8 @@ jupyterhub:
         value: "/opt/hub/config/profiles.json"
       SINGLEUSER_IMAGE:
         value: "hub-jupyter:latest"
+      HUGR_FUSE_ENABLED:
+        value: "false"
       OIDC_CLIENT_SECRET:
         valueFrom:
           secretKeyRef:
@@ -143,6 +145,11 @@ jupyterhub:
       name: "hub-jupyter"
       tag: "latest"
       pullPolicy: "Never"
+    # Disable fsGroup — CSI FUSE volumes (S3) don't support chown
+    fsGid: null
+    extraPodConfig:
+      securityContext:
+        fsGroupChangePolicy: OnRootMismatch
     storage:
       type: dynamic
       capacity: "2Gi"
