@@ -147,6 +147,7 @@ jupyterhub:
       type: dynamic
       capacity: "2Gi"
       homeMountPath: /home/jovyan
+    startTimeout: 120
     # FUSE mounts (s3fs, blobfuse2) require root + SYS_ADMIN
     uid: 0
     allowPrivilegeEscalation: true
