@@ -116,22 +116,30 @@ def _ensure_fuse_capabilities(spawner):
 def _add_k8s_pvc_volume(spawner, vol_name: str, mount_path: str, mode: str):
     """K8s: add PVC-backed volume mount to KubeSpawner."""
     safe_name = vol_name.replace(".", "-").replace("_", "-").lower()
-    if not hasattr(spawner, "volume_mounts"):
-        spawner.volume_mounts = []
-    if not hasattr(spawner, "volumes"):
-        spawner.volumes = []
-    spawner.volume_mounts.append({
+
+    # KubeSpawner volume_mounts/volumes can be list or dict depending on z2jh config
+    mounts = getattr(spawner, "volume_mounts", [])
+    if not isinstance(mounts, list):
+        mounts = list(mounts) if mounts else []
+    mounts.append({
         "name": safe_name,
         "mountPath": mount_path,
         "readOnly": mode == "ro",
     })
-    spawner.volumes.append({
+    spawner.volume_mounts = mounts
+
+    vols = getattr(spawner, "volumes", [])
+    if not isinstance(vols, list):
+        vols = list(vols) if vols else []
+    vols.append({
         "name": safe_name,
         "persistentVolumeClaim": {
             "claimName": safe_name,
             "readOnly": mode == "ro",
         },
     })
+    spawner.volumes = vols
+
     log.info("K8s PVC volume '%s' at %s (mode=%s)", safe_name, mount_path, mode)
 
 
