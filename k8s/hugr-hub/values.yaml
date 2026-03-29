@@ -22,7 +22,7 @@ hub:
   secretProvider: "k8s"             # Secret provider: env, k8s
   connectionName: "default"         # Managed connection name in workspace
   # PVC for hub config (profiles.json). Admin edits live, hot-reload on every spawn.
-  config_storage:
+  configStorage:
     storageClassName: ""            # Empty = cluster default
 
 # --- Profiles (seed data for config PVC) ---
@@ -66,20 +66,27 @@ jupyterhub:
       name: "hugr-lab/hub"
       tag: "latest"
       pullPolicy: "IfNotPresent"
+    # Env vars are set via configmap-hub-env.yaml template (from hub.* values)
+    # Add only secrets and extra vars not in hub.* here
     extraEnv:
-      HUGR_SPAWNER:
-        value: "kubernetes"
-      HUGR_SECRET_PROVIDER:
-        value: "k8s"
-      HUGR_PROFILES_PATH:
-        value: "/opt/hub/config/profiles.json"
+      OIDC_CLIENT_SECRET:
+        valueFrom:
+          secretKeyRef:
+            name: hugr-hub-secrets
+            key: OIDC_CLIENT_SECRET
     extraVolumes:
       - name: hub-config
         persistentVolumeClaim:
           claimName: hugr-hub-config
+      - name: hub-env
+        configMap:
+          name: hugr-hub-env
     extraVolumeMounts:
       - name: hub-config
         mountPath: /opt/hub/config
+      - name: hub-env
+        mountPath: /opt/hub/env
+        readOnly: true
 
   proxy:
     service:
