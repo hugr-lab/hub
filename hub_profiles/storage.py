@@ -118,9 +118,10 @@ def _add_k8s_pvc_volume(spawner, vol_name: str, mount_path: str, mode: str):
     safe_name = vol_name.replace(".", "-").replace("_", "-").lower()
 
     # KubeSpawner volume_mounts/volumes can be list or dict depending on z2jh config
-    mounts = getattr(spawner, "volume_mounts", [])
-    if not isinstance(mounts, list):
-        mounts = list(mounts) if mounts else []
+    mounts = list(getattr(spawner, "volume_mounts", None) or [])
+    if mounts and isinstance(mounts[0], str):
+        # dict was converted to list of keys — reset
+        mounts = []
     mounts.append({
         "name": safe_name,
         "mountPath": mount_path,
@@ -128,9 +129,9 @@ def _add_k8s_pvc_volume(spawner, vol_name: str, mount_path: str, mode: str):
     })
     spawner.volume_mounts = mounts
 
-    vols = getattr(spawner, "volumes", [])
-    if not isinstance(vols, list):
-        vols = list(vols) if vols else []
+    vols = list(getattr(spawner, "volumes", None) or [])
+    if vols and isinstance(vols[0], str):
+        vols = []
     vols.append({
         "name": safe_name,
         "persistentVolumeClaim": {
