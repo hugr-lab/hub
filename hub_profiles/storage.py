@@ -89,32 +89,27 @@ def build_volumes(
     return volumes
 
 
-_fuse_enabled = False
-
 def _ensure_fuse_capabilities(spawner):
-    """Add SYS_ADMIN + /dev/fuse to spawner (Docker only). Called once."""
-    global _fuse_enabled
-    if _fuse_enabled:
-        return
-    spawner_type = os.environ.get("HUGR_SPAWNER", "docker")
-    if spawner_type == "docker":
-        if not hasattr(spawner, "extra_host_config"):
-            spawner.extra_host_config = {}
-        cap_add = spawner.extra_host_config.get("cap_add", [])
-        if "SYS_ADMIN" not in cap_add:
-            cap_add.append("SYS_ADMIN")
-            spawner.extra_host_config["cap_add"] = cap_add
-        devices = spawner.extra_host_config.get("devices", [])
-        if "/dev/fuse:/dev/fuse:rwm" not in devices:
-            devices.append("/dev/fuse:/dev/fuse:rwm")
-            spawner.extra_host_config["devices"] = devices
-        spawner.extra_host_config["security_opt"] = ["apparmor:unconfined"]
-    _fuse_enabled = True
-    log.info("FUSE capabilities enabled for container")
+    """Add SYS_ADMIN + /dev/fuse to spawner (Docker only). Idempotent per spawner."""
+    if not hasattr(spawner, "extra_host_config"):
+        spawner.extra_host_config = {}
+    cap_add = spawner.extra_host_config.get("cap_add", [])
+    if "SYS_ADMIN" not in cap_add:
+        cap_add.append("SYS_ADMIN")
+        spawner.extra_host_config["cap_add"] = cap_add
+    devices = spawner.extra_host_config.get("devices", [])
+    if "/dev/fuse:/dev/fuse:rwm" not in devices:
+        devices.append("/dev/fuse:/dev/fuse:rwm")
+        spawner.extra_host_config["devices"] = devices
+    spawner.extra_host_config["security_opt"] = ["apparmor:unconfined"]
 
 
 def _add_k8s_pvc_volume(spawner, vol_name: str, mount_path: str, mode: str):
-    """K8s: add PVC-backed volume mount to KubeSpawner."""
+    """K8s: add PVC-backed volume mount to KubeSpawner.
+
+    PVC claimName = vol_name (normalized: dots/underscores → hyphens, lowercase).
+    The PVC must be pre-created (by Helm chart pvc-shared.yaml or admin).
+    """
     safe_name = vol_name.replace(".", "-").replace("_", "-").lower()
 
     # KubeSpawner volume_mounts/volumes — ensure list, deduplicate by name/mountPath

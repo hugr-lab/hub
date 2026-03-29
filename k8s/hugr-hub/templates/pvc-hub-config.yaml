@@ -10,6 +10,6 @@ spec:
   resources:
     requests:
       storage: 64Mi
-  {{- if .Values.hub.config_storage.storageClassName }}
-  storageClassName: {{ .Values.hub.config_storage.storageClassName | quote }}
+  {{- if .Values.hub.configStorage.storageClassName }}
+  storageClassName: {{ .Values.hub.configStorage.storageClassName | quote }}
   {{- end }}

@@ -16,6 +16,20 @@ SPAWNER_TYPE = os.environ.get("HUGR_SPAWNER", "docker")
 
 logger = logging.getLogger(__name__)
 
+# K8s: load env vars from ConfigMap mounted at /opt/hub/env/
+# (z2jh doesn't support envFrom, so we load from files)
+_env_dir = "/opt/hub/env"
+if os.path.isdir(_env_dir):
+    for name in os.listdir(_env_dir):
+        if name.startswith(".") or name.startswith(".."):
+            continue
+        path = os.path.join(_env_dir, name)
+        if os.path.isfile(path):
+            with open(path) as f:
+                val = f.read().strip()
+                if val and name not in os.environ:
+                    os.environ[name] = val
+
 # ===========================================================================
 # Required configuration
 # ===========================================================================

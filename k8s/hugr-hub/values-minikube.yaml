@@ -10,6 +10,7 @@
 #     docker build -f Dockerfile.singleuser -t hub-jupyter:latest .
 # =============================================================================
 
+# --- Hub settings (transformed to env vars via configmap-hub-env.yaml) ---
 hub:
   hugrUrl: "http://host.minikube.internal:15004"
   baseDomain: "http://localhost:8000"
@@ -61,7 +62,7 @@ profiles:
         type: "local"
     credentials: {}
 
-# Shared PVCs — referenced by profiles.json storage.volumes
+# Shared PVCs
 sharedVolumes:
   shared-data:
     capacity: "1Gi"
@@ -76,6 +77,7 @@ singleuser:
     capacity: "2Gi"
     storageClassName: ""
 
+# --- z2jh overrides (only what differs from defaults + configmap-hub-env) ---
 jupyterhub:
   hub:
     image:
@@ -87,52 +89,20 @@ jupyterhub:
     extraConfig:
       zz-load-hub-config: |
         load_subconfig('/opt/hub/jupyterhub_config.py')
+    # Only env vars NOT covered by configmap-hub-env
     extraEnv:
-      HUGR_SPAWNER:
-        value: "kubernetes"
-      HUGR_URL:
-        value: "http://host.minikube.internal:15004"
-      HUB_BASE_URL:
-        value: "http://localhost:8000"
-      HUGR_SECRET_PROVIDER:
-        value: "env"
-      OIDC_CLIENT_ID:
-        value: "hugr-hub"
-      HUGR_ADMIN_USERS:
-        value: "admin"
-      HUGR_ROLE_CLAIM:
-        value: "x-hugr-role"
-      HUGR_PROFILE_CLAIM:
-        value: "x-hub-profile"
-      HUGR_CONNECTION_NAME:
-        value: "default"
-      HUGR_PROFILES_PATH:
-        value: "/opt/hub/config/profiles.json"
-      SINGLEUSER_IMAGE:
-        value: "hub-jupyter:latest"
-      HUGR_FUSE_ENABLED:
-        value: "false"
       OIDC_CLIENT_SECRET:
         valueFrom:
           secretKeyRef:
             name: hugr-hub-secrets
             key: OIDC_CLIENT_SECRET
-      # Storage credentials (resolved by hub_profiles via ${secret:KEY})
+      # Storage credentials for profiles.json ${secret:KEY} resolution
       MINIO_USER:
         value: "minio_admin"
       MINIO_PASSWORD:
         value: "minio_password123"
       MINIO_ENDPOINT:
         value: "http://host.minikube.internal:18080"
-      AZURE_HUGRHUBTEST_KEY:
-        value: ""  # Override with --set
-    extraVolumes:
-      - name: hub-config
-        persistentVolumeClaim:
-          claimName: hugr-hub-config
-    extraVolumeMounts:
-      - name: hub-config
-        mountPath: /opt/hub/config
 
   proxy:
     service:
