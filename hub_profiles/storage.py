@@ -184,7 +184,12 @@ def _add_fuse_volume(
         mount_config["access_token"] = access_token
 
     env_name = f"MOUNT_{vol_name.upper().replace('-', '_').replace('.', '_')}"
-    spawner.environment[env_name] = json.dumps(mount_config)
+    value = json.dumps(mount_config)
+    # KubeSpawner runs .format() on env values — escape braces
+    spawner_type = os.environ.get("HUGR_SPAWNER", "docker")
+    if spawner_type == "kubernetes":
+        value = value.replace("{", "{{").replace("}", "}}")
+    spawner.environment[env_name] = value
 
 
 def _has_scope(access_token: str, required_scope: str) -> bool:
