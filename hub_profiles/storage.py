@@ -117,11 +117,13 @@ def _add_k8s_pvc_volume(spawner, vol_name: str, mount_path: str, mode: str):
     """K8s: add PVC-backed volume mount to KubeSpawner."""
     safe_name = vol_name.replace(".", "-").replace("_", "-").lower()
 
-    # KubeSpawner volume_mounts/volumes can be list or dict depending on z2jh config
+    # KubeSpawner volume_mounts/volumes — ensure list, deduplicate by name/mountPath
     mounts = list(getattr(spawner, "volume_mounts", None) or [])
-    if mounts and isinstance(mounts[0], str):
-        # dict was converted to list of keys — reset
-        mounts = []
+    mounts = [m for m in mounts if isinstance(m, dict)]
+    # Skip if already mounted at this path
+    if any(m.get("mountPath") == mount_path for m in mounts):
+        log.info("K8s volume mount at %s already exists, skipping", mount_path)
+        return
     mounts.append({
         "name": safe_name,
         "mountPath": mount_path,
@@ -130,15 +132,16 @@ def _add_k8s_pvc_volume(spawner, vol_name: str, mount_path: str, mode: str):
     spawner.volume_mounts = mounts
 
     vols = list(getattr(spawner, "volumes", None) or [])
-    if vols and isinstance(vols[0], str):
-        vols = []
-    vols.append({
-        "name": safe_name,
-        "persistentVolumeClaim": {
-            "claimName": safe_name,
-            "readOnly": mode == "ro",
-        },
-    })
+    vols = [v for v in vols if isinstance(v, dict)]
+    # Skip if volume with same name already exists
+    if not any(v.get("name") == safe_name for v in vols):
+        vols.append({
+            "name": safe_name,
+            "persistentVolumeClaim": {
+                "claimName": safe_name,
+                "readOnly": mode == "ro",
+            },
+        })
     spawner.volumes = vols
 
     log.info("K8s PVC volume '%s' at %s (mode=%s)", safe_name, mount_path, mode)
