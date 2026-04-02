@@ -56,6 +56,8 @@ Three-layer architecture: **Control Plane** (JupyterHub + Hub Service) → **Use
 - profiles.json (file-based config), Docker named volumes, NFS, S3/Azure/GCS FUSE (002-resource-limits)
 - Python 3.12+ (JupyterHub config, hub_profiles module), Helm/YAML (chart templates) + z2jh Helm chart 4.x (subchart), kubespawner, jupyterhub 5.x, oauthenticator, httpx (003-k8s-deployment)
 - PVC (user home), ConfigMap (profiles.json), K8s Secrets (credentials), FUSE init containers (S3/Azure on minikube) (003-k8s-deployment)
+- Go 1.26.1 (Hub Service + Agent binary), TypeScript (JupyterLab extensions) + `query-engine/client/app` (hugr-app SDK), `airport-go`, `mark3labs/mcp-go`, `query-engine/client` (Hugr GraphQL client) (004-hub-service-agent)
+- PostgreSQL 16 + pgvector (managed by Hugr via app framework) (004-hub-service-agent)
 
 ## Recent Changes
 - 001-jupyterhub-oidc-workspace: Added Python 3.12+ (JupyterHub config, connection service), Go 1.26.1 (kernel changes in hugr-kernel repo) + jupyterhub 4.x, oauthenticator, dockerspawner, httpx (Hub); hugr_connection_service (workspace)

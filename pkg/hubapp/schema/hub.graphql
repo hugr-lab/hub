@@ -1,11 +1,3 @@
-package hubapp
-
-// hubGraphQLSchema is the GraphQL SDL for hub.* tables.
-// Registered via DataSourceInfo.HugrSchema — Hugr compiles this into the GraphQL API.
-// Template parameters:
-//   - {{.EmbedderName}} — configured embedding provider name
-//   - {{.VectorSize}} — embedding vector dimensions
-const hubGraphQLSchema = `
 type users @table(name: "users") {
   id: String! @pk
   display_name: String!
@@ -198,4 +190,4 @@ type llm_usage @table(name: "llm_usage") {
   period_key: String!
   created_at: Timestamp
 }
-`
+
