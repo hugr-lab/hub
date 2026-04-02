@@ -6,7 +6,10 @@ import (
 	"log/slog"
 	"net"
 
+	"net/http"
+
 	"github.com/hugr-lab/airport-go/catalog"
+	"github.com/hugr-lab/query-engine/client"
 	"github.com/hugr-lab/query-engine/client/app"
 )
 
@@ -19,13 +22,16 @@ type HubApp struct {
 	config Config
 	logger *slog.Logger
 	mux    *app.CatalogMux
+	client *client.Client
+	server *http.Server
 }
 
-func New(cfg Config, logger *slog.Logger) *HubApp {
+func New(cfg Config, logger *slog.Logger, c *client.Client) *HubApp {
 	return &HubApp{
 		config: cfg,
 		logger: logger,
 		mux:    app.New(),
+		client: c,
 	}
 }
 
@@ -74,13 +80,32 @@ func (a *HubApp) InitDBSchemaTemplate(ctx context.Context, name string) (string,
 func (a *HubApp) Init(ctx context.Context) error {
 	a.logger.Info("hub app initialized — DB provisioned, starting services")
 
-	// TODO: start MCP server, WebSocket gateway, Agent Manager
-	// These will be added in subsequent phases
+	// Seed default agent types
+	seedAgentTypes(ctx, a.client)
+
+	// Start HTTP server (user sync API, future: MCP, WebSocket, Agent Manager)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/user/login", userLoginHandler(a.client))
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"ok"}`))
+	})
+
+	a.server = &http.Server{Addr: a.config.ListenAddr, Handler: mux}
+	go func() {
+		a.logger.Info("HTTP server starting", "addr", a.config.ListenAddr)
+		if err := a.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			a.logger.Error("HTTP server error", "error", err)
+		}
+	}()
 
 	return nil
 }
 
 func (a *HubApp) Shutdown(ctx context.Context) error {
 	a.logger.Info("hub app shutting down")
+	if a.server != nil {
+		return a.server.Shutdown(ctx)
+	}
 	return nil
 }

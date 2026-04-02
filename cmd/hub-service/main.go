@@ -22,15 +22,14 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	app := hubapp.New(cfg, logger)
+	c := client.NewClient(cfg.HugrURL, client.WithApiKeyCustomHeader(cfg.HugrSecretKey, "x-hugr-secret-key"))
+	app := hubapp.New(cfg, logger, c)
 
 	logger.Info("starting hub-service",
 		"hugr_url", cfg.HugrURL,
 		"listen", cfg.ListenAddr,
 		"flight", cfg.FlightAddr,
 	)
-
-	c := client.NewClient(cfg.HugrURL, client.WithApiKeyCustomHeader(cfg.HugrSecretKey, "x-hugr-secret-key"))
 
 	err := c.RunApplication(ctx, app,
 		client.WithSecretKey(cfg.HugrSecretKey),
