@@ -28,12 +28,11 @@ export interface AgentSession {
 
 export interface LLMProvider {
   id: string;
-  name: string;
-  provider_type: string;
-  base_url: string;
+  provider: string;
   model: string;
+  base_url: string;
+  max_tokens_per_request: number;
   enabled: boolean;
-  is_default: boolean;
 }
 
 export interface LLMBudget {
@@ -98,8 +97,8 @@ export async function fetchAgentSessions(): Promise<AgentSession[]> {
 
 export async function fetchLLMProviders(): Promise<LLMProvider[]> {
   const data = await hugrQuery(`{
-    hub { hub { llm_providers(order_by: { name: asc }) {
-      id name provider_type base_url model enabled is_default
+    hub { hub { llm_providers(order_by: { id: asc }) {
+      id provider model base_url max_tokens_per_request enabled
     } } }
   }`);
   return data?.hub?.hub?.llm_providers ?? [];
@@ -127,21 +126,20 @@ export async function fetchLLMUsage(limit = 100): Promise<LLMUsage[]> {
 }
 
 export async function insertLLMProvider(
-  provider: Omit<LLMProvider, 'id'>,
+  provider: Omit<LLMProvider, 'id'> & { id: string },
 ): Promise<string> {
   const data = await hugrQuery(
-    `mutation($name: String!, $type: String!, $url: String!, $model: String!, $enabled: Boolean!, $default: Boolean!) {
+    `mutation($id: String!, $provider: String!, $model: String!, $url: String, $enabled: Boolean) {
       hub { hub { insert_llm_providers(data: {
-        name: $name, provider_type: $type, base_url: $url, model: $model, enabled: $enabled, is_default: $default
+        id: $id, provider: $provider, model: $model, base_url: $url, enabled: $enabled
       }) { id } } }
     }`,
     {
-      name: provider.name,
-      type: provider.provider_type,
-      url: provider.base_url,
+      id: provider.id,
+      provider: provider.provider,
       model: provider.model,
+      url: provider.base_url,
       enabled: provider.enabled,
-      default: provider.is_default,
     },
   );
   return data?.hub?.hub?.insert_llm_providers?.id;
@@ -159,11 +157,6 @@ export async function updateLLMProvider(
     fields.push('enabled: $enabled');
     vars.enabled = updates.enabled;
     params.push('$enabled: Boolean!');
-  }
-  if (updates.is_default !== undefined) {
-    fields.push('is_default: $default');
-    vars.default = updates.is_default;
-    params.push('$default: Boolean!');
   }
   if (updates.base_url !== undefined) {
     fields.push('base_url: $url');

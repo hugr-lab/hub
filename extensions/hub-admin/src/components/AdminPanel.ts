@@ -192,7 +192,7 @@ export class AdminPanelWidget extends Widget {
       table.className = 'hub-admin-table';
       table.innerHTML = `
         <thead><tr>
-          <th>Name</th><th>Type</th><th>Model</th><th>Status</th><th>Actions</th>
+          <th>ID</th><th>Provider</th><th>Model</th><th>Status</th><th>Actions</th>
         </tr></thead>
       `;
       const tbody = document.createElement('tbody');
@@ -203,8 +203,8 @@ export class AdminPanelWidget extends Widget {
         const statusText = p.enabled ? 'Active' : 'Disabled';
 
         tr.innerHTML = `
-          <td>${esc(p.name)}</td>
-          <td>${esc(p.provider_type)}</td>
+          <td>${esc(p.id)}</td>
+          <td>${esc(p.provider)}</td>
           <td>${esc(p.model)}</td>
           <td><span class="hub-admin-badge ${statusClass}">${statusText}</span></td>
           <td></td>
@@ -236,11 +236,11 @@ export class AdminPanelWidget extends Widget {
     form.innerHTML = `
       <h3>Add LLM Provider</h3>
       <div class="hub-admin-form-group">
-        <label>Name</label>
-        <input type="text" id="prov-name" placeholder="claude-sonnet" />
+        <label>ID</label>
+        <input type="text" id="prov-id" placeholder="claude-main" />
       </div>
       <div class="hub-admin-form-group">
-        <label>Type</label>
+        <label>Provider</label>
         <select id="prov-type">
           <option value="anthropic">Anthropic</option>
           <option value="openai">OpenAI</option>
@@ -267,20 +267,20 @@ export class AdminPanelWidget extends Widget {
     saveBtn.className = 'hub-admin-btn hub-admin-btn--primary';
     saveBtn.textContent = 'Save';
     saveBtn.addEventListener('click', async () => {
-      const name = (form.querySelector('#prov-name') as HTMLInputElement).value;
-      const type = (form.querySelector('#prov-type') as HTMLSelectElement).value;
+      const id = (form.querySelector('#prov-id') as HTMLInputElement).value;
+      const provider = (form.querySelector('#prov-type') as HTMLSelectElement).value;
       const url = (form.querySelector('#prov-url') as HTMLInputElement).value;
       const model = (form.querySelector('#prov-model') as HTMLInputElement).value;
 
-      if (!name || !model) return;
+      if (!id || !model) return;
 
       await insertLLMProvider({
-        name,
-        provider_type: type,
+        id,
+        provider,
         base_url: url,
         model,
+        max_tokens_per_request: 4096,
         enabled: true,
-        is_default: false,
       });
       this.render();
     });
