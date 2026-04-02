@@ -28,34 +28,54 @@ func (a *HubApp) handleUserLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := a.client.Query(r.Context(),
-		`mutation($id: String!, $name: String!, $role: String!, $email: String!) {
-			hub { hub { insert_users(
-				data: {
-					id: $id
-					display_name: $name
-					hugr_role: $role
-					email: $email
-				}
-			) { id } } }
-		}`,
-		map[string]any{
-			"id":    req.UserID,
-			"name":  req.UserName,
-			"role":  req.Role,
-			"email": req.Email,
-		},
+	// Check if user exists
+	checkRes, err := a.client.Query(r.Context(),
+		`query($id: String!) { hub { hub { users(filter: { id: { eq: $id } }) { id } } } }`,
+		map[string]any{"id": req.UserID},
 	)
 	if err != nil {
-		a.logger.Error("failed to upsert user", "user_id", req.UserID, "error", err)
+		a.logger.Error("failed to check user", "user_id", req.UserID, "error", err)
 		http.Error(w, "failed to sync user", http.StatusInternalServerError)
 		return
 	}
-	defer res.Close()
-	if res.Err() != nil {
-		a.logger.Error("user upsert graphql error", "user_id", req.UserID, "error", res.Err())
-		http.Error(w, "failed to sync user", http.StatusInternalServerError)
-		return
+	defer checkRes.Close()
+
+	var existing []struct{ ID string `json:"id"` }
+	_ = checkRes.ScanData("hub.hub.users", &existing)
+
+	if len(existing) > 0 {
+		// Update
+		res, err := a.client.Query(r.Context(),
+			`mutation($id: String!, $name: String!, $role: String!, $email: String!) {
+				hub { hub { update_users(
+					filter: { id: { eq: $id } }
+					data: { display_name: $name, hugr_role: $role, email: $email }
+				) { affected_rows } } }
+			}`,
+			map[string]any{"id": req.UserID, "name": req.UserName, "role": req.Role, "email": req.Email},
+		)
+		if err != nil {
+			a.logger.Error("failed to update user", "user_id", req.UserID, "error", err)
+			http.Error(w, "failed to sync user", http.StatusInternalServerError)
+			return
+		}
+		defer res.Close()
+	} else {
+		// Insert
+		res, err := a.client.Query(r.Context(),
+			`mutation($id: String!, $name: String!, $role: String!, $email: String!) {
+				hub { hub { insert_users(
+					data: { id: $id, display_name: $name, hugr_role: $role, email: $email }
+				) { id } } }
+			}`,
+			map[string]any{"id": req.UserID, "name": req.UserName, "role": req.Role, "email": req.Email},
+		)
+		if err != nil {
+			a.logger.Error("failed to insert user", "user_id", req.UserID, "error", err)
+			http.Error(w, "failed to sync user", http.StatusInternalServerError)
+			return
+		}
+		defer res.Close()
 	}
 
 	a.logger.Info("user synced", "user_id", req.UserID, "role", req.Role)

@@ -2,30 +2,35 @@ package hubapp
 
 import "context"
 
-// seedAgentTypes inserts default agent types if not already present.
 func (a *HubApp) seedAgentTypes(ctx context.Context) {
 	types := []struct {
-		ID          string
-		DisplayName string
-		Description string
-		Image       string
+		ID, DisplayName, Description, Image string
 	}{
-		{
-			ID:          "data-analyst",
-			DisplayName: "Data Analyst",
-			Description: "Hugr data exploration agent with discovery, query, and visualization skills",
-			Image:       "hugr-lab/hub-agent:latest",
-		},
-		{
-			ID:          "openclaw",
-			DisplayName: "OpenClaw Agent",
-			Description: "Third-party OpenClaw agent runtime using Hub Service OpenAI-compatible endpoint",
-			Image:       "openclaw/agent:latest",
-		},
+		{"data-analyst", "Data Analyst", "Hugr data exploration agent with discovery, query, and visualization skills", "hugr-lab/hub-agent:latest"},
+		{"openclaw", "OpenClaw Agent", "Third-party OpenClaw agent runtime using Hub Service OpenAI-compatible endpoint", "openclaw/agent:latest"},
 	}
 
 	for _, t := range types {
+		// Check if exists
 		res, err := a.client.Query(ctx,
+			`query($id: String!) { hub { hub { agent_types(filter: { id: { eq: $id } }) { id } } } }`,
+			map[string]any{"id": t.ID},
+		)
+		if err != nil {
+			a.logger.Warn("failed to check agent type", "id", t.ID, "error", err)
+			continue
+		}
+		defer res.Close()
+
+		var existing []struct{ ID string `json:"id"` }
+		_ = res.ScanData("hub.hub.agent_types", &existing)
+		if len(existing) > 0 {
+			a.logger.Info("agent type already exists, skipping", "id", t.ID)
+			continue
+		}
+
+		// Insert
+		res2, err := a.client.Query(ctx,
 			`mutation($id: String!, $name: String!, $desc: String!, $img: String!) {
 				hub { hub { insert_agent_types(
 					data: { id: $id, display_name: $name, description: $desc, image: $img }
@@ -34,12 +39,12 @@ func (a *HubApp) seedAgentTypes(ctx context.Context) {
 			map[string]any{"id": t.ID, "name": t.DisplayName, "desc": t.Description, "img": t.Image},
 		)
 		if err != nil {
-			a.logger.Warn("failed to seed agent type (may already exist)", "id", t.ID, "error", err)
+			a.logger.Warn("failed to seed agent type", "id", t.ID, "error", err)
 			continue
 		}
-		defer res.Close()
-		if res.Err() != nil {
-			a.logger.Warn("seed agent type error", "id", t.ID, "error", res.Err())
+		defer res2.Close()
+		if res2.Err() != nil {
+			a.logger.Warn("seed agent type error", "id", t.ID, "error", res2.Err())
 			continue
 		}
 		a.logger.Info("agent type seeded", "id", t.ID)
