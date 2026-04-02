@@ -9,6 +9,7 @@ import (
 	"net/http"
 
 	"github.com/hugr-lab/airport-go/catalog"
+	"github.com/hugr-lab/hub/pkg/llmrouter"
 	"github.com/hugr-lab/hub/pkg/mcpserver"
 	"github.com/hugr-lab/query-engine/client"
 	"github.com/hugr-lab/query-engine/client/app"
@@ -85,10 +86,12 @@ func (a *HubApp) Init(ctx context.Context) error {
 	a.seedAgentTypes(ctx)
 
 	// Start HTTP server
-	mcpSrv := mcpserver.New(a.client, a.logger, a.config.LogLevel == slog.LevelDebug)
+	router := llmrouter.New(a.client, a.logger)
+	mcpSrv := mcpserver.New(a.client, router, a.logger, a.config.LogLevel == slog.LevelDebug)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/user/login", a.handleUserLogin)
 	mux.Handle("/mcp/", mcpSrv.Handler())
+	mux.Handle("/v1/", router.OpenAICompatHandler()) // OpenAI-compatible for third-party agents
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok"}`))

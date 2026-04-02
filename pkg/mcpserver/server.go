@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/hugr-lab/hub/pkg/auth"
+	"github.com/hugr-lab/hub/pkg/llmrouter"
 	"github.com/hugr-lab/query-engine/client"
 	qemcp "github.com/hugr-lab/query-engine/pkg/mcp"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -17,13 +18,15 @@ import (
 // Memory, registry, and LLM tools are added on top.
 type Server struct {
 	hugrClient *client.Client
+	llmRouter  *llmrouter.Router
 	logger     *slog.Logger
 	debug      bool
 }
 
-func New(hugrClient *client.Client, logger *slog.Logger, debug bool) *Server {
+func New(hugrClient *client.Client, llmRouter *llmrouter.Router, logger *slog.Logger, debug bool) *Server {
 	return &Server{
 		hugrClient: hugrClient,
+		llmRouter:  llmRouter,
 		logger:     logger,
 		debug:      debug,
 	}
@@ -54,6 +57,7 @@ func (s *Server) Handler() http.Handler {
 		// Hub-specific tools
 		s.registerMemoryTools(mcpSrv, userID)
 		s.registerRegistryTools(mcpSrv, userID)
+		s.registerLLMTools(mcpSrv, userID)
 
 		// Hugr tools added on top by query-engine mcp package
 		hugrMCP := qemcp.New(s.hugrClient, mcpSrv, s.debug)
