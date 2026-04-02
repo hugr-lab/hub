@@ -9,6 +9,7 @@ import (
 	"net/http"
 
 	"github.com/hugr-lab/airport-go/catalog"
+	"github.com/hugr-lab/hub/pkg/mcpserver"
 	"github.com/hugr-lab/query-engine/client"
 	"github.com/hugr-lab/query-engine/client/app"
 )
@@ -83,9 +84,11 @@ func (a *HubApp) Init(ctx context.Context) error {
 	// Seed default agent types
 	a.seedAgentTypes(ctx)
 
-	// Start HTTP server (user sync API, future: MCP, WebSocket, Agent Manager)
+	// Start HTTP server
+	mcpSrv := mcpserver.New(a.client, a.logger)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/user/login", a.handleUserLogin)
+	mux.Handle("/mcp/", mcpSrv.Handler())
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok"}`))
