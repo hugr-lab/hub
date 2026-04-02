@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+
+	"github.com/hugr-lab/hub/pkg/agent"
 )
 
 func main() {
@@ -18,13 +20,23 @@ func main() {
 		os.Exit(1)
 	}
 
+	skillsDir := os.Getenv("AGENT_SKILLS_DIR")
+	if skillsDir == "" {
+		skillsDir = "/.agent/skills"
+	}
+
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	logger.Info("hub-agent starting", "mcp_url", mcpURL)
+	a := agent.New(mcpURL, skillsDir, logger)
 
-	// TODO: implement MCP client connection, skills loading, conversation loop
-	<-ctx.Done()
+	logger.Info("hub-agent starting", "mcp_url", mcpURL, "skills_dir", skillsDir)
 
+	if err := a.Run(ctx); err != nil {
+		logger.Error("agent failed", "error", err)
+		os.Exit(1)
+	}
+
+	a.Close()
 	logger.Info("hub-agent stopped")
 }
