@@ -8,6 +8,24 @@
 ARG HUGR_KERNEL_VERSION=v0.2.14
 ARG DUCKDB_KERNEL_VERSION=v0.3.4
 
+# -----------------------------------------------------------------------------
+# Stage 1: Build Hub JupyterLab extensions (needs Node.js + Python)
+# -----------------------------------------------------------------------------
+FROM python:3.12-slim AS ext-builder
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir hatchling hatch-jupyter-builder hatch-nodejs-version "jupyterlab>=4.0.0"
+COPY extensions/hub-admin/ /src/hub-admin/
+COPY extensions/hub-chat/ /src/hub-chat/
+RUN cd /src/hub-admin && pip wheel --no-deps --wheel-dir /wheels . \
+    && cd /src/hub-chat && pip wheel --no-deps --wheel-dir /wheels .
+
+# -----------------------------------------------------------------------------
+# Stage 2: Singleuser workspace
+# -----------------------------------------------------------------------------
 FROM quay.io/jupyterhub/singleuser:latest
 
 ARG HUGR_KERNEL_VERSION
@@ -90,6 +108,10 @@ RUN pip install --no-cache-dir --break-system-packages \
    jupyter-resource-usage psutil \
    jupyterlab-git jupyterlab-execute-time jupyterlab-favorites jupyterlab-spreadsheet-editor \
    boto3
+
+# Hub extensions (wheels from ext-builder stage)
+COPY --from=ext-builder /wheels/ /tmp/wheels/
+RUN pip install --no-cache-dir --break-system-packages /tmp/wheels/*.whl && rm -rf /tmp/wheels
 
 # Enable CPU and disk monitoring (RAM is enabled by default)
 RUN echo '{"ResourceUseDisplay":{"track_cpu_percent":true,"track_disk_usage":true}}' \
