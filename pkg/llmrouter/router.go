@@ -131,6 +131,10 @@ func (r *Router) resolveProvider(ctx context.Context, providerID string) (Provid
 	if err != nil {
 		return ProviderConfig{}, fmt.Errorf("query providers: %w", err)
 	}
+	defer res.Close()
+	if res.Err() != nil {
+		return ProviderConfig{}, fmt.Errorf("query providers graphql error: %w", res.Err())
+	}
 
 	var providers []ProviderConfig
 	if err := res.ScanData("hub.hub.llm_providers", &providers); err != nil {

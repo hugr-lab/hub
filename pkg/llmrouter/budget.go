@@ -65,7 +65,7 @@ func (b *BudgetChecker) Check(ctx context.Context, userID, providerID string) er
 func (b *BudgetChecker) RecordUsage(ctx context.Context, userID, providerID string, tokensIn, tokensOut int) {
 	periodKey := currentPeriodKey("hour")
 
-	_, err := b.hugrClient.Query(ctx,
+	res, err := b.hugrClient.Query(ctx,
 		`mutation($uid: String!, $pid: String!, $tin: Int!, $tout: Int!, $pk: String!) {
 			hub { hub { insert_llm_usage(data: {
 				user_id: $uid
@@ -85,6 +85,9 @@ func (b *BudgetChecker) RecordUsage(ctx context.Context, userID, providerID stri
 	)
 	if err != nil {
 		b.logger.Warn("failed to record LLM usage", "user", userID, "error", err)
+	}
+	if res != nil {
+		defer res.Close()
 	}
 }
 
@@ -111,6 +114,10 @@ func (b *BudgetChecker) getBudget(ctx context.Context, scope, providerID string)
 	if err != nil {
 		return nil, err
 	}
+	defer res.Close()
+	if res.Err() != nil {
+		return nil, res.Err()
+	}
 
 	var budgets []budgetRule
 	if err := res.ScanData("hub.hub.llm_budgets", &budgets); err != nil || len(budgets) == 0 {
@@ -131,6 +138,10 @@ func (b *BudgetChecker) getUsage(ctx context.Context, userID, providerID, period
 	res, err := b.hugrClient.Query(ctx, gql, nil)
 	if err != nil {
 		return usageSummary{}, err
+	}
+	defer res.Close()
+	if res.Err() != nil {
+		return usageSummary{}, res.Err()
 	}
 
 	var agg []struct {

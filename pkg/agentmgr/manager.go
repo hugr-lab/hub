@@ -49,7 +49,7 @@ func (m *Manager) StartAgent(ctx context.Context, userID, agentTypeID string) (s
 	}
 
 	// 3. Record instance in hub DB
-	_, err = m.hugrClient.Query(ctx,
+	res, err := m.hugrClient.Query(ctx,
 		`mutation($uid: String!, $tid: String!, $cid: String!) {
 			hub { hub { insert_agent_instances(data: {
 				user_id: $uid
@@ -62,6 +62,9 @@ func (m *Manager) StartAgent(ctx context.Context, userID, agentTypeID string) (s
 	)
 	if err != nil {
 		m.logger.Warn("failed to record instance", "error", err)
+	}
+	if res != nil {
+		defer res.Close()
 	}
 
 	// 4. Start container
@@ -88,13 +91,19 @@ func (m *Manager) StopAgent(ctx context.Context, userID string) error {
 	}
 
 	// Update status in DB
-	_, _ = m.hugrClient.Query(ctx,
+	res, err := m.hugrClient.Query(ctx,
 		fmt.Sprintf(`mutation { hub { hub { update_agent_instances(
 			filter: { id: { eq: "%s" } }
 			data: { status: "stopped" }
 		) { success } } } }`, instance.ID),
 		nil,
 	)
+	if err != nil {
+		m.logger.Warn("failed to update instance status", "error", err)
+	}
+	if res != nil {
+		defer res.Close()
+	}
 
 	m.logger.Info("agent stopped", "user", userID, "container", instance.ContainerID[:12])
 	return nil
@@ -121,6 +130,10 @@ func (m *Manager) getAgentType(ctx context.Context, typeID string) (agentTypeInf
 	if err != nil {
 		return agentTypeInfo{}, err
 	}
+	defer res.Close()
+	if res.Err() != nil {
+		return agentTypeInfo{}, res.Err()
+	}
 	var types []agentTypeInfo
 	if err := res.ScanData("hub.hub.agent_types", &types); err != nil || len(types) == 0 {
 		return agentTypeInfo{}, fmt.Errorf("agent type %q not found", typeID)
@@ -143,6 +156,10 @@ func (m *Manager) getRunningInstance(ctx context.Context, userID string) (instan
 	)
 	if err != nil {
 		return instanceInfo{}, err
+	}
+	defer res.Close()
+	if res.Err() != nil {
+		return instanceInfo{}, res.Err()
 	}
 	var instances []instanceInfo
 	if err := res.ScanData("hub.hub.agent_instances", &instances); err != nil || len(instances) == 0 {

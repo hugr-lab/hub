@@ -48,6 +48,10 @@ func (s *Server) handleRegistrySave(userID string) server.ToolHandlerFunc {
 		if err != nil {
 			return toolError(fmt.Sprintf("failed to save query: %v", err)), nil
 		}
+		defer res.Close()
+		if res.Err() != nil {
+			return toolError(fmt.Sprintf("save query graphql error: %v", res.Err())), nil
+		}
 
 		data, _ := json.MarshalIndent(res.Data, "", "  ")
 		return toolResult(string(data)), nil
@@ -80,6 +84,10 @@ func (s *Server) handleRegistrySearch(userID string) server.ToolHandlerFunc {
 		res, err := s.hugrClient.Query(ctx, gql, nil)
 		if err != nil {
 			return toolError(fmt.Sprintf("registry search failed: %v", err)), nil
+		}
+		defer res.Close()
+		if res.Err() != nil {
+			return toolError(fmt.Sprintf("registry search graphql error: %v", res.Err())), nil
 		}
 
 		data, _ := json.MarshalIndent(res.Data, "", "  ")

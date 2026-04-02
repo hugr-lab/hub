@@ -66,6 +66,10 @@ func (s *Server) handleMemoryStore(userID string) server.ToolHandlerFunc {
 		if err != nil {
 			return toolError(fmt.Sprintf("failed to store memory: %v", err)), nil
 		}
+		defer res.Close()
+		if res.Err() != nil {
+			return toolError(fmt.Sprintf("store memory graphql error: %v", res.Err())), nil
+		}
 
 		data, _ := json.MarshalIndent(res.Data, "", "  ")
 		s.logger.Info("memory stored", "user", userID, "category", category)
@@ -107,6 +111,10 @@ func (s *Server) handleMemorySearch(userID string) server.ToolHandlerFunc {
 		if err != nil {
 			return toolError(fmt.Sprintf("memory search failed: %v", err)), nil
 		}
+		defer res.Close()
+		if res.Err() != nil {
+			return toolError(fmt.Sprintf("memory search graphql error: %v", res.Err())), nil
+		}
 
 		data, _ := json.MarshalIndent(res.Data, "", "  ")
 		return toolResult(string(data)), nil
@@ -140,6 +148,10 @@ func (s *Server) handleMemoryList(userID string) server.ToolHandlerFunc {
 		res, err := s.hugrClient.Query(ctx, gql, nil)
 		if err != nil {
 			return toolError(fmt.Sprintf("memory list failed: %v", err)), nil
+		}
+		defer res.Close()
+		if res.Err() != nil {
+			return toolError(fmt.Sprintf("memory list graphql error: %v", res.Err())), nil
 		}
 
 		data, _ := json.MarshalIndent(res.Data, "", "  ")

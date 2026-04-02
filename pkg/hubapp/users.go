@@ -12,8 +12,6 @@ type userLoginRequest struct {
 	Email    string `json:"email"`
 }
 
-// handleUserLogin handles POST /api/user/login from JupyterHub post_auth_hook.
-// Upserts user info into hub.users via Hugr GraphQL.
 func (a *HubApp) handleUserLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -25,13 +23,12 @@ func (a *HubApp) handleUserLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-
 	if req.UserID == "" {
 		http.Error(w, "user_id required", http.StatusBadRequest)
 		return
 	}
 
-	_, err := a.client.Query(r.Context(),
+	res, err := a.client.Query(r.Context(),
 		`mutation($id: String!, $name: String!, $role: String!, $email: String!) {
 			hub { hub { insert_users(
 				data: {
@@ -51,6 +48,12 @@ func (a *HubApp) handleUserLogin(w http.ResponseWriter, r *http.Request) {
 	)
 	if err != nil {
 		a.logger.Error("failed to upsert user", "user_id", req.UserID, "error", err)
+		http.Error(w, "failed to sync user", http.StatusInternalServerError)
+		return
+	}
+	defer res.Close()
+	if res.Err() != nil {
+		a.logger.Error("user upsert graphql error", "user_id", req.UserID, "error", res.Err())
 		http.Error(w, "failed to sync user", http.StatusInternalServerError)
 		return
 	}

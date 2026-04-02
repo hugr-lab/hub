@@ -25,7 +25,7 @@ func (a *HubApp) seedAgentTypes(ctx context.Context) {
 	}
 
 	for _, t := range types {
-		_, err := a.client.Query(ctx,
+		res, err := a.client.Query(ctx,
 			`mutation($id: String!, $name: String!, $desc: String!, $img: String!) {
 				hub { hub { insert_agent_types(
 					data: { id: $id, display_name: $name, description: $desc, image: $img }
@@ -35,6 +35,11 @@ func (a *HubApp) seedAgentTypes(ctx context.Context) {
 		)
 		if err != nil {
 			a.logger.Warn("failed to seed agent type (may already exist)", "id", t.ID, "error", err)
+			continue
+		}
+		defer res.Close()
+		if res.Err() != nil {
+			a.logger.Warn("seed agent type error", "id", t.ID, "error", res.Err())
 			continue
 		}
 		a.logger.Info("agent type seeded", "id", t.ID)

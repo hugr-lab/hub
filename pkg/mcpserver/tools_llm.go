@@ -76,6 +76,10 @@ func (s *Server) handleLLMListProviders(userID string) server.ToolHandlerFunc {
 		if err != nil {
 			return toolError(fmt.Sprintf("failed to list providers: %v", err)), nil
 		}
+		defer res.Close()
+		if res.Err() != nil {
+			return toolError(fmt.Sprintf("list providers graphql error: %v", res.Err())), nil
+		}
 
 		data, _ := json.MarshalIndent(res.Data, "", "  ")
 		return toolResult(string(data)), nil
