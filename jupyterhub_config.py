@@ -162,8 +162,10 @@ if _admin_users:
 _admin_claim = os.environ.get("HUGR_ADMIN_CLAIM", "")
 _admin_values = set(os.environ.get("HUGR_ADMIN_VALUES", "admin").split(","))
 
+HUB_SERVICE_URL = os.environ.get("HUB_SERVICE_URL")
+
 async def _post_auth_hook(authenticator, handler, authentication):
-    """Extract OIDC roles → JupyterHub groups + admin flag."""
+    """Extract OIDC roles → JupyterHub groups + admin flag + notify Hub Service."""
     from hub_profiles.resolver import extract_claim
 
     auth_state = authentication.get("auth_state", {})
@@ -194,6 +196,23 @@ async def _post_auth_hook(authenticator, handler, authentication):
         # Fallback: check roles against admin values
         if any(r in _admin_values for r in roles):
             authentication["admin"] = True
+
+    # Notify Hub Service about user login (sync to hub.users)
+    if HUB_SERVICE_URL:
+        async with httpx.AsyncClient(verify=_hugr_tls_verify) as client:
+            try:
+                await client.post(
+                    f"{HUB_SERVICE_URL}/api/user/login",
+                    json={
+                        "user_id": authentication["name"],
+                        "user_name": auth_state.get("name", authentication["name"]),
+                        "role": roles[0] if roles else "",
+                        "email": auth_state.get("email", ""),
+                    },
+                    timeout=5,
+                )
+            except Exception as e:
+                logger.warning("Failed to notify Hub Service: %s", e)
 
     return authentication
 
@@ -483,32 +502,5 @@ c.JupyterHub.load_roles = [
     },
 ]
 
-# ===========================================================================
-# Hub Service notification (optional, for Stage 2+)
-# ===========================================================================
 
-HUB_SERVICE_URL = os.environ.get("HUB_SERVICE_URL")
 
-if HUB_SERVICE_URL:
-
-    async def post_auth_hook(authenticator, handler, authentication):
-        auth_state = authentication.get("auth_state", {})
-        async with httpx.AsyncClient(verify=_hugr_tls_verify) as client:
-            try:
-                await client.post(
-                    f"{HUB_SERVICE_URL}/api/user/login",
-                    json={
-                        "user_id": authentication["name"],
-                        "user_name": auth_state.get(
-                            "name", authentication["name"]
-                        ),
-                        "role": auth_state.get("x-hugr-role", ""),
-                        "email": auth_state.get("email", ""),
-                    },
-                    timeout=5,
-                )
-            except Exception as e:
-                logger.warning("Failed to notify Hub Service: %s", e)
-        return authentication
-
-    c.Authenticator.post_auth_hook = post_auth_hook

@@ -3,12 +3,14 @@ design/
 .claude/
 .specify/
 specs/
+.mem/
 
 # Environment
 .env
 .entra.env
 .tls.env
 *.env.local
+.env.test
 
 # TLS certs (dev only)
 certs/
@@ -22,6 +24,13 @@ build/
 
 # Node
 node_modules/
+
+# JupyterLab extension build artifacts
+extensions/*/lib/
+extensions/*/hub_*/labextension/
+extensions/*/.yarn/
+extensions/*/yarn.lock
+extensions/*/.venv/
 
 # Go
 /hub-service
@@ -51,3 +60,4 @@ Thumbs.db
 
 # Work directory (user data, not tracked)
 work/
+

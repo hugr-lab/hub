@@ -1,13 +1,10 @@
-# Dev: JupyterHub + Hub Service. Hugr and Keycloak run on host.
+# Test: JupyterHub + Hub Service. Hugr and Keycloak run on host.
 #
-# Prerequisites:
-#   - Hugr dev server on localhost:15004 (with embedding source configured)
-#   - Keycloak on localhost:18070
-#   - PostgreSQL on localhost:5432 (for hub DB, Hugr will provision)
-#   - Singleuser image built: docker compose -f docker-compose.local.yml build
+# Identical to docker-compose.dev.yml + hub-service.
+# Uses .env (same as dev).
 #
 # Usage:
-#   docker compose -f docker-compose.dev.yml up -d
+#   docker compose -f docker-compose.test.yml up --build
 #   open http://localhost:8000
 
 services:
@@ -18,7 +15,7 @@ services:
     env_file: ${HUB_ENV_FILE:-.env}
     environment:
       HUB_CONNECT_IP: hub
-      HUB_SERVICE_URL: http://hub-service:8082
+      HUB_SERVICE_URL: http://hub-service:10000
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - hub-data:/srv/jupyterhub
@@ -39,15 +36,14 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.hub-service
+    env_file: ${HUB_ENV_FILE:-.env}
     environment:
-      HUGR_URL: "http://host.docker.internal:15004"
-      HUGR_SECRET_KEY: "${HUGR_SECRET_KEY:-local-dev-secret}"
-      HUB_SERVICE_LISTEN: ":8082"
-      HUB_SERVICE_FLIGHT: ":50051"
-      LOG_LEVEL: "debug"
+      HUGR_URL: "${HUGR_URL}/ipc"
+      HUB_SERVICE_LISTEN: ":10000"
+      HUB_SERVICE_FLIGHT: ":10001"
     ports:
-      - "8082:8082"
-      - "50051:50051"
+      - "10000:10000"
+      - "10001:10001"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:

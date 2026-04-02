@@ -1,0 +1,315 @@
+"""Platform users synced from OIDC provider via JupyterHub login."""
+type users @table(name: "users") {
+  """OIDC username (preferred_username claim)"""
+  id: String! @pk
+  """Full name from OIDC profile"""
+  display_name: String!
+  """Email from OIDC profile"""
+  email: String
+  """Hugr role assigned via OIDC claim (e.g. admin, analyst)"""
+  hugr_role: String!
+  """Resolved workspace profile name"""
+  profile: String
+  """Last OIDC login timestamp"""
+  last_login_at: Timestamp @default(insert_exp: "NOW()", update_exp: "NOW()")
+  """Additional OIDC claims and user preferences"""
+  metadata: JSON
+}
+
+"""Predefined agent configurations — image, capabilities, skills, and policies."""
+type agent_types @table(name: "agent_types") {
+  """Unique type identifier (e.g. data-analyst, openclaw)"""
+  id: String! @pk
+  """Human-readable name shown in UI"""
+  display_name: String!
+  """What this agent type does"""
+  description: String
+  """Container image reference (e.g. hugr-lab/hub-agent:latest)"""
+  image: String!
+  """Allowed capabilities: python, bash, web_search"""
+  capabilities: [String]
+  """Skill package names to load at startup"""
+  skills: [String]
+  """Tool allow/deny policy per tool name"""
+  tool_policy: JSON
+  """Maximum running instances per user"""
+  max_instances_per_user: Int
+  """Seconds of inactivity before auto-stop"""
+  idle_timeout_seconds: Int
+  """Extra configuration (env vars, resource limits)"""
+  metadata: JSON
+}
+
+"""Running agent container bound to a user and agent type."""
+type agent_instances @table(name: "agent_instances") {
+  """Instance UUID"""
+  id: String! @pk @default(insert_exp: "gen_random_uuid()")
+  """Owner user"""
+  user_id: String! @field_references(
+    name: "instances_user_ref"
+    references_name: "users"
+    field: "id"
+    query: "user"
+    description: "User who owns this instance"
+    references_query: "agent_instances"
+    references_description: "Agent instances owned by this user"
+  )
+  """Agent type configuration"""
+  agent_type_id: String! @field_references(
+    name: "instances_type_ref"
+    references_name: "agent_types"
+    field: "id"
+    query: "agent_type"
+    description: "Agent type configuration"
+    references_query: "instances"
+    references_description: "Running instances of this agent type"
+  )
+  """Docker container ID or K8s pod name"""
+  container_id: String
+  """Lifecycle state: creating, running, idle, stopping, stopped"""
+  status: String
+  """When the container was started"""
+  started_at: Timestamp @default(insert_exp: "NOW()")
+  """Last user interaction timestamp"""
+  last_activity_at: Timestamp @default(insert_exp: "NOW()", update_exp: "NOW()")
+  """Runtime metadata (resource usage, etc.)"""
+  metadata: JSON
+}
+
+"""Conversation between a user and their agent."""
+type agent_sessions @table(name: "agent_sessions") {
+  """Session UUID"""
+  id: String! @pk @default(insert_exp: "gen_random_uuid()")
+  """User who owns this session"""
+  user_id: String! @field_references(
+    name: "sessions_user_ref"
+    references_name: "users"
+    field: "id"
+    query: "user"
+    description: "User who owns this session"
+    references_query: "agent_sessions"
+    references_description: "Agent sessions for this user"
+  )
+  """Agent instance running this session"""
+  instance_id: String @field_references(
+    name: "sessions_instance_ref"
+    references_name: "agent_instances"
+    field: "id"
+    query: "instance"
+    description: "Agent instance running this session"
+    references_query: "sessions"
+    references_description: "Sessions on this agent instance"
+  )
+  """Session start timestamp"""
+  started_at: Timestamp @default(insert_exp: "NOW()")
+  """Session end timestamp (null if active)"""
+  ended_at: Timestamp
+  """Session metadata"""
+  metadata: JSON
+}
+
+"""Individual message in an agent conversation."""
+type agent_messages @table(name: "agent_messages") {
+  """Message UUID"""
+  id: String! @pk @default(insert_exp: "gen_random_uuid()")
+  """Parent session"""
+  session_id: String! @field_references(
+    name: "messages_session_ref"
+    references_name: "agent_sessions"
+    field: "id"
+    query: "session"
+    description: "Session this message belongs to"
+    references_query: "messages"
+    references_description: "Messages in this session"
+  )
+  """Sender role: user, assistant, system, or tool"""
+  role: String!
+  """Message text content"""
+  content: String!
+  """Tool calls made by assistant (JSON array)"""
+  tool_calls: JSON
+  """LLM tokens consumed for this message"""
+  tokens_used: Int
+  """LLM model used to generate this message"""
+  model: String
+  """When the message was created"""
+  created_at: Timestamp @default(insert_exp: "NOW()")
+}
+
+"""Learned information stored with semantic embedding for similarity search."""
+type agent_memory @table(name: "agent_memory") @embeddings(
+  model: "{{.EmbedderName}}"
+  vector: "embedding"
+  distance: Cosine
+) {
+  """Memory entry UUID"""
+  id: String! @pk @default(insert_exp: "gen_random_uuid()")
+  """Owner user"""
+  user_id: String! @field_references(
+    name: "memory_user_ref"
+    references_name: "users"
+    field: "id"
+    query: "user"
+    description: "User who owns this memory"
+    references_query: "memories"
+    references_description: "Stored memories for this user"
+  )
+  """Memory content (schema description, query pattern, user preference)"""
+  content: String!
+  """Semantic embedding vector for similarity search"""
+  embedding: Vector @dim(len: {{.VectorSize}})
+  """Category: schema, query_template, user_pattern, general"""
+  category: String
+  """Origin of this memory (session ID, tool name, etc.)"""
+  source: String
+  """When stored"""
+  created_at: Timestamp @default(insert_exp: "NOW()")
+}
+
+"""Saved query patterns with tags and usage tracking."""
+type query_registry @table(name: "query_registry") {
+  """Registry entry UUID"""
+  id: String! @pk @default(insert_exp: "gen_random_uuid()")
+  """Owner user"""
+  user_id: String! @field_references(
+    name: "registry_user_ref"
+    references_name: "users"
+    field: "id"
+    query: "user"
+    description: "User who saved this query"
+    references_query: "saved_queries"
+    references_description: "Saved queries by this user"
+  )
+  """Query name"""
+  name: String!
+  """GraphQL query text"""
+  query: String!
+  """Human description of what this query does"""
+  description: String
+  """Tags for categorization and search"""
+  tags: [String]
+  """Number of times this query was reused"""
+  usage_count: Int
+  """When first saved"""
+  created_at: Timestamp @default(insert_exp: "NOW()")
+  """When last modified"""
+  updated_at: Timestamp @default(insert_exp: "NOW()", update_exp: "NOW()")
+}
+
+"""Audit record of every tool invocation by an agent."""
+type tool_calls @table(name: "tool_calls") {
+  """Tool call UUID"""
+  id: String! @pk @default(insert_exp: "gen_random_uuid()")
+  """Agent session that triggered this call"""
+  session_id: String @field_references(
+    name: "toolcalls_session_ref"
+    references_name: "agent_sessions"
+    field: "id"
+    query: "session"
+    description: "Session that triggered this tool call"
+    references_query: "tool_calls"
+    references_description: "Tool calls made during this session"
+  )
+  """User who triggered the call"""
+  user_id: String!
+  """MCP tool name (e.g. data-inline_graphql_result)"""
+  tool_name: String!
+  """Tool arguments as JSON"""
+  arguments: JSON
+  """Brief summary of the result"""
+  result_summary: String
+  """Execution duration in milliseconds"""
+  duration_ms: Int
+  """Input tokens consumed (for LLM tools)"""
+  tokens_in: Int
+  """Output tokens consumed (for LLM tools)"""
+  tokens_out: Int
+  """When the tool was called"""
+  created_at: Timestamp @default(insert_exp: "NOW()")
+}
+
+"""Configured LLM provider endpoint (Claude, OpenAI, Gemini, local)."""
+type llm_providers @table(name: "llm_providers") {
+  """Provider identifier (e.g. claude-main, openai-fast, local-llama)"""
+  id: String! @pk
+  """Protocol type: anthropic, openai, gemini, openai-compatible"""
+  provider: String!
+  """Model name (e.g. claude-sonnet-4-20250514, gpt-4o)"""
+  model: String!
+  """Custom API endpoint URL (null for provider default)"""
+  base_url: String
+  """Secret reference for API key (e.g. ${secret:ANTHROPIC_API_KEY})"""
+  api_key_ref: String
+  """Maximum tokens per completion request"""
+  max_tokens_per_request: Int
+  """Whether this provider is currently active"""
+  enabled: Boolean
+  """Provider-specific settings"""
+  metadata: JSON
+}
+
+"""Token and request budget limits per user, role, or global scope."""
+type llm_budgets @table(name: "llm_budgets") {
+  """Budget rule UUID"""
+  id: String! @pk @default(insert_exp: "gen_random_uuid()")
+  """Target scope: user:alice, role:analyst, or global"""
+  scope: String!
+  """Specific provider (null applies to all providers)"""
+  provider_id: String @field_references(
+    name: "budgets_provider_ref"
+    references_name: "llm_providers"
+    field: "id"
+    query: "llm_provider"
+    description: "LLM provider this budget applies to"
+    references_query: "budgets"
+    references_description: "Budget rules for this provider"
+  )
+  """Time period for this budget: hour, day, or month"""
+  period: String!
+  """Maximum input tokens per period (null for unlimited)"""
+  max_tokens_in: BigInt
+  """Maximum output tokens per period (null for unlimited)"""
+  max_tokens_out: BigInt
+  """Maximum request count per period (rate limit)"""
+  max_requests: Int
+  """When this budget rule was created"""
+  created_at: Timestamp @default(insert_exp: "NOW()")
+}
+
+"""Per-request LLM token usage record for tracking and budget enforcement."""
+type llm_usage @table(name: "llm_usage") {
+  """Usage record UUID"""
+  id: String! @pk @default(insert_exp: "gen_random_uuid()")
+  """User who made the request"""
+  user_id: String!
+  """LLM provider used"""
+  provider_id: String! @field_references(
+    name: "usage_provider_ref"
+    references_name: "llm_providers"
+    field: "id"
+    query: "llm_provider"
+    description: "LLM provider used for this request"
+    references_query: "usage"
+    references_description: "Usage records for this provider"
+  )
+  """Agent session (if from agent, null for direct API)"""
+  session_id: String @field_references(
+    name: "usage_session_ref"
+    references_name: "agent_sessions"
+    field: "id"
+    query: "session"
+    description: "Agent session for this usage"
+    references_query: "llm_usage"
+    references_description: "LLM usage records for this session"
+  )
+  """Input tokens consumed"""
+  tokens_in: Int!
+  """Output tokens produced"""
+  tokens_out: Int!
+  """Request duration in milliseconds"""
+  duration_ms: Int
+  """Period bucket key (e.g. 2026-04-02/hour/14)"""
+  period_key: String!
+  """When the request was made"""
+  created_at: Timestamp @default(insert_exp: "NOW()")
+}
