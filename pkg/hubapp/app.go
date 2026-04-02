@@ -47,7 +47,6 @@ func (a *HubApp) Catalog(ctx context.Context) (catalog.Catalog, error) {
 	if err := a.registerCatalog(); err != nil {
 		return nil, fmt.Errorf("register catalog: %w", err)
 	}
-	a.mux.WithSDL(hubGraphQLSchema)
 	return a.mux, nil
 }
 
@@ -57,6 +56,7 @@ func (a *HubApp) DataSources(ctx context.Context) ([]app.DataSourceInfo, error) 
 			Name:        "hub",
 			Type:        "postgres",
 			Description: "Hub Service database (agent metadata, memory, LLM usage)",
+			Path:        a.config.DatabaseDSN,
 			ReadOnly:    false,
 			Version:     appVersion,
 			HugrSchema:  hubGraphQLSchema,

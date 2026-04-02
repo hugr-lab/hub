@@ -3,7 +3,8 @@ package hubapp
 // hubGraphQLSchema is the GraphQL SDL for hub.* tables.
 // Registered via DataSourceInfo.HugrSchema — Hugr compiles this into the GraphQL API.
 // Template parameters:
-//   - {{.EmbedderName}} — configured embedding model name
+//   - {{.EmbedderName}} — configured embedding provider name
+//   - {{.VectorSize}} — embedding vector dimensions
 const hubGraphQLSchema = `
 type users @table(name: "users") {
   id: String! @pk
@@ -29,33 +30,58 @@ type agent_types @table(name: "agent_types") {
 }
 
 type agent_instances @table(name: "agent_instances") {
-  id: ID! @pk
-  user_id: String!
-  agent_type_id: String!
+  id: String! @pk
+  user_id: String! @field_references(
+    name: "instances_user_ref"
+    references_name: "users"
+    field: "id"
+    query: "user"
+    references_query: "agent_instances"
+  )
+  agent_type_id: String! @field_references(
+    name: "instances_type_ref"
+    references_name: "agent_types"
+    field: "id"
+    query: "agent_type"
+    references_query: "instances"
+  )
   container_id: String
   status: String
   started_at: Timestamp
   last_activity_at: Timestamp
   metadata: JSON
-  user: users @relation(fields: ["user_id"], references: ["id"])
-  agent_type: agent_types @relation(fields: ["agent_type_id"], references: ["id"])
 }
 
 type agent_sessions @table(name: "agent_sessions") {
-  id: ID! @pk
-  user_id: String!
-  instance_id: ID
+  id: String! @pk
+  user_id: String! @field_references(
+    name: "sessions_user_ref"
+    references_name: "users"
+    field: "id"
+    query: "user"
+    references_query: "agent_sessions"
+  )
+  instance_id: String @field_references(
+    name: "sessions_instance_ref"
+    references_name: "agent_instances"
+    field: "id"
+    query: "instance"
+    references_query: "sessions"
+  )
   started_at: Timestamp
   ended_at: Timestamp
   metadata: JSON
-  user: users @relation(fields: ["user_id"], references: ["id"])
-  instance: agent_instances @relation(fields: ["instance_id"], references: ["id"])
-  messages: [agent_messages] @relation(fields: ["id"], references: ["session_id"])
 }
 
 type agent_messages @table(name: "agent_messages") {
-  id: ID! @pk
-  session_id: ID!
+  id: String! @pk
+  session_id: String! @field_references(
+    name: "messages_session_ref"
+    references_name: "agent_sessions"
+    field: "id"
+    query: "session"
+    references_query: "messages"
+  )
   role: String!
   content: String!
   tool_calls: JSON
@@ -67,20 +93,32 @@ type agent_messages @table(name: "agent_messages") {
 type agent_memory @table(name: "agent_memory") @embeddings(
   model: "{{.EmbedderName}}"
   vector: "embedding"
-  distance: cosine
+  distance: Cosine
 ) {
-  id: ID! @pk
-  user_id: String!
+  id: String! @pk
+  user_id: String! @field_references(
+    name: "memory_user_ref"
+    references_name: "users"
+    field: "id"
+    query: "user"
+    references_query: "memories"
+  )
   content: String!
+  embedding: Vector @dim(len: {{.VectorSize}})
   category: String
   source: String
   created_at: Timestamp
-  user: users @relation(fields: ["user_id"], references: ["id"])
 }
 
 type query_registry @table(name: "query_registry") {
-  id: ID! @pk
-  user_id: String!
+  id: String! @pk
+  user_id: String! @field_references(
+    name: "registry_user_ref"
+    references_name: "users"
+    field: "id"
+    query: "user"
+    references_query: "saved_queries"
+  )
   name: String!
   query: String!
   description: String
@@ -88,12 +126,17 @@ type query_registry @table(name: "query_registry") {
   usage_count: Int
   created_at: Timestamp
   updated_at: Timestamp
-  user: users @relation(fields: ["user_id"], references: ["id"])
 }
 
 type tool_calls @table(name: "tool_calls") {
-  id: ID! @pk
-  session_id: ID
+  id: String! @pk
+  session_id: String @field_references(
+    name: "toolcalls_session_ref"
+    references_name: "agent_sessions"
+    field: "id"
+    query: "session"
+    references_query: "tool_calls"
+  )
   user_id: String!
   tool_name: String!
   arguments: JSON
@@ -102,7 +145,6 @@ type tool_calls @table(name: "tool_calls") {
   tokens_in: Int
   tokens_out: Int
   created_at: Timestamp
-  session: agent_sessions @relation(fields: ["session_id"], references: ["id"])
 }
 
 type llm_providers @table(name: "llm_providers") {
@@ -117,28 +159,43 @@ type llm_providers @table(name: "llm_providers") {
 }
 
 type llm_budgets @table(name: "llm_budgets") {
-  id: ID! @pk
+  id: String! @pk
   scope: String!
-  provider_id: String
+  provider_id: String @field_references(
+    name: "budgets_provider_ref"
+    references_name: "llm_providers"
+    field: "id"
+    query: "llm_provider"
+    references_query: "budgets"
+  )
   period: String!
   max_tokens_in: BigInt
   max_tokens_out: BigInt
   max_requests: Int
   created_at: Timestamp
-  provider: llm_providers @relation(fields: ["provider_id"], references: ["id"])
 }
 
 type llm_usage @table(name: "llm_usage") {
-  id: ID! @pk
+  id: String! @pk
   user_id: String!
-  provider_id: String!
-  session_id: ID
+  provider_id: String! @field_references(
+    name: "usage_provider_ref"
+    references_name: "llm_providers"
+    field: "id"
+    query: "llm_provider"
+    references_query: "usage"
+  )
+  session_id: String @field_references(
+    name: "usage_session_ref"
+    references_name: "agent_sessions"
+    field: "id"
+    query: "session"
+    references_query: "llm_usage"
+  )
   tokens_in: Int!
   tokens_out: Int!
   duration_ms: Int
   period_key: String!
   created_at: Timestamp
-  provider: llm_providers @relation(fields: ["provider_id"], references: ["id"])
-  session: agent_sessions @relation(fields: ["session_id"], references: ["id"])
 }
 `

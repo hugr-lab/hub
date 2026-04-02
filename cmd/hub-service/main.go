@@ -30,7 +30,7 @@ func main() {
 		"flight", cfg.FlightAddr,
 	)
 
-	c := client.NewClient(cfg.HugrURL, client.WithApiKey(cfg.HugrSecretKey))
+	c := client.NewClient(cfg.HugrURL, client.WithApiKeyCustomHeader(cfg.HugrSecretKey, "x-hugr-secret-key"))
 
 	err := c.RunApplication(ctx, app,
 		client.WithSecretKey(cfg.HugrSecretKey),

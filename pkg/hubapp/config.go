@@ -10,6 +10,7 @@ type Config struct {
 	HugrSecretKey string
 	ListenAddr    string // HTTP server (MCP, WebSocket, API)
 	FlightAddr    string // gRPC Flight server
+	DatabaseDSN   string // PostgreSQL DSN for hub DB
 	LogLevel      slog.Level
 }
 
@@ -19,6 +20,7 @@ func LoadConfig() Config {
 		HugrSecretKey: envOrDefault("HUGR_SECRET_KEY", ""),
 		ListenAddr:    envOrDefault("HUB_SERVICE_LISTEN", ":8082"),
 		FlightAddr:    envOrDefault("HUB_SERVICE_FLIGHT", ":50051"),
+		DatabaseDSN:   envOrDefault("HUB_DATABASE_DSN", "postgres://localhost:5432/hub"),
 	}
 
 	switch os.Getenv("LOG_LEVEL") {
