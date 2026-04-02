@@ -6,7 +6,7 @@ RUN go mod download
 
 COPY cmd/ cmd/
 COPY pkg/ pkg/
-RUN CGO_ENABLED=0 go build -o /hub-service ./cmd/hub-service/
+RUN go build -tags duckdb_arrow -o /hub-service ./cmd/hub-service/
 
 FROM alpine:latest
 RUN apk add --no-cache ca-certificates

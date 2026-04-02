@@ -85,7 +85,7 @@ func (a *HubApp) Init(ctx context.Context) error {
 	a.seedAgentTypes(ctx)
 
 	// Start HTTP server
-	mcpSrv := mcpserver.New(a.client, a.logger)
+	mcpSrv := mcpserver.New(a.client, a.logger, a.config.LogLevel == slog.LevelDebug)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/user/login", a.handleUserLogin)
 	mux.Handle("/mcp/", mcpSrv.Handler())

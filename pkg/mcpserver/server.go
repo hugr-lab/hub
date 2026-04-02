@@ -7,24 +7,31 @@ import (
 
 	"github.com/hugr-lab/hub/pkg/auth"
 	"github.com/hugr-lab/query-engine/client"
+	qemcp "github.com/hugr-lab/query-engine/pkg/mcp"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
 
 // Server provides per-user MCP endpoints at /mcp/{user_id}.
+// Hugr discovery/schema/data tools come from query-engine/pkg/mcp.
+// Memory, registry, and LLM tools are added on top.
 type Server struct {
 	hugrClient *client.Client
 	logger     *slog.Logger
+	debug      bool
 }
 
-func New(hugrClient *client.Client, logger *slog.Logger) *Server {
-	return &Server{hugrClient: hugrClient, logger: logger}
+func New(hugrClient *client.Client, logger *slog.Logger, debug bool) *Server {
+	return &Server{
+		hugrClient: hugrClient,
+		logger:     logger,
+		debug:      debug,
+	}
 }
 
 // Handler returns an http.Handler for /mcp/{user_id} endpoints.
 func (s *Server) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Extract user_id from path: /mcp/{user_id}
 		parts := strings.SplitN(strings.TrimPrefix(r.URL.Path, "/mcp/"), "/", 2)
 		if len(parts) == 0 || parts[0] == "" {
 			http.Error(w, "user_id required in path", http.StatusBadRequest)
@@ -32,52 +39,37 @@ func (s *Server) Handler() http.Handler {
 		}
 		userID := parts[0]
 
-		// Inject user identity into request context for Hugr client transport
-		// TODO: lookup full user info (name, role) from hub.users
+		// Inject user identity into context — UserTransport adds headers to Hugr requests
 		ctx := auth.ContextWithUser(r.Context(), auth.UserInfo{ID: userID})
 		r = r.WithContext(ctx)
 
-		// Create per-request MCP server with user context
-		mcpSrv := s.newUserMCPServer(userID)
-		httpSrv := server.NewStreamableHTTPServer(mcpSrv)
-		httpSrv.ServeHTTP(w, r)
+		// Create MCP server with Hub tools, then pass to query-engine mcp.New
+		// which adds all Hugr discovery/schema/data tools on top
+		mcpSrv := server.NewMCPServer(
+			"hub-service",
+			"0.1.0",
+			server.WithToolCapabilities(true),
+		)
+
+		// Hub-specific tools
+		s.registerMemoryTools(mcpSrv, userID)
+		s.registerRegistryTools(mcpSrv, userID)
+
+		// Hugr tools added on top by query-engine mcp package
+		hugrMCP := qemcp.New(s.hugrClient, mcpSrv, s.debug)
+		hugrMCP.Handler().ServeHTTP(w, r)
 	})
 }
 
-func (s *Server) newUserMCPServer(userID string) *server.MCPServer {
-	mcpSrv := server.NewMCPServer(
-		"hub-service",
-		"0.1.0",
-		server.WithToolCapabilities(true),
-	)
-
-	// Register Hugr discovery/query tools
-	s.registerHugrTools(mcpSrv, userID)
-
-	// Register memory tools
-	s.registerMemoryTools(mcpSrv, userID)
-
-	// Register registry tools
-	s.registerRegistryTools(mcpSrv, userID)
-
-	return mcpSrv
-}
-
-// toolError creates an MCP tool error result.
 func toolError(msg string) *mcp.CallToolResult {
 	return &mcp.CallToolResult{
-		Content: []mcp.Content{
-			mcp.NewTextContent(msg),
-		},
+		Content: []mcp.Content{mcp.NewTextContent(msg)},
 		IsError: true,
 	}
 }
 
-// toolResult creates an MCP tool text result.
 func toolResult(text string) *mcp.CallToolResult {
 	return &mcp.CallToolResult{
-		Content: []mcp.Content{
-			mcp.NewTextContent(text),
-		},
+		Content: []mcp.Content{mcp.NewTextContent(text)},
 	}
 }
