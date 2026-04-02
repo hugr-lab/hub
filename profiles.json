@@ -21,12 +21,8 @@
       "max_age": 86400,
       "rank": 1,
       "volumes": {
-        "shared-data": {
-          "mount": "/home/jovyan/shared",
-          "mode": "ro"
-        },
-        "s3-data": {
-          "mount": "/home/jovyan/s3/data",
+        "minio-data": {
+          "mount": "/home/jovyan/s3",
           "mode": "rw"
         }
       }
@@ -46,17 +42,9 @@
       "max_age": 43200,
       "rank": 2,
       "volumes": {
-        "shared-data": {
-          "mount": "/home/jovyan/shared",
-          "mode": "ro"
-        },
-        "s3-data": {
-          "mount": "/home/jovyan/s3/data",
+        "minio-data": {
+          "mount": "/home/jovyan/s3",
           "mode": "rw"
-        },
-        "s3-ducklake": {
-          "mount": "/home/jovyan/s3/ducklake-taxi",
-          "mode": "ro"
         }
       }
     },
@@ -75,28 +63,8 @@
       "max_age": 21600,
       "rank": 3,
       "volumes": {
-        "hub-config": {
-          "mount": "/home/jovyan/hub-config",
-          "mode": "rw"
-        },
-        "shared-data": {
-          "mount": "/home/jovyan/shared",
-          "mode": "ro"
-        },
-        "s3-data": {
-          "mount": "/home/jovyan/s3/data",
-          "mode": "rw"
-        },
-        "s3-ducklake": {
-          "mount": "/home/jovyan/s3/ducklake-taxi",
-          "mode": "rw"
-        },
-        "s3-iceberg": {
-          "mount": "/home/jovyan/s3/iceberg-warehouse",
-          "mode": "rw"
-        },
-        "azure-testdata": {
-          "mount": "/home/jovyan/azure/testdata",
+        "minio-data": {
+          "mount": "/home/jovyan/s3",
           "mode": "rw"
         }
       }
@@ -111,36 +79,19 @@
     "volumes": {
       "hub-config": {
         "type": "local",
-        "path": "/Users/vgribanov/projects/hugr-lab/hub/config"
+        "path": "/srv/jupyterhub"
       },
       "shared-data": {
         "type": "local",
         "path": "/Users/vgribanov/projects/hugr-lab/hub/shared"
       },
-      "s3-data": {
+      "minio-data": {
         "type": "s3",
         "auth": "shared",
         "credentials_ref": "minio",
-        "bucket": "data"
-      },
-      "s3-ducklake": {
-        "type": "s3",
-        "auth": "shared",
-        "credentials_ref": "minio",
-        "bucket": "ducklake-taxi"
-      },
-      "s3-iceberg": {
-        "type": "s3",
-        "auth": "shared",
-        "credentials_ref": "minio",
-        "bucket": "iceberg-warehouse"
-      },
-      "azure-testdata": {
-        "type": "azure",
-        "auth": "shared",
-        "credentials_ref": "azure-hugrhubtest",
-        "account": "hugrhubtest",
-        "container": "testdata"
+        "bucket": "data",
+        "region": "us-east-1",
+        "read_only": false
       }
     },
     "credentials": {
@@ -148,9 +99,6 @@
         "access_key_id": "${secret:MINIO_USER}",
         "secret_access_key": "${secret:MINIO_PASSWORD}",
         "endpoint_url": "${secret:MINIO_ENDPOINT}"
-      },
-      "azure-hugrhubtest": {
-        "account_key": "${secret:AZURE_HUGRHUBTEST_KEY}"
       }
     }
   },
