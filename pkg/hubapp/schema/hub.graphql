@@ -11,7 +11,7 @@ type users @table(name: "users") {
   """Resolved workspace profile name"""
   profile: String
   """Last OIDC login timestamp"""
-  last_login_at: Timestamp
+  last_login_at: Timestamp @default(insert_exp: "NOW()", update_exp: "NOW()")
   """Additional OIDC claims and user preferences"""
   metadata: JSON
 }
@@ -43,7 +43,7 @@ type agent_types @table(name: "agent_types") {
 """Running agent container bound to a user and agent type."""
 type agent_instances @table(name: "agent_instances") {
   """Instance UUID"""
-  id: String! @pk
+  id: String! @pk @default(insert_exp: "gen_random_uuid()")
   """Owner user"""
   user_id: String! @field_references(
     name: "instances_user_ref"
@@ -69,9 +69,9 @@ type agent_instances @table(name: "agent_instances") {
   """Lifecycle state: creating, running, idle, stopping, stopped"""
   status: String
   """When the container was started"""
-  started_at: Timestamp
+  started_at: Timestamp @default(insert_exp: "NOW()")
   """Last user interaction timestamp"""
-  last_activity_at: Timestamp
+  last_activity_at: Timestamp @default(insert_exp: "NOW()", update_exp: "NOW()")
   """Runtime metadata (resource usage, etc.)"""
   metadata: JSON
 }
@@ -79,7 +79,7 @@ type agent_instances @table(name: "agent_instances") {
 """Conversation between a user and their agent."""
 type agent_sessions @table(name: "agent_sessions") {
   """Session UUID"""
-  id: String! @pk
+  id: String! @pk @default(insert_exp: "gen_random_uuid()")
   """User who owns this session"""
   user_id: String! @field_references(
     name: "sessions_user_ref"
@@ -101,7 +101,7 @@ type agent_sessions @table(name: "agent_sessions") {
     references_description: "Sessions on this agent instance"
   )
   """Session start timestamp"""
-  started_at: Timestamp
+  started_at: Timestamp @default(insert_exp: "NOW()")
   """Session end timestamp (null if active)"""
   ended_at: Timestamp
   """Session metadata"""
@@ -111,7 +111,7 @@ type agent_sessions @table(name: "agent_sessions") {
 """Individual message in an agent conversation."""
 type agent_messages @table(name: "agent_messages") {
   """Message UUID"""
-  id: String! @pk
+  id: String! @pk @default(insert_exp: "gen_random_uuid()")
   """Parent session"""
   session_id: String! @field_references(
     name: "messages_session_ref"
@@ -133,7 +133,7 @@ type agent_messages @table(name: "agent_messages") {
   """LLM model used to generate this message"""
   model: String
   """When the message was created"""
-  created_at: Timestamp
+  created_at: Timestamp @default(insert_exp: "NOW()")
 }
 
 """Learned information stored with semantic embedding for similarity search."""
@@ -143,7 +143,7 @@ type agent_memory @table(name: "agent_memory") @embeddings(
   distance: Cosine
 ) {
   """Memory entry UUID"""
-  id: String! @pk
+  id: String! @pk @default(insert_exp: "gen_random_uuid()")
   """Owner user"""
   user_id: String! @field_references(
     name: "memory_user_ref"
@@ -163,13 +163,13 @@ type agent_memory @table(name: "agent_memory") @embeddings(
   """Origin of this memory (session ID, tool name, etc.)"""
   source: String
   """When stored"""
-  created_at: Timestamp
+  created_at: Timestamp @default(insert_exp: "NOW()")
 }
 
 """Saved query patterns with tags and usage tracking."""
 type query_registry @table(name: "query_registry") {
   """Registry entry UUID"""
-  id: String! @pk
+  id: String! @pk @default(insert_exp: "gen_random_uuid()")
   """Owner user"""
   user_id: String! @field_references(
     name: "registry_user_ref"
@@ -191,15 +191,15 @@ type query_registry @table(name: "query_registry") {
   """Number of times this query was reused"""
   usage_count: Int
   """When first saved"""
-  created_at: Timestamp
+  created_at: Timestamp @default(insert_exp: "NOW()")
   """When last modified"""
-  updated_at: Timestamp
+  updated_at: Timestamp @default(insert_exp: "NOW()", update_exp: "NOW()")
 }
 
 """Audit record of every tool invocation by an agent."""
 type tool_calls @table(name: "tool_calls") {
   """Tool call UUID"""
-  id: String! @pk
+  id: String! @pk @default(insert_exp: "gen_random_uuid()")
   """Agent session that triggered this call"""
   session_id: String @field_references(
     name: "toolcalls_session_ref"
@@ -225,7 +225,7 @@ type tool_calls @table(name: "tool_calls") {
   """Output tokens consumed (for LLM tools)"""
   tokens_out: Int
   """When the tool was called"""
-  created_at: Timestamp
+  created_at: Timestamp @default(insert_exp: "NOW()")
 }
 
 """Configured LLM provider endpoint (Claude, OpenAI, Gemini, local)."""
@@ -251,7 +251,7 @@ type llm_providers @table(name: "llm_providers") {
 """Token and request budget limits per user, role, or global scope."""
 type llm_budgets @table(name: "llm_budgets") {
   """Budget rule UUID"""
-  id: String! @pk
+  id: String! @pk @default(insert_exp: "gen_random_uuid()")
   """Target scope: user:alice, role:analyst, or global"""
   scope: String!
   """Specific provider (null applies to all providers)"""
@@ -273,13 +273,13 @@ type llm_budgets @table(name: "llm_budgets") {
   """Maximum request count per period (rate limit)"""
   max_requests: Int
   """When this budget rule was created"""
-  created_at: Timestamp
+  created_at: Timestamp @default(insert_exp: "NOW()")
 }
 
 """Per-request LLM token usage record for tracking and budget enforcement."""
 type llm_usage @table(name: "llm_usage") {
   """Usage record UUID"""
-  id: String! @pk
+  id: String! @pk @default(insert_exp: "gen_random_uuid()")
   """User who made the request"""
   user_id: String!
   """LLM provider used"""
@@ -311,5 +311,5 @@ type llm_usage @table(name: "llm_usage") {
   """Period bucket key (e.g. 2026-04-02/hour/14)"""
   period_key: String!
   """When the request was made"""
-  created_at: Timestamp
+  created_at: Timestamp @default(insert_exp: "NOW()")
 }

@@ -59,6 +59,7 @@ func (s *Server) handleMemoryStore(userID string) server.ToolHandlerFunc {
 			`mutation($id: String!, $uid: String!, $content: String!, $category: String!, $source: String) {
 				hub { hub { insert_agent_memory(
 					data: { id: $id, user_id: $uid, content: $content, category: $category, source: $source }
+					summary: $content
 				) { id } } }
 			}`,
 			map[string]any{"id": id, "uid": userID, "content": content, "category": category, "source": source},
