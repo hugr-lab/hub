@@ -9,6 +9,7 @@ import (
 	"net/http"
 
 	"github.com/hugr-lab/airport-go/catalog"
+	"github.com/hugr-lab/hub/pkg/agentmgr"
 	"github.com/hugr-lab/hub/pkg/llmrouter"
 	"github.com/hugr-lab/hub/pkg/mcpserver"
 	"github.com/hugr-lab/query-engine/client"
@@ -92,6 +93,17 @@ func (a *HubApp) Init(ctx context.Context) error {
 	mux.HandleFunc("/api/user/login", a.handleUserLogin)
 	mux.Handle("/mcp/", mcpSrv.Handler())
 	mux.Handle("/v1/", router.OpenAICompatHandler()) // OpenAI-compatible for third-party agents
+
+	// Agent management (Docker backend for now)
+	dockerBackend, err := agentmgr.NewDockerBackend("hub-network")
+	if err != nil {
+		a.logger.Warn("Docker backend unavailable, agent management disabled", "error", err)
+	} else {
+		mgr := agentmgr.NewManager(dockerBackend, a.client, "http://localhost"+a.config.ListenAddr, a.logger)
+		mux.HandleFunc("/api/agent/start", a.handleAgentStart(mgr))
+		mux.HandleFunc("/api/agent/stop", a.handleAgentStop(mgr))
+		mux.HandleFunc("/api/agent/status", a.handleAgentStatus(mgr))
+	}
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok"}`))
