@@ -13,6 +13,8 @@ github.com/google/flatbuffers v25.12.19+incompatible h1:haMV2JRRJCe1998HeW/p0X9U
 github.com/google/flatbuffers v25.12.19+incompatible/go.mod h1:1AeVuKshWv4vARoZatz6mlQ0JxURH0Kv5+zNeJKJCa8=
 github.com/google/go-cmp v0.5.2/go.mod h1:v8dTdLbMG2kIc/vJvl+f65V22dbkXbowE6jgT/gNBxE=
 github.com/google/go-cmp v0.5.5/go.mod h1:v8dTdLbMG2kIc/vJvl+f65V22dbkXbowE6jgT/gNBxE=
+github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=
+github.com/google/uuid v1.6.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
 github.com/hugr-lab/airport-go v0.2.1 h1:fBCss0+ZrcBCs4CcF4/EBILAE9hNnS/jH0xWODz4gi0=
 github.com/hugr-lab/airport-go v0.2.1/go.mod h1:VQ+PTHpE3m9ok+JskPhzilAG+G7/f5YdplT6dTLmLNU=
 github.com/hugr-lab/query-engine/client v0.3.12 h1:/r7MALFiD4ZiGAYLOoirK4qwblQp8kY+gbcFhGwE14Q=

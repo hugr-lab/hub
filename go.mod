@@ -7,6 +7,7 @@ require (
 	github.com/docker/docker v28.5.2+incompatible // indirect
 	github.com/goccy/go-json v0.10.5 // indirect
 	github.com/google/flatbuffers v25.12.19+incompatible // indirect
+	github.com/google/uuid v1.6.0 // indirect
 	github.com/hugr-lab/airport-go v0.2.1 // indirect
 	github.com/hugr-lab/query-engine/client v0.3.12 // indirect
 	github.com/hugr-lab/query-engine/types v0.3.5 // indirect

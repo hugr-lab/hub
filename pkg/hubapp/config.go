@@ -18,9 +18,9 @@ func LoadConfig() Config {
 	cfg := Config{
 		HugrURL:       envOrDefault("HUGR_URL", "http://localhost:15004"),
 		HugrSecretKey: envOrDefault("HUGR_SECRET_KEY", ""),
-		ListenAddr:    envOrDefault("HUB_SERVICE_LISTEN", ":8082"),
-		FlightAddr:    envOrDefault("HUB_SERVICE_FLIGHT", ":50051"),
-		DatabaseDSN:   envOrDefault("HUB_DATABASE_DSN", "postgres://localhost:5432/hub"),
+		ListenAddr:    envOrDefault("HUB_SERVICE_LISTEN", ":10000"),
+		FlightAddr:    envOrDefault("HUB_SERVICE_FLIGHT", ":10001"),
+		DatabaseDSN:   envOrDefault("HUB_DATABASE_DSN", "postgres://hugr:hugr_password@localhost:18032/hub"),
 	}
 
 	switch os.Getenv("LOG_LEVEL") {

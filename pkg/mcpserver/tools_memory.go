@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/google/uuid"
+
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -52,13 +54,14 @@ func (s *Server) handleMemoryStore(userID string) server.ToolHandlerFunc {
 		}
 		source, _ := request.GetArguments()["source"].(string)
 
+		id := uuid.New().String()
 		res, err := s.hugrClient.Query(ctx,
-			`mutation($uid: String!, $content: String!, $category: String!, $source: String) {
+			`mutation($id: String!, $uid: String!, $content: String!, $category: String!, $source: String) {
 				hub { hub { insert_agent_memory(
-					data: { user_id: $uid, content: $content, category: $category, source: $source }
+					data: { id: $id, user_id: $uid, content: $content, category: $category, source: $source }
 				) { id } } }
 			}`,
-			map[string]any{"uid": userID, "content": content, "category": category, "source": source},
+			map[string]any{"id": id, "uid": userID, "content": content, "category": category, "source": source},
 		)
 		if err != nil {
 			return toolError(fmt.Sprintf("failed to store memory: %v", err)), nil

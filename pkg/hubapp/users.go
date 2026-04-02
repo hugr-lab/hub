@@ -40,10 +40,6 @@ func (a *HubApp) handleUserLogin(w http.ResponseWriter, r *http.Request) {
 					hugr_role: $role
 					email: $email
 				}
-				on_conflict: {
-					fields: ["id"]
-					update: ["display_name", "hugr_role", "email", "last_login_at"]
-				}
 			) { id } } }
 		}`,
 		map[string]any{
