@@ -1,14 +1,9 @@
 package hubapp
 
-import (
-	"context"
-	"log/slog"
-
-	"github.com/hugr-lab/query-engine/client"
-)
+import "context"
 
 // seedAgentTypes inserts default agent types if not already present.
-func seedAgentTypes(ctx context.Context, c *client.Client) {
+func (a *HubApp) seedAgentTypes(ctx context.Context) {
 	types := []struct {
 		ID          string
 		DisplayName string
@@ -30,7 +25,7 @@ func seedAgentTypes(ctx context.Context, c *client.Client) {
 	}
 
 	for _, t := range types {
-		res, err := c.Query(ctx,
+		_, err := a.client.Query(ctx,
 			`mutation($id: String!, $name: String!, $desc: String!, $img: String!) {
 				hub { hub { insert_agent_types(
 					data: { id: $id, display_name: $name, description: $desc, image: $img }
@@ -39,10 +34,9 @@ func seedAgentTypes(ctx context.Context, c *client.Client) {
 			map[string]any{"id": t.ID, "name": t.DisplayName, "desc": t.Description, "img": t.Image},
 		)
 		if err != nil {
-			slog.Warn("failed to seed agent type", "id", t.ID, "error", err)
+			a.logger.Warn("failed to seed agent type (may already exist)", "id", t.ID, "error", err)
 			continue
 		}
-		_ = res
-		slog.Info("agent type seeded", "id", t.ID)
+		a.logger.Info("agent type seeded", "id", t.ID)
 	}
 }

@@ -81,11 +81,11 @@ func (a *HubApp) Init(ctx context.Context) error {
 	a.logger.Info("hub app initialized — DB provisioned, starting services")
 
 	// Seed default agent types
-	seedAgentTypes(ctx, a.client)
+	a.seedAgentTypes(ctx)
 
 	// Start HTTP server (user sync API, future: MCP, WebSocket, Agent Manager)
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/user/login", userLoginHandler(a.client))
+	mux.HandleFunc("/api/user/login", a.handleUserLogin)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok"}`))
