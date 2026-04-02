@@ -18,16 +18,19 @@ type Agent struct {
 	mcpClient *mcpclient.Client
 	skills    *SkillsEngine
 	sandbox   *Sandbox
+	learner   *Learner
 	logger    *slog.Logger
 }
 
 func New(mcpURL string, skillsDir string, logger *slog.Logger) *Agent {
-	return &Agent{
+	a := &Agent{
 		mcpURL:  mcpURL,
 		skills:  NewSkillsEngine(skillsDir, logger),
 		sandbox: NewSandbox(logger),
 		logger:  logger,
 	}
+	a.learner = NewLearner(a)
+	return a
 }
 
 // Connect establishes MCP connection to Hub Service.
@@ -99,25 +102,30 @@ func (a *Agent) CallTool(ctx context.Context, name string, args map[string]any) 
 func (a *Agent) HandleMessage(ctx context.Context, userMessage string) (string, error) {
 	a.logger.Info("handling message", "length", len(userMessage))
 
-	// 1. Load relevant memories
-	memories, _ := a.CallTool(ctx, "memory-search", map[string]any{
-		"query": userMessage,
-		"limit": float64(3),
-	})
+	// 1. Load relevant context (memories + registry) via learner
+	learnedContext := a.learner.RetrieveContext(ctx, userMessage)
 
-	// 2. Build system prompt with skills
+	// 2. Build system prompt with skills + learned context
 	systemPrompt := a.skills.SystemPrompt()
-	if memories != "" {
-		systemPrompt += "\n\n## Relevant memories:\n" + memories
+	if learnedContext != "" {
+		systemPrompt += "\n\n" + learnedContext
 	}
 
-	// 3. Call LLM via Hub Service (will be added as MCP tool)
-	// For now, return a placeholder that shows the tools are working
-	// TODO: implement llm-complete tool call
-	response := fmt.Sprintf("Agent received: %q\nSystem prompt length: %d\nMemories: %s",
-		userMessage, len(systemPrompt), memories)
+	// 3. Call LLM via Hub Service
+	// TODO: implement multi-step reasoning with tool calls
+	response, err := a.CallTool(ctx, "llm-complete", map[string]any{
+		"messages": []map[string]string{
+			{"role": "system", "content": systemPrompt},
+			{"role": "user", "content": userMessage},
+		},
+	})
+	if err != nil {
+		// Fallback: return context info if LLM not available
+		response = fmt.Sprintf("Agent received: %q\nSystem prompt length: %d\nContext: %s",
+			userMessage, len(systemPrompt), learnedContext)
+	}
 
-	// 4. Store interaction in memory
+	// 4. Store user pattern in memory
 	_, _ = a.CallTool(ctx, "memory-store", map[string]any{
 		"content":  fmt.Sprintf("User asked: %s", userMessage),
 		"category": "user_pattern",

@@ -199,7 +199,6 @@ async def _post_auth_hook(authenticator, handler, authentication):
 
 c.GenericOAuthenticator.post_auth_hook = _post_auth_hook
 c.GenericOAuthenticator.manage_groups = True
-c.GenericOAuthenticator.auth_state_groups_key = None  # groups set by post_auth_hook, not from userinfo
 
 c.GenericOAuthenticator.enable_auth_state = True
 c.GenericOAuthenticator.refresh_pre_spawn = True

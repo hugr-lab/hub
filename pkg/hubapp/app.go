@@ -12,6 +12,7 @@ import (
 	"github.com/hugr-lab/hub/pkg/agentmgr"
 	"github.com/hugr-lab/hub/pkg/llmrouter"
 	"github.com/hugr-lab/hub/pkg/mcpserver"
+	"github.com/hugr-lab/hub/pkg/wsgateway"
 	"github.com/hugr-lab/query-engine/client"
 	"github.com/hugr-lab/query-engine/client/app"
 )
@@ -104,6 +105,13 @@ func (a *HubApp) Init(ctx context.Context) error {
 		mux.HandleFunc("/api/agent/stop", a.handleAgentStop(mgr))
 		mux.HandleFunc("/api/agent/status", a.handleAgentStatus(mgr))
 	}
+	// WebSocket gateway for chat UI
+	ws := wsgateway.New(func(ctx context.Context, userID, message string) (string, error) {
+		// Route through MCP — same path as agent
+		return mcpSrv.HandleUserMessage(ctx, userID, message)
+	}, a.logger)
+	mux.Handle("/ws/", ws.Handler())
+
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok"}`))

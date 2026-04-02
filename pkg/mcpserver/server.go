@@ -1,6 +1,9 @@
 package mcpserver
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -63,6 +66,59 @@ func (s *Server) Handler() http.Handler {
 		hugrMCP := qemcp.New(s.hugrClient, mcpSrv, s.debug)
 		hugrMCP.Handler().ServeHTTP(w, r)
 	})
+}
+
+// HandleUserMessage processes a chat message from the WebSocket gateway.
+// Searches memory for context, then calls LLM with the user message.
+func (s *Server) HandleUserMessage(ctx context.Context, userID, message string) (string, error) {
+	// Search relevant memories
+	var memoryCtx string
+	filter := fmt.Sprintf(`{ user_id: { eq: "%s" } }`, userID)
+	res, err := s.hugrClient.Query(ctx,
+		fmt.Sprintf(`{ hub { hub { agent_memory(filter: %s, limit: 5, order_by: { created_at: desc }) { content category } } } }`, filter),
+		nil,
+	)
+	if err == nil {
+		defer res.Close()
+		if res.Err() == nil {
+			data, _ := json.Marshal(res.Data)
+			memoryCtx = string(data)
+		}
+	}
+
+	// Call LLM
+	systemPrompt := "You are a helpful data assistant for Analytics Hub."
+	if memoryCtx != "" {
+		systemPrompt += "\n\nRelevant memories:\n" + memoryCtx
+	}
+
+	resp, err := s.llmRouter.Complete(ctx, llmrouter.CompletionRequest{
+		Messages: []llmrouter.Message{
+			{Role: "system", Content: systemPrompt},
+			{Role: "user", Content: message},
+		},
+		UserID: userID,
+	})
+	if err != nil {
+		return "", fmt.Errorf("llm complete: %w", err)
+	}
+
+	// Store user pattern
+	storeCtx := auth.ContextWithUser(ctx, auth.UserInfo{ID: userID})
+	storeRes, err := s.hugrClient.Query(storeCtx,
+		`mutation($uid: String!, $content: String!) {
+			hub { hub { insert_agent_memory(
+				data: { id: $uid, user_id: $uid, content: $content, category: "user_pattern" }
+				summary: $content
+			) { id } } }
+		}`,
+		map[string]any{"uid": userID, "content": fmt.Sprintf("User asked: %s", message)},
+	)
+	if err == nil {
+		defer storeRes.Close()
+	}
+
+	return resp.Content, nil
 }
 
 func toolError(msg string) *mcp.CallToolResult {

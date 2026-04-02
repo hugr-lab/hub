@@ -1,0 +1,58 @@
+# Test: JupyterHub + Hub Service. Hugr and Keycloak run on host.
+#
+# Identical to docker-compose.dev.yml + hub-service.
+# Uses .env (same as dev).
+#
+# Usage:
+#   docker compose -f docker-compose.test.yml up --build
+#   open http://localhost:8000
+
+services:
+  hub:
+    build:
+      context: .
+      dockerfile: Dockerfile.hub
+    env_file: ${HUB_ENV_FILE:-.env}
+    environment:
+      HUB_CONNECT_IP: hub
+      HUB_SERVICE_URL: http://hub-service:10000
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - hub-data:/srv/jupyterhub
+      - ./config:/opt/hub/config
+      - ./certs:/srv/jupyterhub/certs:ro
+    ports:
+      - "8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - hub-dev-network
+    depends_on:
+      hub-service:
+        condition: service_started
+    restart: unless-stopped
+
+  hub-service:
+    build:
+      context: .
+      dockerfile: Dockerfile.hub-service
+    env_file: ${HUB_ENV_FILE:-.env}
+    environment:
+      HUGR_URL: "${HUGR_URL}/ipc"
+      HUB_SERVICE_LISTEN: ":10000"
+      HUB_SERVICE_FLIGHT: ":10001"
+    ports:
+      - "10000:10000"
+      - "10001:10001"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - hub-dev-network
+    restart: unless-stopped
+
+volumes:
+  hub-data:
+
+networks:
+  hub-dev-network:
+    name: hub-dev-network
