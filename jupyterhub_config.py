@@ -314,9 +314,13 @@ def _options_form(spawner):
         if default in profiles:
             matched = [(default, profiles[default])]
 
-    # Single match — no UI needed
+    # Single match — no profile selection, but still capture timezone
     if len(matched) <= 1:
-        return ""
+        return (
+            '<input type="hidden" name="timezone" id="user-timezone">'
+            '<script>document.getElementById("user-timezone").value='
+            'Intl.DateTimeFormat().resolvedOptions().timeZone;</script>'
+        )
 
     # Multiple matches — show selection
     matched.sort(key=lambda x: x[1].get("rank", 0))
@@ -333,13 +337,18 @@ def _options_form(spawner):
             <span style="color:#666;margin-left:8px">{mem} RAM, {cpu} CPU</span>
             {f'<br><span style="color:#888;font-size:0.85em;margin-left:24px">{desc}</span>' if desc else ''}
         </label>'''
+    html += '<input type="hidden" name="timezone" id="user-timezone">'
+    html += '<script>document.getElementById("user-timezone").value=Intl.DateTimeFormat().resolvedOptions().timeZone;</script>'
     html += '</div>'
     return html
 
 c.Spawner.options_form = _options_form
 
 def _options_from_form(formdata):
-    return {"profile": formdata.get("profile", [""])[0]}
+    return {
+        "profile": formdata.get("profile", [""])[0],
+        "timezone": formdata.get("timezone", [""])[0],
+    }
 
 c.Spawner.options_from_form = _options_from_form
 
@@ -396,7 +405,12 @@ async def pre_spawn_hook(spawner, auth_state):
         base_volumes.update(storage_volumes)
         spawner.volumes = base_volumes
 
-    # 6. Pass Hugr connection
+    # 6. Pass user timezone (from browser via options_form)
+    user_tz = spawner.user_options.get("timezone", "")
+    if user_tz:
+        spawner.environment["TZ"] = user_tz
+
+    # 7. Pass Hugr connection
     spawner.environment["HUGR_URL"] = HUGR_URL
     spawner.environment["HUGR_CONNECTION_NAME"] = HUGR_CONNECTION_NAME
     if HUGR_TLS_SKIP_VERIFY:
