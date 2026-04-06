@@ -61,39 +61,24 @@ func (a *HubApp) Catalog(ctx context.Context) (catalog.Catalog, error) {
 }
 
 func (a *HubApp) DataSources(ctx context.Context) ([]app.DataSourceInfo, error) {
-	sources := []app.DataSourceInfo{
+	return []app.DataSourceInfo{
 		{
 			Name:        "db",
 			Type:        "postgres",
-			Description: "Hub Service database (agent metadata, memory, LLM usage)",
+			Description: "Hub metadata database (agents, memory, budgets, usage)",
 			Path:        a.config.DatabaseDSN,
 			ReadOnly:    false,
 			Version:     appVersion,
 			HugrSchema:  hubGraphQLSchema,
 		},
-	}
-
-	for _, p := range a.config.LLMProviders {
-		sources = append(sources, app.DataSourceInfo{
-			Name:        p.Name,
-			Type:        p.Type,
-			Description: p.Description(),
-			Path:        p.BuildPath(),
-			ReadOnly:    true,
-		})
-	}
-
-	if a.config.RedisURL != "" {
-		sources = append(sources, app.DataSourceInfo{
+		{
 			Name:        "redis",
 			Type:        "redis",
-			Description: "Hub cache and rate limit store",
+			Description: "Hub rate limiting and cache store",
 			Path:        a.config.RedisURL,
 			ReadOnly:    false,
-		})
-	}
-
-	return sources, nil
+		},
+	}, nil
 }
 
 func (a *HubApp) InitDBSchemaTemplate(ctx context.Context, name string) (string, error) {
