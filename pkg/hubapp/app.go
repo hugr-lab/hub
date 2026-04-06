@@ -77,6 +77,7 @@ func (a *HubApp) DataSources(ctx context.Context) ([]app.DataSourceInfo, error) 
 			Description: "Hub rate limiting and cache store",
 			Path:        a.config.RedisURL,
 			ReadOnly:    false,
+			HugrSchema:  " ", // non-empty to prevent self_defined=true (Redis has no schema)
 		},
 	}, nil
 }
