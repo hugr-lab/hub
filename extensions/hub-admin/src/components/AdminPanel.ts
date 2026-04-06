@@ -3,7 +3,7 @@
  * Data Sources and Catalogs use AG Grid for tables.
  */
 import { Widget } from '@lumino/widgets';
-import { createGrid, GridApi, GridOptions } from 'ag-grid-community';
+import { createGrid, GridApi, GridOptions, themeQuartz } from 'ag-grid-community';
 
 import {
   fetchDataSources, insertDataSource, updateDataSource, deleteDataSource,
@@ -156,18 +156,20 @@ export class AdminPanelWidget extends Widget {
       }));
 
       createGrid(gridDiv, {
+        theme: themeQuartz,
         rowData,
         columnDefs: [
           {
             headerName: '',
             field: 'disabled',
-            width: 30,
+            width: 28,
+            minWidth: 28,
+            maxWidth: 28,
             cellRenderer: (p: any) => `<span class="hub-admin-dot ${p.value ? 'hub-admin-dot--inactive' : 'hub-admin-dot--active'}"></span>`,
           },
-          { headerName: 'Name', field: 'name', flex: 2, filter: true, sortable: true },
-          { headerName: 'Type', field: 'type', flex: 1, filter: true, sortable: true },
-          { headerName: 'Description', field: 'description', flex: 2 },
-          { headerName: 'Cat', field: 'catalogs', width: 50, sortable: true },
+          { headerName: 'Name', field: 'name', minWidth: 100, filter: true, sortable: true },
+          { headerName: 'Type', field: 'type', minWidth: 70, width: 90, filter: true, sortable: true },
+          { headerName: 'Cat', field: 'catalogs', width: 45, minWidth: 45, maxWidth: 45, sortable: true },
           {
             headerName: '',
             width: 80,
@@ -418,16 +420,15 @@ export class AdminPanelWidget extends Widget {
       el.appendChild(gridDiv);
 
       createGrid(gridDiv, {
+        theme: themeQuartz,
         rowData: catalogSources.map(cs => ({
           ...cs,
           linkedDS: links.filter(l => l.catalog_name === cs.name).map(l => l.data_source_name).join(', '),
         })),
         columnDefs: [
-          { headerName: 'Name', field: 'name', flex: 2, filter: true, sortable: true },
-          { headerName: 'Type', field: 'type', width: 80, filter: true, sortable: true },
-          { headerName: 'Description', field: 'description', flex: 2 },
-          { headerName: 'Path', field: 'path', flex: 2 },
-          { headerName: 'Data Sources', field: 'linkedDS', flex: 2 },
+          { headerName: 'Name', field: 'name', minWidth: 80, filter: true, sortable: true },
+          { headerName: 'Type', field: 'type', width: 70, minWidth: 60, filter: true, sortable: true },
+          { headerName: 'DS', field: 'linkedDS', minWidth: 60 },
           {
             headerName: '',
             width: 50,

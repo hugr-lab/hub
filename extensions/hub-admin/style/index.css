@@ -1,6 +1,5 @@
 /* Hub Admin Panel Styles — JupyterLab sidebar pattern */
-@import "ag-grid-community/styles/ag-grid.css";
-@import "ag-grid-community/styles/ag-theme-alpine.css";
+/* AG Grid v35 uses Theming API, no CSS imports needed */
 
 .hub-admin-panel {
   overflow-y: auto;
