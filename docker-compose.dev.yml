@@ -39,18 +39,31 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.hub-service
+    env_file: ${HUB_ENV_FILE:-.env}
     environment:
       HUGR_URL: "http://host.docker.internal:15004/ipc"
       HUGR_SECRET_KEY: "${HUGR_SECRET_KEY:-secret-key}"
       HUB_SERVICE_LISTEN: ":8082"
       HUB_SERVICE_FLIGHT: ":50051"
       HUB_DATABASE_DSN: "postgres://hugr:hugr_password@host.docker.internal:18032/hub"
+      HUB_REDIS_URL: "redis://redis:6379/0"
       LOG_LEVEL: "debug"
     ports:
       - "8082:8082"
       - "50051:50051"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    networks:
+      - hub-dev-network
+    depends_on:
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
     networks:
       - hub-dev-network
     restart: unless-stopped
