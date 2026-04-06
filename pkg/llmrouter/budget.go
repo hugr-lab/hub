@@ -66,21 +66,17 @@ func (b *BudgetChecker) RecordUsage(ctx context.Context, userID, providerID stri
 	periodKey := currentPeriodKey("hour")
 
 	res, err := b.hugrClient.Query(ctx,
-		`mutation($uid: String!, $pid: String!, $tin: Int!, $tout: Int!, $pk: String!) {
-			hub { hub { insert_llm_usage(data: {
-				user_id: $uid
-				provider_id: $pid
-				tokens_in: $tin
-				tokens_out: $tout
-				period_key: $pk
-			}) { id } } }
+		`mutation($data: hub_db_llm_usage_mut_input_data!) {
+			hub { db { insert_llm_usage(data: $data) { id } } }
 		}`,
 		map[string]any{
-			"uid":  userID,
-			"pid":  providerID,
-			"tin":  tokensIn,
-			"tout": tokensOut,
-			"pk":   periodKey,
+			"data": map[string]any{
+				"user_id":     userID,
+				"provider_id": providerID,
+				"tokens_in":   tokensIn,
+				"tokens_out":  tokensOut,
+				"period_key":  periodKey,
+			},
 		},
 	)
 	if err != nil {
@@ -105,7 +101,7 @@ type usageSummary struct {
 }
 
 func (b *BudgetChecker) getBudget(ctx context.Context, scope, providerID string) (*budgetRule, error) {
-	gql := fmt.Sprintf(`{ hub { hub { llm_budgets(
+	gql := fmt.Sprintf(`{ hub { db { llm_budgets(
 		filter: { scope: { eq: "%s" } }
 		limit: 1
 	) { period max_tokens_in max_tokens_out max_requests } } } }`, scope)
@@ -120,7 +116,7 @@ func (b *BudgetChecker) getBudget(ctx context.Context, scope, providerID string)
 	}
 
 	var budgets []budgetRule
-	if err := res.ScanData("hub.hub.llm_budgets", &budgets); err != nil || len(budgets) == 0 {
+	if err := res.ScanData("hub.db.llm_budgets", &budgets); err != nil || len(budgets) == 0 {
 		return nil, nil
 	}
 
@@ -130,7 +126,7 @@ func (b *BudgetChecker) getBudget(ctx context.Context, scope, providerID string)
 func (b *BudgetChecker) getUsage(ctx context.Context, userID, providerID, period string) (usageSummary, error) {
 	periodKey := currentPeriodKey(period)
 
-	gql := fmt.Sprintf(`{ hub { hub { llm_usage_aggregation(
+	gql := fmt.Sprintf(`{ hub { db { llm_usage_aggregation(
 		filter: { user_id: { eq: "%s" }, period_key: { eq: "%s" } }
 	) { aggregations { tokens_in { sum } tokens_out { sum } _rows_count } } } } }`,
 		userID, periodKey)
@@ -151,7 +147,7 @@ func (b *BudgetChecker) getUsage(ctx context.Context, userID, providerID, period
 			RowsCount int                  `json:"_rows_count"`
 		} `json:"aggregations"`
 	}
-	if err := res.ScanData("hub.hub.llm_usage_aggregation", &agg); err != nil || len(agg) == 0 {
+	if err := res.ScanData("hub.db.llm_usage_aggregation", &agg); err != nil || len(agg) == 0 {
 		return usageSummary{}, nil
 	}
 

@@ -39,7 +39,7 @@ func (s *Server) handleRegistrySave(userID string) server.ToolHandlerFunc {
 
 		res, err := s.hugrClient.Query(ctx,
 			`mutation($uid: String!, $name: String!, $query: String!, $desc: String) {
-				hub { hub { insert_query_registry(
+				hub { db { insert_query_registry(
 					data: { user_id: $uid, name: $name, query: $query, description: $desc }
 				) { id name } } }
 			}`,
@@ -68,7 +68,7 @@ func (s *Server) handleRegistrySearch(userID string) server.ToolHandlerFunc {
 		}
 
 		gql := fmt.Sprintf(`{
-			hub { hub { query_registry(
+			hub { db { query_registry(
 				filter: { _and: [
 					{ user_id: { eq: "%s" } }
 					{ _or: [
@@ -77,7 +77,7 @@ func (s *Server) handleRegistrySearch(userID string) server.ToolHandlerFunc {
 					]}
 				]}
 				limit: %d
-				order_by: { usage_count: desc }
+				order_by: [{field: "usage_count", direction: DESC}]
 			) { id name query description tags usage_count } } }
 		}`, userID, query, query, limit)
 

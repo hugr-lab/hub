@@ -58,7 +58,7 @@ func (r *Router) handleChatCompletions(w http.ResponseWriter, req *http.Request)
 	}
 
 	resp, err := r.Complete(req.Context(), CompletionRequest{
-		Provider:  body.Model, // model as provider hint
+		Model:     body.Model,
 		Messages:  messages,
 		MaxTokens: body.MaxTokens,
 		UserID:    userID,
@@ -82,7 +82,7 @@ func (r *Router) handleChatCompletions(w http.ResponseWriter, req *http.Request)
 			{
 				"index":         0,
 				"message":       map[string]string{"role": "assistant", "content": resp.Content},
-				"finish_reason": "stop",
+				"finish_reason": resp.FinishReason,
 			},
 		},
 		"usage": map[string]int{

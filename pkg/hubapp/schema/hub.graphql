@@ -228,42 +228,16 @@ type tool_calls @table(name: "tool_calls") {
   created_at: Timestamp @default(insert_exp: "NOW()")
 }
 
-"""Configured LLM provider endpoint (Claude, OpenAI, Gemini, local)."""
-type llm_providers @table(name: "llm_providers") {
-  """Provider identifier (e.g. claude-main, openai-fast, local-llama)"""
-  id: String! @pk
-  """Protocol type: anthropic, openai, gemini, openai-compatible"""
-  provider: String!
-  """Model name (e.g. claude-sonnet-4-20250514, gpt-4o)"""
-  model: String!
-  """Custom API endpoint URL (null for provider default)"""
-  base_url: String
-  """Secret reference for API key (e.g. ${secret:ANTHROPIC_API_KEY})"""
-  api_key_ref: String
-  """Maximum tokens per completion request"""
-  max_tokens_per_request: Int
-  """Whether this provider is currently active"""
-  enabled: Boolean
-  """Provider-specific settings"""
-  metadata: JSON
-}
-
-"""Token and request budget limits per user, role, or global scope."""
+"""Token and request budget limits per user, role, or global scope.
+LLM providers are now Hugr data sources (llm-openai, llm-anthropic, llm-gemini).
+provider_id references the data source name (e.g. claude, gpt4)."""
 type llm_budgets @table(name: "llm_budgets") {
   """Budget rule UUID"""
   id: String! @pk @default(insert_exp: "gen_random_uuid()")
   """Target scope: user:alice, role:analyst, or global"""
   scope: String!
-  """Specific provider (null applies to all providers)"""
-  provider_id: String @field_references(
-    name: "budgets_provider_ref"
-    references_name: "llm_providers"
-    field: "id"
-    query: "llm_provider"
-    description: "LLM provider this budget applies to"
-    references_query: "budgets"
-    references_description: "Budget rules for this provider"
-  )
+  """LLM data source name (null applies to all providers)"""
+  provider_id: String
   """Time period for this budget: hour, day, or month"""
   period: String!
   """Maximum input tokens per period (null for unlimited)"""
@@ -276,22 +250,15 @@ type llm_budgets @table(name: "llm_budgets") {
   created_at: Timestamp @default(insert_exp: "NOW()")
 }
 
-"""Per-request LLM token usage record for tracking and budget enforcement."""
+"""Per-request LLM token usage record for tracking and budget enforcement.
+provider_id references the LLM data source name."""
 type llm_usage @table(name: "llm_usage") {
   """Usage record UUID"""
   id: String! @pk @default(insert_exp: "gen_random_uuid()")
   """User who made the request"""
   user_id: String!
-  """LLM provider used"""
-  provider_id: String! @field_references(
-    name: "usage_provider_ref"
-    references_name: "llm_providers"
-    field: "id"
-    query: "llm_provider"
-    description: "LLM provider used for this request"
-    references_query: "usage"
-    references_description: "Usage records for this provider"
-  )
+  """LLM data source name (e.g. claude, gpt4)"""
+  provider_id: String!
   """Agent session (if from agent, null for direct API)"""
   session_id: String @field_references(
     name: "usage_session_ref"

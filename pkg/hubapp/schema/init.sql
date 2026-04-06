@@ -102,23 +102,11 @@ CREATE TABLE IF NOT EXISTS tool_calls (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- LLM providers
-CREATE TABLE IF NOT EXISTS llm_providers (
-  id TEXT PRIMARY KEY,
-  provider TEXT NOT NULL,
-  model TEXT NOT NULL,
-  base_url TEXT,
-  api_key_ref TEXT,
-  max_tokens_per_request INT DEFAULT 4096,
-  enabled BOOLEAN DEFAULT true,
-  metadata JSONB DEFAULT '{}'
-);
-
--- LLM budgets
+-- LLM budgets (provider_id references Hugr data source name, no FK)
 CREATE TABLE IF NOT EXISTS llm_budgets (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   scope TEXT NOT NULL,
-  provider_id TEXT REFERENCES llm_providers(id),
+  provider_id TEXT,
   period TEXT NOT NULL CHECK (period IN ('hour', 'day', 'month')),
   max_tokens_in BIGINT,
   max_tokens_out BIGINT,
@@ -126,11 +114,11 @@ CREATE TABLE IF NOT EXISTS llm_budgets (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- LLM usage tracking
+-- LLM usage tracking (provider_id references Hugr data source name, no FK)
 CREATE TABLE IF NOT EXISTS llm_usage (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id TEXT NOT NULL,
-  provider_id TEXT NOT NULL REFERENCES llm_providers(id),
+  provider_id TEXT NOT NULL,
   session_id UUID REFERENCES agent_sessions(id),
   tokens_in INT NOT NULL,
   tokens_out INT NOT NULL,

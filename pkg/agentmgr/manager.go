@@ -51,7 +51,7 @@ func (m *Manager) StartAgent(ctx context.Context, userID, agentTypeID string) (s
 	// 3. Record instance in hub DB
 	res, err := m.hugrClient.Query(ctx,
 		`mutation($uid: String!, $tid: String!, $cid: String!) {
-			hub { hub { insert_agent_instances(data: {
+			hub { db { insert_agent_instances(data: {
 				user_id: $uid
 				agent_type_id: $tid
 				container_id: $cid
@@ -92,7 +92,7 @@ func (m *Manager) StopAgent(ctx context.Context, userID string) error {
 
 	// Update status in DB
 	res, err := m.hugrClient.Query(ctx,
-		fmt.Sprintf(`mutation { hub { hub { update_agent_instances(
+		fmt.Sprintf(`mutation { hub { db { update_agent_instances(
 			filter: { id: { eq: "%s" } }
 			data: { status: "stopped" }
 		) { success } } } }`, instance.ID),
@@ -124,7 +124,7 @@ type agentTypeInfo struct {
 
 func (m *Manager) getAgentType(ctx context.Context, typeID string) (agentTypeInfo, error) {
 	res, err := m.hugrClient.Query(ctx,
-		fmt.Sprintf(`{ hub { hub { agent_types(filter: { id: { eq: "%s" } }) { image } } } }`, typeID),
+		fmt.Sprintf(`{ hub { db { agent_types(filter: { id: { eq: "%s" } }) { image } } } }`, typeID),
 		nil,
 	)
 	if err != nil {
@@ -135,7 +135,7 @@ func (m *Manager) getAgentType(ctx context.Context, typeID string) (agentTypeInf
 		return agentTypeInfo{}, res.Err()
 	}
 	var types []agentTypeInfo
-	if err := res.ScanData("hub.hub.agent_types", &types); err != nil || len(types) == 0 {
+	if err := res.ScanData("hub.db.agent_types", &types); err != nil || len(types) == 0 {
 		return agentTypeInfo{}, fmt.Errorf("agent type %q not found", typeID)
 	}
 	return types[0], nil
@@ -148,7 +148,7 @@ type instanceInfo struct {
 
 func (m *Manager) getRunningInstance(ctx context.Context, userID string) (instanceInfo, error) {
 	res, err := m.hugrClient.Query(ctx,
-		fmt.Sprintf(`{ hub { hub { agent_instances(
+		fmt.Sprintf(`{ hub { db { agent_instances(
 			filter: { user_id: { eq: "%s" }, status: { eq: "running" } }
 			limit: 1
 		) { id container_id } } } }`, userID),
@@ -162,7 +162,7 @@ func (m *Manager) getRunningInstance(ctx context.Context, userID string) (instan
 		return instanceInfo{}, res.Err()
 	}
 	var instances []instanceInfo
-	if err := res.ScanData("hub.hub.agent_instances", &instances); err != nil || len(instances) == 0 {
+	if err := res.ScanData("hub.db.agent_instances", &instances); err != nil || len(instances) == 0 {
 		return instanceInfo{}, fmt.Errorf("no running agent for user %q", userID)
 	}
 	return instances[0], nil

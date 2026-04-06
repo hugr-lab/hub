@@ -13,7 +13,7 @@ func (a *HubApp) seedAgentTypes(ctx context.Context) {
 	for _, t := range types {
 		// Check if exists
 		res, err := a.client.Query(ctx,
-			`query($id: String!) { hub { hub { agent_types(filter: { id: { eq: $id } }) { id } } } }`,
+			`query($id: String!) { hub { db { agent_types(filter: { id: { eq: $id } }) { id } } } }`,
 			map[string]any{"id": t.ID},
 		)
 		if err != nil {
@@ -23,7 +23,7 @@ func (a *HubApp) seedAgentTypes(ctx context.Context) {
 		defer res.Close()
 
 		var existing []struct{ ID string `json:"id"` }
-		_ = res.ScanData("hub.hub.agent_types", &existing)
+		_ = res.ScanData("hub.db.agent_types", &existing)
 		if len(existing) > 0 {
 			a.logger.Info("agent type already exists, skipping", "id", t.ID)
 			continue
@@ -32,7 +32,7 @@ func (a *HubApp) seedAgentTypes(ctx context.Context) {
 		// Insert
 		res2, err := a.client.Query(ctx,
 			`mutation($id: String!, $name: String!, $desc: String!, $img: String!) {
-				hub { hub { insert_agent_types(
+				hub { db { insert_agent_types(
 					data: { id: $id, display_name: $name, description: $desc, image: $img }
 				) { id } } }
 			}`,

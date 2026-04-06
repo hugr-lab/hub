@@ -75,7 +75,7 @@ func (s *Server) HandleUserMessage(ctx context.Context, userID, message string) 
 	var memoryCtx string
 	filter := fmt.Sprintf(`{ user_id: { eq: "%s" } }`, userID)
 	res, err := s.hugrClient.Query(ctx,
-		fmt.Sprintf(`{ hub { hub { agent_memory(filter: %s, limit: 5, order_by: { created_at: desc }) { content category } } } }`, filter),
+		fmt.Sprintf(`{ hub { db { agent_memory(filter: %s, limit: 5, order_by: [{field: "created_at", direction: DESC}]) { content category } } } }`, filter),
 		nil,
 	)
 	if err == nil {
@@ -107,7 +107,7 @@ func (s *Server) HandleUserMessage(ctx context.Context, userID, message string) 
 	storeCtx := auth.ContextWithUser(ctx, auth.UserInfo{ID: userID})
 	storeRes, err := s.hugrClient.Query(storeCtx,
 		`mutation($uid: String!, $content: String!) {
-			hub { hub { insert_agent_memory(
+			hub { db { insert_agent_memory(
 				data: { id: $uid, user_id: $uid, content: $content, category: "user_pattern" }
 				summary: $content
 			) { id } } }

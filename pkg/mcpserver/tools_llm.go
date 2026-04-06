@@ -14,7 +14,7 @@ func (s *Server) registerLLMTools(mcpSrv *server.MCPServer, userID string) {
 	mcpSrv.AddTool(
 		mcp.NewTool("llm-complete",
 			mcp.WithDescription("Send messages to LLM and get completion. Budget is enforced per user."),
-			mcp.WithString("provider", mcp.Description("Provider ID (empty = default for user's role)")),
+			mcp.WithString("model", mcp.Description("LLM data source name (e.g. claude, gpt4). Empty = first available.")),
 			mcp.WithObject("messages", mcp.Required(), mcp.Description("Array of {role, content} message objects")),
 			mcp.WithNumber("max_tokens", mcp.Description("Max output tokens")),
 		),
@@ -22,10 +22,10 @@ func (s *Server) registerLLMTools(mcpSrv *server.MCPServer, userID string) {
 	)
 
 	mcpSrv.AddTool(
-		mcp.NewTool("llm-list-providers",
-			mcp.WithDescription("List available LLM providers for the current user."),
+		mcp.NewTool("llm-list-models",
+			mcp.WithDescription("List available LLM models (registered data sources)."),
 		),
-		s.handleLLMListProviders(userID),
+		s.handleLLMListModels(),
 	)
 }
 
@@ -36,7 +36,7 @@ func (s *Server) handleLLMComplete(userID string) server.ToolHandlerFunc {
 		}
 
 		args := request.GetArguments()
-		provider, _ := args["provider"].(string)
+		model, _ := args["model"].(string)
 
 		var messages []llmrouter.Message
 		if msgsRaw, ok := args["messages"]; ok {
@@ -53,7 +53,7 @@ func (s *Server) handleLLMComplete(userID string) server.ToolHandlerFunc {
 		}
 
 		resp, err := s.llmRouter.Complete(ctx, llmrouter.CompletionRequest{
-			Provider:  provider,
+			Model:     model,
 			Messages:  messages,
 			MaxTokens: maxTokens,
 			UserID:    userID,
@@ -67,21 +67,16 @@ func (s *Server) handleLLMComplete(userID string) server.ToolHandlerFunc {
 	}
 }
 
-func (s *Server) handleLLMListProviders(userID string) server.ToolHandlerFunc {
+func (s *Server) handleLLMListModels() server.ToolHandlerFunc {
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		res, err := s.hugrClient.Query(ctx,
-			`{ hub { hub { llm_providers(filter: { enabled: { eq: true } }) {
-				id provider model max_tokens_per_request
-			} } } }`, nil)
+		if s.llmRouter == nil {
+			return toolError("LLM router not configured"), nil
+		}
+		models, err := s.llmRouter.ListModels(ctx)
 		if err != nil {
-			return toolError(fmt.Sprintf("failed to list providers: %v", err)), nil
+			return toolError(fmt.Sprintf("failed to list models: %v", err)), nil
 		}
-		defer res.Close()
-		if res.Err() != nil {
-			return toolError(fmt.Sprintf("list providers graphql error: %v", res.Err())), nil
-		}
-
-		data, _ := json.MarshalIndent(res.Data, "", "  ")
+		data, _ := json.MarshalIndent(models, "", "  ")
 		return toolResult(string(data)), nil
 	}
 }

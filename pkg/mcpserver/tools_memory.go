@@ -57,7 +57,7 @@ func (s *Server) handleMemoryStore(userID string) server.ToolHandlerFunc {
 		id := uuid.New().String()
 		res, err := s.hugrClient.Query(ctx,
 			`mutation($id: String!, $uid: String!, $content: String!, $category: String!, $source: String) {
-				hub { hub { insert_agent_memory(
+				hub { db { insert_agent_memory(
 					data: { id: $id, user_id: $uid, content: $content, category: $category, source: $source }
 					summary: $content
 				) { id } } }
@@ -99,10 +99,10 @@ func (s *Server) handleMemorySearch(userID string) server.ToolHandlerFunc {
 
 		// Use semantic search via _distance_to_query
 		gql := fmt.Sprintf(`{
-			hub { hub { agent_memory(
+			hub { db { agent_memory(
 				filter: %s
 				limit: %d
-				order_by: { created_at: desc }
+				order_by: [{field: "created_at", direction: DESC}]
 			) {
 				id content category source created_at
 			} } }
@@ -137,10 +137,10 @@ func (s *Server) handleMemoryList(userID string) server.ToolHandlerFunc {
 		filter += " }"
 
 		gql := fmt.Sprintf(`{
-			hub { hub { agent_memory(
+			hub { db { agent_memory(
 				filter: %s
 				limit: %d
-				order_by: { created_at: desc }
+				order_by: [{field: "created_at", direction: DESC}]
 			) {
 				id content category source created_at
 			} } }

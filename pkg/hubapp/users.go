@@ -30,7 +30,7 @@ func (a *HubApp) handleUserLogin(w http.ResponseWriter, r *http.Request) {
 
 	// Check if user exists
 	checkRes, err := a.client.Query(r.Context(),
-		`query($id: String!) { hub { hub { users(filter: { id: { eq: $id } }) { id } } } }`,
+		`query($id: String!) { hub { db { users(filter: { id: { eq: $id } }) { id } } } }`,
 		map[string]any{"id": req.UserID},
 	)
 	if err != nil {
@@ -41,13 +41,13 @@ func (a *HubApp) handleUserLogin(w http.ResponseWriter, r *http.Request) {
 	defer checkRes.Close()
 
 	var existing []struct{ ID string `json:"id"` }
-	_ = checkRes.ScanData("hub.hub.users", &existing)
+	_ = checkRes.ScanData("hub.db.users", &existing)
 
 	if len(existing) > 0 {
 		// Update
 		res, err := a.client.Query(r.Context(),
 			`mutation($id: String!, $name: String!, $role: String!, $email: String!) {
-				hub { hub { update_users(
+				hub { db { update_users(
 					filter: { id: { eq: $id } }
 					data: { display_name: $name, hugr_role: $role, email: $email }
 				) { affected_rows } } }
@@ -64,7 +64,7 @@ func (a *HubApp) handleUserLogin(w http.ResponseWriter, r *http.Request) {
 		// Insert
 		res, err := a.client.Query(r.Context(),
 			`mutation($id: String!, $name: String!, $role: String!, $email: String!) {
-				hub { hub { insert_users(
+				hub { db { insert_users(
 					data: { id: $id, display_name: $name, hugr_role: $role, email: $email }
 				) { id } } }
 			}`,
