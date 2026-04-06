@@ -219,6 +219,22 @@ async def _post_auth_hook(authenticator, handler, authentication):
 c.GenericOAuthenticator.post_auth_hook = _post_auth_hook
 c.GenericOAuthenticator.manage_groups = True
 
+# Override default auth_state_groups_key ("oauth_user.groups") which doesn't exist
+# in Keycloak userinfo and causes groups to be wiped on refresh_pre_spawn.
+# This callable extracts groups from our custom OIDC claims — same logic as post_auth_hook.
+def _groups_from_auth_state(auth_state):
+    from hub_profiles.resolver import extract_claim
+    groups = []
+    _pc = os.environ.get("HUGR_PROFILE_CLAIM", "")
+    if _pc:
+        for v in extract_claim(auth_state, _pc):
+            groups.append(f"profile:{v}")
+    for r in extract_claim(auth_state, os.environ.get("HUGR_ROLE_CLAIM", "x-hugr-role")):
+        groups.append(f"role:{r}")
+    return groups
+
+c.GenericOAuthenticator.auth_state_groups_key = _groups_from_auth_state
+
 c.GenericOAuthenticator.enable_auth_state = True
 c.GenericOAuthenticator.refresh_pre_spawn = True
 c.GenericOAuthenticator.auth_refresh_age = 120
@@ -429,7 +445,11 @@ async def pre_spawn_hook(spawner, auth_state):
     if user_tz:
         spawner.environment["TZ"] = user_tz
 
-    # 7. Pass Hugr connection
+    # 7. Admin flag for hub-admin extension
+    if spawner.user.admin:
+        spawner.environment["HUGR_HUB_ADMIN"] = "true"
+
+    # 8. Pass Hugr connection
     spawner.environment["HUGR_URL"] = HUGR_URL
     spawner.environment["HUGR_CONNECTION_NAME"] = HUGR_CONNECTION_NAME
     if HUGR_TLS_SKIP_VERIFY:

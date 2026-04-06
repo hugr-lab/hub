@@ -40,10 +40,11 @@ services:
       context: .
       dockerfile: Dockerfile.hub-service
     environment:
-      HUGR_URL: "http://host.docker.internal:15004"
-      HUGR_SECRET_KEY: "${HUGR_SECRET_KEY:-local-dev-secret}"
+      HUGR_URL: "http://host.docker.internal:15004/ipc"
+      HUGR_SECRET_KEY: "${HUGR_SECRET_KEY:-secret-key}"
       HUB_SERVICE_LISTEN: ":8082"
       HUB_SERVICE_FLIGHT: ":50051"
+      HUB_DATABASE_DSN: "postgres://hugr:hugr_password@host.docker.internal:18032/hub"
       LOG_LEVEL: "debug"
     ports:
       - "8082:8082"

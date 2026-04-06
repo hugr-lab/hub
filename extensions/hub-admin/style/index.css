@@ -1,33 +1,128 @@
-/* Hub Admin Panel Styles */
+/* Hub Admin Panel Styles — JupyterLab sidebar pattern */
 
 .hub-admin-panel {
-  padding: 12px;
   overflow-y: auto;
   font-family: var(--jp-ui-font-family);
   font-size: var(--jp-ui-font-size1);
   color: var(--jp-ui-font-color0);
 }
 
-.hub-admin-panel h2 {
-  font-size: var(--jp-ui-font-size2);
+/* ── Collapsible section headers (like Running panel) ─────────── */
+
+.hub-admin-section-header {
+  display: flex;
+  align-items: center;
+  padding: 4px 12px;
+  font-size: 12px;
   font-weight: 600;
-  margin: 16px 0 8px;
-  padding-bottom: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--jp-ui-font-color1);
+  background: var(--jp-layout-color2);
+  border-bottom: 1px solid var(--jp-border-color2);
+  cursor: pointer;
+  user-select: none;
+}
+
+.hub-admin-section-header:hover {
+  background: var(--jp-layout-color3);
+}
+
+.hub-admin-section-caret {
+  display: inline-block;
+  margin-right: 6px;
+  font-size: 9px;
+  transition: transform 0.15s ease;
+}
+
+.hub-admin-section-header--expanded .hub-admin-section-caret {
+  transform: rotate(90deg);
+}
+
+.hub-admin-section-body {
+  padding: 8px 12px;
   border-bottom: 1px solid var(--jp-border-color2);
 }
 
-.hub-admin-panel h3 {
-  font-size: var(--jp-ui-font-size1);
+/* ── Subheading inside sections ───────────────────────────────── */
+
+.hub-admin-subheading {
+  font-size: 11px;
   font-weight: 600;
+  text-transform: uppercase;
+  color: var(--jp-ui-font-color2);
   margin: 12px 0 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--jp-border-color2);
 }
 
-/* Section containers */
-.hub-admin-section {
-  margin-bottom: 16px;
+/* ── List items (providers, budgets, agents) ──────────────────── */
+
+.hub-admin-list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--jp-border-color3);
 }
 
-/* Tables */
+.hub-admin-list-item:last-child {
+  border-bottom: none;
+}
+
+.hub-admin-list-item-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+
+.hub-admin-list-item-title {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hub-admin-list-item-meta {
+  font-size: 11px;
+  color: var(--jp-ui-font-color2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hub-admin-list-item-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+/* ── Status dots ──────────────────────────────────────────────── */
+
+.hub-admin-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.hub-admin-dot--active {
+  background: var(--jp-success-color1);
+}
+
+.hub-admin-dot--inactive {
+  background: var(--jp-ui-font-color3);
+}
+
+.hub-admin-dot--error {
+  background: var(--jp-error-color1);
+}
+
+/* ── Tables ───────────────────────────────────────────────────── */
+
 .hub-admin-table {
   width: 100%;
   border-collapse: collapse;
@@ -36,47 +131,23 @@
 
 .hub-admin-table th,
 .hub-admin-table td {
-  padding: 4px 8px;
+  padding: 3px 6px;
   text-align: left;
-  border-bottom: 1px solid var(--jp-border-color2);
+  border-bottom: 1px solid var(--jp-border-color3);
 }
 
 .hub-admin-table th {
   font-weight: 600;
-  background: var(--jp-layout-color2);
-  position: sticky;
-  top: 0;
+  color: var(--jp-ui-font-color2);
+  font-size: 11px;
 }
 
 .hub-admin-table tr:hover td {
   background: var(--jp-layout-color2);
 }
 
-/* Status badges */
-.hub-admin-badge {
-  display: inline-block;
-  padding: 1px 6px;
-  border-radius: 3px;
-  font-size: 11px;
-  font-weight: 500;
-}
+/* ── Buttons ──────────────────────────────────────────────────── */
 
-.hub-admin-badge--running {
-  background: var(--jp-success-color2);
-  color: var(--jp-ui-font-color0);
-}
-
-.hub-admin-badge--stopped {
-  background: var(--jp-layout-color3);
-  color: var(--jp-ui-font-color2);
-}
-
-.hub-admin-badge--error {
-  background: var(--jp-error-color2);
-  color: var(--jp-ui-font-color0);
-}
-
-/* Buttons */
 .hub-admin-btn {
   padding: 4px 12px;
   border: 1px solid var(--jp-border-color1);
@@ -110,23 +181,80 @@
   background: var(--jp-error-color2);
 }
 
-/* Forms */
-.hub-admin-form-group {
+.hub-admin-btn-sm {
+  padding: 2px 8px;
+  border: 1px solid var(--jp-border-color1);
+  border-radius: 3px;
+  background: var(--jp-layout-color1);
+  color: var(--jp-ui-font-color0);
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.hub-admin-btn-sm:hover {
+  background: var(--jp-layout-color2);
+}
+
+/* ── Toolbar ──────────────────────────────────────────────────── */
+
+.hub-admin-toolbar {
+  display: flex;
+  gap: 6px;
   margin-bottom: 8px;
+}
+
+/* ── Stats grid ───────────────────────────────────────────────── */
+
+.hub-admin-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.hub-admin-stat {
+  padding: 6px 8px;
+  background: var(--jp-layout-color2);
+  border-radius: 4px;
+}
+
+.hub-admin-stat-value {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--jp-brand-color1);
+}
+
+.hub-admin-stat-label {
+  font-size: 10px;
+  color: var(--jp-ui-font-color2);
+  display: block;
+}
+
+/* ── Forms ─────────────────────────────────────────────────────── */
+
+.hub-admin-form {
+  padding: 8px;
+  background: var(--jp-layout-color2);
+  border-radius: 4px;
+  margin-bottom: 8px;
+}
+
+.hub-admin-form-group {
+  margin-bottom: 6px;
 }
 
 .hub-admin-form-group label {
   display: block;
   font-weight: 500;
   margin-bottom: 2px;
-  font-size: var(--jp-ui-font-size0);
+  font-size: 11px;
+  color: var(--jp-ui-font-color2);
 }
 
 .hub-admin-form-group input,
-.hub-admin-form-group select,
-.hub-admin-form-group textarea {
+.hub-admin-form-group select {
   width: 100%;
-  padding: 4px 8px;
+  padding: 3px 6px;
   border: 1px solid var(--jp-border-color1);
   border-radius: 3px;
   background: var(--jp-layout-color0);
@@ -135,70 +263,26 @@
   box-sizing: border-box;
 }
 
-/* Tabs */
-.hub-admin-tabs {
+.hub-admin-form-actions {
   display: flex;
-  border-bottom: 2px solid var(--jp-border-color2);
-  margin-bottom: 12px;
+  gap: 6px;
+  margin-top: 8px;
 }
 
-.hub-admin-tab {
-  padding: 6px 16px;
-  cursor: pointer;
-  border-bottom: 2px solid transparent;
-  margin-bottom: -2px;
-  font-size: var(--jp-ui-font-size1);
-  color: var(--jp-ui-font-color2);
-}
+/* ── Loading / empty / error ──────────────────────────────────── */
 
-.hub-admin-tab:hover {
-  color: var(--jp-ui-font-color0);
-}
-
-.hub-admin-tab--active {
-  color: var(--jp-brand-color1);
-  border-bottom-color: var(--jp-brand-color1);
-}
-
-/* Stats grid */
-.hub-admin-stats {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-  gap: 8px;
-  margin-bottom: 12px;
-}
-
-.hub-admin-stat {
-  padding: 8px;
-  background: var(--jp-layout-color2);
-  border-radius: 4px;
-  text-align: center;
-}
-
-.hub-admin-stat-value {
-  font-size: 20px;
-  font-weight: 600;
-  color: var(--jp-brand-color1);
-}
-
-.hub-admin-stat-label {
-  font-size: 11px;
-  color: var(--jp-ui-font-color2);
-}
-
-/* Loading / empty state */
 .hub-admin-loading,
 .hub-admin-empty {
   text-align: center;
-  padding: 24px;
+  padding: 16px;
   color: var(--jp-ui-font-color2);
+  font-size: 12px;
 }
 
-/* Error message */
 .hub-admin-error {
   padding: 8px;
   background: var(--jp-error-color2);
   border-radius: 4px;
   color: var(--jp-ui-font-color0);
-  margin-bottom: 8px;
+  font-size: 12px;
 }

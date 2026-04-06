@@ -1,11 +1,14 @@
 /**
- * Hugr GraphQL client for hub.* schema queries.
- * Uses the workspace's Hugr connection (HUGR_URL from environment).
+ * Hugr GraphQL API for hub.* schema queries.
+ * Uses HugrClient with hugr_connection_service proxy (auth handled server-side).
+ * Field names must match hub.graphql SDL exactly.
  */
 
+import { PageConfig } from '@jupyterlab/coreutils';
 import { ServerConnection } from '@jupyterlab/services';
+import { HugrClient } from './hugrClient.js';
 
-const HUB_GQL_PATH = '/hugr/graphql';
+// ── Types matching hub.graphql SDL ───────────────────────────────
 
 export interface AgentInstance {
   id: string;
@@ -14,16 +17,15 @@ export interface AgentInstance {
   status: string;
   container_id: string;
   started_at: string;
-  stopped_at: string;
+  last_activity_at: string;
 }
 
 export interface AgentSession {
   id: string;
   user_id: string;
-  agent_instance_id: string;
+  instance_id: string;
   started_at: string;
   ended_at: string;
-  message_count: number;
 }
 
 export interface LLMProvider {
@@ -38,9 +40,10 @@ export interface LLMProvider {
 export interface LLMBudget {
   id: string;
   scope: string;
-  scope_id: string;
+  provider_id: string;
   period: string;
-  max_tokens: number;
+  max_tokens_in: number;
+  max_tokens_out: number;
   max_requests: number;
 }
 
@@ -48,137 +51,148 @@ export interface LLMUsage {
   id: string;
   user_id: string;
   provider_id: string;
-  input_tokens: number;
-  output_tokens: number;
+  tokens_in: number;
+  tokens_out: number;
+  duration_ms: number;
   created_at: string;
 }
 
-async function hugrQuery(query: string, variables?: Record<string, unknown>): Promise<any> {
-  const settings = ServerConnection.makeSettings();
-  const url = settings.baseUrl + HUB_GQL_PATH;
+// ── Client singleton ─────────────────────────────────────────────
 
-  const response = await ServerConnection.makeRequest(
-    url,
-    {
-      method: 'POST',
-      body: JSON.stringify({ query, variables }),
-    },
+let _client: HugrClient | null = null;
+
+async function getClient(): Promise<HugrClient> {
+  if (_client) return _client;
+
+  const baseUrl = PageConfig.getBaseUrl();
+  const settings = ServerConnection.makeSettings();
+
+  const resp = await ServerConnection.makeRequest(
+    baseUrl + 'hugr/connections',
+    {},
     settings,
   );
-
-  if (!response.ok) {
-    throw new Error(`Hugr query failed: ${response.status} ${response.statusText}`);
+  if (!resp.ok) {
+    throw new Error(`Failed to get connections: ${resp.status}`);
   }
 
-  const json = await response.json();
-  if (json.errors) {
-    throw new Error(json.errors.map((e: any) => e.message).join(', '));
+  const connections: Array<{ name: string; status?: string }> = await resp.json();
+  const defaultConn = connections.find(c => c.status === 'default') || connections[0];
+  if (!defaultConn) {
+    throw new Error('No Hugr connection configured');
   }
-  return json.data;
+
+  _client = new HugrClient({
+    url: baseUrl + 'hugr/proxy/' + encodeURIComponent(defaultConn.name),
+    authType: 'public',
+    connectionName: defaultConn.name,
+  });
+
+  return _client;
 }
+
+async function hugrQuery(query: string, variables?: Record<string, unknown>): Promise<any> {
+  const client = await getClient();
+  const result = await client.query(query, variables);
+
+  if (result.errors.length > 0) {
+    throw new Error(result.errors.map(e => e.message).join(', '));
+  }
+
+  return result.data;
+}
+
+// ── Queries ──────────────────────────────────────────────────────
 
 export async function fetchAgentInstances(): Promise<AgentInstance[]> {
   const data = await hugrQuery(`{
-    hub { hub { agent_instances(order_by: { started_at: desc }, limit: 50) {
-      id user_id agent_type_id status container_id started_at stopped_at
+    hub { db { agent_instances(order_by: [{field: "started_at", direction: DESC}], limit: 50) {
+      id user_id agent_type_id status container_id started_at last_activity_at
     } } }
   }`);
-  return data?.hub?.hub?.agent_instances ?? [];
+  return data?.hub?.db?.agent_instances ?? [];
 }
 
 export async function fetchAgentSessions(): Promise<AgentSession[]> {
   const data = await hugrQuery(`{
-    hub { hub { agent_sessions(order_by: { started_at: desc }, limit: 50) {
-      id user_id agent_instance_id started_at ended_at message_count
+    hub { db { agent_sessions(order_by: [{field: "started_at", direction: DESC}], limit: 50) {
+      id user_id instance_id started_at ended_at
     } } }
   }`);
-  return data?.hub?.hub?.agent_sessions ?? [];
+  return data?.hub?.db?.agent_sessions ?? [];
 }
 
 export async function fetchLLMProviders(): Promise<LLMProvider[]> {
   const data = await hugrQuery(`{
-    hub { hub { llm_providers(order_by: { id: asc }) {
+    hub { db { llm_providers(order_by: [{field: "id", direction: ASC}]) {
       id provider model base_url max_tokens_per_request enabled
     } } }
   }`);
-  return data?.hub?.hub?.llm_providers ?? [];
+  return data?.hub?.db?.llm_providers ?? [];
 }
 
 export async function fetchLLMBudgets(): Promise<LLMBudget[]> {
   const data = await hugrQuery(`{
-    hub { hub { llm_budgets(order_by: { scope: asc }) {
-      id scope scope_id period max_tokens max_requests
+    hub { db { llm_budgets(order_by: [{field: "scope", direction: ASC}]) {
+      id scope provider_id period max_tokens_in max_tokens_out max_requests
     } } }
   }`);
-  return data?.hub?.hub?.llm_budgets ?? [];
+  return data?.hub?.db?.llm_budgets ?? [];
 }
 
 export async function fetchLLMUsage(limit = 100): Promise<LLMUsage[]> {
   const data = await hugrQuery(
     `query($limit: Int!) {
-      hub { hub { llm_usage(order_by: { created_at: desc }, limit: $limit) {
-        id user_id provider_id input_tokens output_tokens created_at
+      hub { db { llm_usage(order_by: [{field: "created_at", direction: DESC}], limit: $limit) {
+        id user_id provider_id tokens_in tokens_out duration_ms created_at
       } } }
     }`,
     { limit },
   );
-  return data?.hub?.hub?.llm_usage ?? [];
+  return data?.hub?.db?.llm_usage ?? [];
 }
+
+// ── Mutations ────────────────────────────────────────────────────
 
 export async function insertLLMProvider(
   provider: Omit<LLMProvider, 'id'> & { id: string },
 ): Promise<string> {
   const data = await hugrQuery(
-    `mutation($id: String!, $provider: String!, $model: String!, $url: String, $enabled: Boolean) {
-      hub { hub { insert_llm_providers(data: {
-        id: $id, provider: $provider, model: $model, base_url: $url, enabled: $enabled
-      }) { id } } }
+    `mutation($data: hub_db_llm_providers_mut_input_data!) {
+      hub { db { insert_llm_providers(data: $data) { id } } }
     }`,
     {
-      id: provider.id,
-      provider: provider.provider,
-      model: provider.model,
-      url: provider.base_url,
-      enabled: provider.enabled,
+      data: {
+        id: provider.id,
+        provider: provider.provider,
+        model: provider.model,
+        base_url: provider.base_url,
+        enabled: provider.enabled,
+      },
     },
   );
-  return data?.hub?.hub?.insert_llm_providers?.id;
+  return data?.hub?.db?.insert_llm_providers?.id;
 }
 
 export async function updateLLMProvider(
   id: string,
   updates: Partial<Omit<LLMProvider, 'id'>>,
 ): Promise<void> {
-  const fields: string[] = [];
-  const vars: Record<string, unknown> = { id };
-  const params: string[] = ['$id: String!'];
+  const updateData: Record<string, unknown> = {};
+  if (updates.enabled !== undefined) updateData.enabled = updates.enabled;
+  if (updates.base_url !== undefined) updateData.base_url = updates.base_url;
+  if (updates.model !== undefined) updateData.model = updates.model;
 
-  if (updates.enabled !== undefined) {
-    fields.push('enabled: $enabled');
-    vars.enabled = updates.enabled;
-    params.push('$enabled: Boolean!');
-  }
-  if (updates.base_url !== undefined) {
-    fields.push('base_url: $url');
-    vars.url = updates.base_url;
-    params.push('$url: String!');
-  }
-  if (updates.model !== undefined) {
-    fields.push('model: $model');
-    vars.model = updates.model;
-    params.push('$model: String!');
-  }
-
-  if (fields.length === 0) return;
+  if (Object.keys(updateData).length === 0) return;
 
   await hugrQuery(
-    `mutation(${params.join(', ')}) {
-      hub { hub { update_llm_providers(
-        filter: { id: { eq: $id } }
-        data: { ${fields.join(', ')} }
-      ) { affected_rows } } }
+    `mutation($filter: hub_db_llm_providers_filter!, $data: hub_db_llm_providers_mut_data!) {
+      hub { db { update_llm_providers(filter: $filter, data: $data) { affected_rows } } }
     }`,
-    vars,
+    {
+      filter: { id: { eq: id } },
+      data: updateData,
+    },
   );
 }
 
@@ -186,48 +200,49 @@ export async function insertLLMBudget(
   budget: Omit<LLMBudget, 'id'>,
 ): Promise<string> {
   const data = await hugrQuery(
-    `mutation($scope: String!, $scope_id: String!, $period: String!, $max_tokens: Int!, $max_requests: Int!) {
-      hub { hub { insert_llm_budgets(data: {
-        scope: $scope, scope_id: $scope_id, period: $period, max_tokens: $max_tokens, max_requests: $max_requests
-      }) { id } } }
+    `mutation($data: hub_db_llm_budgets_mut_input_data!) {
+      hub { db { insert_llm_budgets(data: $data) { id } } }
     }`,
     {
-      scope: budget.scope,
-      scope_id: budget.scope_id,
-      period: budget.period,
-      max_tokens: budget.max_tokens,
-      max_requests: budget.max_requests,
+      data: {
+        scope: budget.scope,
+        provider_id: budget.provider_id || null,
+        period: budget.period,
+        max_tokens_in: budget.max_tokens_in,
+        max_tokens_out: budget.max_tokens_out,
+        max_requests: budget.max_requests,
+      },
     },
   );
-  return data?.hub?.hub?.insert_llm_budgets?.id;
+  return data?.hub?.db?.insert_llm_budgets?.id;
 }
 
 export async function deleteLLMBudget(id: string): Promise<void> {
   await hugrQuery(
-    `mutation($id: String!) {
-      hub { hub { delete_llm_budgets(filter: { id: { eq: $id } }) { affected_rows } } }
+    `mutation($filter: hub_db_llm_budgets_filter!) {
+      hub { db { delete_llm_budgets(filter: $filter) { affected_rows } } }
     }`,
-    { id },
+    { filter: { id: { eq: id } } },
   );
 }
 
 export async function stopAgent(instanceId: string): Promise<void> {
   await hugrQuery(
-    `mutation($id: String!) {
-      hub { hub { update_agent_instances(
-        filter: { id: { eq: $id } }
-        data: { status: "stopped" }
-      ) { affected_rows } } }
+    `mutation($filter: hub_db_agent_instances_filter!, $data: hub_db_agent_instances_mut_data!) {
+      hub { db { update_agent_instances(filter: $filter, data: $data) { affected_rows } } }
     }`,
-    { id: instanceId },
+    {
+      filter: { id: { eq: instanceId } },
+      data: { status: 'stopped' },
+    },
   );
 }
 
 export async function clearAgentMemory(userId: string): Promise<void> {
   await hugrQuery(
-    `mutation($uid: String!) {
-      hub { hub { delete_agent_memory(filter: { user_id: { eq: $uid } }) { affected_rows } } }
+    `mutation($filter: hub_db_agent_memory_filter!) {
+      hub { db { delete_agent_memory(filter: $filter) { affected_rows } } }
     }`,
-    { uid: userId },
+    { filter: { user_id: { eq: userId } } },
   );
 }

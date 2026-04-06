@@ -1,6 +1,6 @@
 /**
- * Hub Admin Panel — main widget with tabbed sections.
- * Uses plain DOM (Lumino Widget) consistent with hugr-graphql-ide patterns.
+ * Hub Admin Panel — sidebar widget with collapsible sections.
+ * Uses JupyterLab sidebar pattern (vertical collapsible sections like Running panel).
  */
 import { Widget } from '@lumino/widgets';
 
@@ -17,59 +17,85 @@ import {
   insertLLMBudget,
   deleteLLMBudget,
 } from '../api.js';
-import type { AgentInstance, LLMProvider, LLMBudget, LLMUsage } from '../api.js';
+import type { AgentInstance, AgentSession, LLMProvider, LLMBudget, LLMUsage } from '../api.js';
 
-type Tab = 'dashboard' | 'providers' | 'budgets' | 'agents';
+type Section = 'dashboard' | 'providers' | 'budgets' | 'agents';
+
+interface SectionDef {
+  key: Section;
+  label: string;
+}
+
+const SECTIONS: SectionDef[] = [
+  { key: 'dashboard', label: 'DASHBOARD' },
+  { key: 'providers', label: 'LLM PROVIDERS' },
+  { key: 'budgets', label: 'BUDGETS' },
+  { key: 'agents', label: 'AGENTS' },
+];
 
 export class AdminPanelWidget extends Widget {
-  private activeTab: Tab = 'dashboard';
-  private content: HTMLDivElement;
+  private expanded: Record<Section, boolean> = {
+    dashboard: true,
+    providers: false,
+    budgets: false,
+    agents: false,
+  };
+  private sectionBodies: Record<Section, HTMLDivElement> = {} as any;
+  private sectionHeaders: Record<Section, HTMLDivElement> = {} as any;
 
   constructor() {
     super();
     this.id = 'hub-admin-panel';
-    this.title.label = 'Hub Admin';
     this.title.closable = true;
     this.addClass('hub-admin-panel');
 
-    this.content = document.createElement('div');
-    this.node.appendChild(this.content);
-
-    this.render();
+    this.buildLayout();
   }
 
-  private render(): void {
-    this.content.innerHTML = '';
+  private buildLayout(): void {
+    for (const section of SECTIONS) {
+      // Header
+      const header = document.createElement('div');
+      header.className = 'hub-admin-section-header';
+      header.innerHTML = `<span class="hub-admin-section-caret">&#9654;</span> ${section.label}`;
+      header.addEventListener('click', () => this.toggleSection(section.key));
+      this.node.appendChild(header);
+      this.sectionHeaders[section.key] = header;
 
-    // Tabs
-    const tabs = document.createElement('div');
-    tabs.className = 'hub-admin-tabs';
-    const tabItems: { key: Tab; label: string }[] = [
-      { key: 'dashboard', label: 'Dashboard' },
-      { key: 'providers', label: 'LLM Providers' },
-      { key: 'budgets', label: 'Budgets' },
-      { key: 'agents', label: 'Agents' },
-    ];
-    for (const item of tabItems) {
-      const tab = document.createElement('div');
-      tab.className = 'hub-admin-tab';
-      if (item.key === this.activeTab) {
-        tab.classList.add('hub-admin-tab--active');
+      // Body
+      const body = document.createElement('div');
+      body.className = 'hub-admin-section-body';
+      body.style.display = this.expanded[section.key] ? '' : 'none';
+      this.node.appendChild(body);
+      this.sectionBodies[section.key] = body;
+
+      if (this.expanded[section.key]) {
+        header.classList.add('hub-admin-section-header--expanded');
       }
-      tab.textContent = item.label;
-      tab.addEventListener('click', () => {
-        this.activeTab = item.key;
-        this.render();
-      });
-      tabs.appendChild(tab);
     }
-    this.content.appendChild(tabs);
 
-    // Tab content
-    const body = document.createElement('div');
-    this.content.appendChild(body);
+    // Load initial expanded sections
+    this.loadSection('dashboard');
+  }
 
-    switch (this.activeTab) {
+  private toggleSection(key: Section): void {
+    this.expanded[key] = !this.expanded[key];
+    const body = this.sectionBodies[key];
+    const header = this.sectionHeaders[key];
+
+    if (this.expanded[key]) {
+      body.style.display = '';
+      header.classList.add('hub-admin-section-header--expanded');
+      this.loadSection(key);
+    } else {
+      body.style.display = 'none';
+      header.classList.remove('hub-admin-section-header--expanded');
+    }
+  }
+
+  private loadSection(key: Section): void {
+    const body = this.sectionBodies[key];
+    switch (key) {
       case 'dashboard':
         this.renderDashboard(body);
         break;
@@ -100,67 +126,63 @@ export class AdminPanelWidget extends Widget {
 
       container.innerHTML = '';
 
-      // Stats
-      const stats = document.createElement('div');
-      stats.className = 'hub-admin-stats';
-
       const running = instances.filter(i => i.status === 'running').length;
       const totalSessions = sessions.length;
-      const totalTokens = usage.reduce((s, u) => s + u.input_tokens + u.output_tokens, 0);
+      const totalTokens = usage.reduce((s, u) => s + u.tokens_in + u.tokens_out, 0);
       const activeProviders = providers.filter(p => p.enabled).length;
 
+      const stats = document.createElement('div');
+      stats.className = 'hub-admin-stats';
       stats.innerHTML = `
         <div class="hub-admin-stat">
-          <div class="hub-admin-stat-value">${running}</div>
-          <div class="hub-admin-stat-label">Running Agents</div>
+          <span class="hub-admin-stat-value">${running}</span>
+          <span class="hub-admin-stat-label">Running Agents</span>
         </div>
         <div class="hub-admin-stat">
-          <div class="hub-admin-stat-value">${totalSessions}</div>
-          <div class="hub-admin-stat-label">Sessions</div>
+          <span class="hub-admin-stat-value">${totalSessions}</span>
+          <span class="hub-admin-stat-label">Sessions</span>
         </div>
         <div class="hub-admin-stat">
-          <div class="hub-admin-stat-value">${formatTokens(totalTokens)}</div>
-          <div class="hub-admin-stat-label">Total Tokens</div>
+          <span class="hub-admin-stat-value">${formatTokens(totalTokens)}</span>
+          <span class="hub-admin-stat-label">Total Tokens</span>
         </div>
         <div class="hub-admin-stat">
-          <div class="hub-admin-stat-value">${activeProviders}</div>
-          <div class="hub-admin-stat-label">Active Providers</div>
+          <span class="hub-admin-stat-value">${activeProviders}</span>
+          <span class="hub-admin-stat-label">Active Providers</span>
         </div>
       `;
       container.appendChild(stats);
 
-      // Recent sessions table
-      container.appendChild(createHeading('Recent Sessions'));
-      if (sessions.length === 0) {
-        container.appendChild(createEmpty('No sessions yet'));
-      } else {
-        const table = createTable(
-          ['User', 'Started', 'Messages'],
-          sessions.slice(0, 10).map(s => [
-            s.user_id,
-            formatDate(s.started_at),
-            String(s.message_count ?? 0),
-          ]),
+      // Recent sessions
+      if (sessions.length > 0) {
+        container.appendChild(createSubheading('Recent Sessions'));
+        container.appendChild(
+          createTable(
+            ['User', 'Started', 'Ended'],
+            sessions.slice(0, 10).map(s => [
+              s.user_id,
+              formatDate(s.started_at),
+              s.ended_at ? formatDate(s.ended_at) : 'active',
+            ]),
+          ),
         );
-        container.appendChild(table);
       }
 
       // Recent usage
-      container.appendChild(createHeading('Recent LLM Usage'));
-      if (usage.length === 0) {
-        container.appendChild(createEmpty('No usage data'));
-      } else {
-        const table = createTable(
-          ['User', 'Provider', 'In', 'Out', 'Time'],
-          usage.slice(0, 10).map(u => [
-            u.user_id,
-            u.provider_id,
-            String(u.input_tokens),
-            String(u.output_tokens),
-            formatDate(u.created_at),
-          ]),
+      if (usage.length > 0) {
+        container.appendChild(createSubheading('Recent LLM Usage'));
+        container.appendChild(
+          createTable(
+            ['User', 'Provider', 'In', 'Out', 'Time'],
+            usage.slice(0, 10).map(u => [
+              u.user_id,
+              u.provider_id,
+              String(u.tokens_in),
+              String(u.tokens_out),
+              formatDate(u.created_at),
+            ]),
+          ),
         );
-        container.appendChild(table);
       }
     } catch (err: any) {
       container.innerHTML = `<div class="hub-admin-error">${err.message}</div>`;
@@ -176,55 +198,48 @@ export class AdminPanelWidget extends Widget {
       const providers = await fetchLLMProviders();
       container.innerHTML = '';
 
-      // Add button
+      const toolbar = document.createElement('div');
+      toolbar.className = 'hub-admin-toolbar';
       const addBtn = document.createElement('button');
       addBtn.className = 'hub-admin-btn hub-admin-btn--primary';
-      addBtn.textContent = 'Add Provider';
+      addBtn.textContent = '+ Add Provider';
       addBtn.addEventListener('click', () => this.showAddProviderForm(container));
-      container.appendChild(addBtn);
+      toolbar.appendChild(addBtn);
+      container.appendChild(toolbar);
 
       if (providers.length === 0) {
         container.appendChild(createEmpty('No providers configured'));
         return;
       }
 
-      const table = document.createElement('table');
-      table.className = 'hub-admin-table';
-      table.innerHTML = `
-        <thead><tr>
-          <th>ID</th><th>Provider</th><th>Model</th><th>Status</th><th>Actions</th>
-        </tr></thead>
-      `;
-      const tbody = document.createElement('tbody');
-
       for (const p of providers) {
-        const tr = document.createElement('tr');
-        const statusClass = p.enabled ? 'hub-admin-badge--running' : 'hub-admin-badge--stopped';
-        const statusText = p.enabled ? 'Active' : 'Disabled';
+        const row = document.createElement('div');
+        row.className = 'hub-admin-list-item';
 
-        tr.innerHTML = `
-          <td>${esc(p.id)}</td>
-          <td>${esc(p.provider)}</td>
-          <td>${esc(p.model)}</td>
-          <td><span class="hub-admin-badge ${statusClass}">${statusText}</span></td>
-          <td></td>
+        const statusDot = p.enabled ? 'hub-admin-dot--active' : 'hub-admin-dot--inactive';
+        row.innerHTML = `
+          <div class="hub-admin-list-item-main">
+            <span class="hub-admin-dot ${statusDot}"></span>
+            <span class="hub-admin-list-item-title">${esc(p.id)}</span>
+            <span class="hub-admin-list-item-meta">${esc(p.provider)} / ${esc(p.model)}</span>
+          </div>
         `;
 
-        const actionsCell = tr.querySelector('td:last-child')!;
+        const actions = document.createElement('div');
+        actions.className = 'hub-admin-list-item-actions';
+
         const toggleBtn = document.createElement('button');
-        toggleBtn.className = 'hub-admin-btn';
+        toggleBtn.className = 'hub-admin-btn-sm';
         toggleBtn.textContent = p.enabled ? 'Disable' : 'Enable';
         toggleBtn.addEventListener('click', async () => {
           await updateLLMProvider(p.id, { enabled: !p.enabled });
-          this.render();
+          this.loadSection('providers');
         });
-        actionsCell.appendChild(toggleBtn);
+        actions.appendChild(toggleBtn);
 
-        tbody.appendChild(tr);
+        row.appendChild(actions);
+        container.appendChild(row);
       }
-
-      table.appendChild(tbody);
-      container.appendChild(table);
     } catch (err: any) {
       container.innerHTML = `<div class="hub-admin-error">${err.message}</div>`;
     }
@@ -232,9 +247,8 @@ export class AdminPanelWidget extends Widget {
 
   private showAddProviderForm(container: HTMLElement): void {
     const form = document.createElement('div');
-    form.className = 'hub-admin-section';
+    form.className = 'hub-admin-form';
     form.innerHTML = `
-      <h3>Add LLM Provider</h3>
       <div class="hub-admin-form-group">
         <label>ID</label>
         <input type="text" id="prov-id" placeholder="claude-main" />
@@ -249,7 +263,7 @@ export class AdminPanelWidget extends Widget {
         </select>
       </div>
       <div class="hub-admin-form-group">
-        <label>Base URL (optional for standard providers)</label>
+        <label>Base URL (optional)</label>
         <input type="text" id="prov-url" placeholder="https://api.anthropic.com" />
       </div>
       <div class="hub-admin-form-group">
@@ -259,9 +273,7 @@ export class AdminPanelWidget extends Widget {
     `;
 
     const btnRow = document.createElement('div');
-    btnRow.style.display = 'flex';
-    btnRow.style.gap = '8px';
-    btnRow.style.marginTop = '8px';
+    btnRow.className = 'hub-admin-form-actions';
 
     const saveBtn = document.createElement('button');
     saveBtn.className = 'hub-admin-btn hub-admin-btn--primary';
@@ -271,24 +283,17 @@ export class AdminPanelWidget extends Widget {
       const provider = (form.querySelector('#prov-type') as HTMLSelectElement).value;
       const url = (form.querySelector('#prov-url') as HTMLInputElement).value;
       const model = (form.querySelector('#prov-model') as HTMLInputElement).value;
-
       if (!id || !model) return;
-
       await insertLLMProvider({
-        id,
-        provider,
-        base_url: url,
-        model,
-        max_tokens_per_request: 4096,
-        enabled: true,
+        id, provider, base_url: url, model, max_tokens_per_request: 4096, enabled: true,
       });
-      this.render();
+      this.loadSection('providers');
     });
 
     const cancelBtn = document.createElement('button');
     cancelBtn.className = 'hub-admin-btn';
     cancelBtn.textContent = 'Cancel';
-    cancelBtn.addEventListener('click', () => this.render());
+    cancelBtn.addEventListener('click', () => this.loadSection('providers'));
 
     btnRow.appendChild(saveBtn);
     btnRow.appendChild(cancelBtn);
@@ -306,52 +311,44 @@ export class AdminPanelWidget extends Widget {
       const budgets = await fetchLLMBudgets();
       container.innerHTML = '';
 
+      const toolbar = document.createElement('div');
+      toolbar.className = 'hub-admin-toolbar';
       const addBtn = document.createElement('button');
       addBtn.className = 'hub-admin-btn hub-admin-btn--primary';
-      addBtn.textContent = 'Add Budget';
+      addBtn.textContent = '+ Add Budget';
       addBtn.addEventListener('click', () => this.showAddBudgetForm(container));
-      container.appendChild(addBtn);
+      toolbar.appendChild(addBtn);
+      container.appendChild(toolbar);
 
       if (budgets.length === 0) {
         container.appendChild(createEmpty('No budgets configured'));
         return;
       }
 
-      const table = document.createElement('table');
-      table.className = 'hub-admin-table';
-      table.innerHTML = `
-        <thead><tr>
-          <th>Scope</th><th>ID</th><th>Period</th><th>Max Tokens</th><th>Max Reqs</th><th>Actions</th>
-        </tr></thead>
-      `;
-      const tbody = document.createElement('tbody');
-
       for (const b of budgets) {
-        const tr = document.createElement('tr');
-        tr.innerHTML = `
-          <td>${esc(b.scope)}</td>
-          <td>${esc(b.scope_id)}</td>
-          <td>${esc(b.period)}</td>
-          <td>${formatTokens(b.max_tokens)}</td>
-          <td>${b.max_requests}</td>
-          <td></td>
+        const row = document.createElement('div');
+        row.className = 'hub-admin-list-item';
+        row.innerHTML = `
+          <div class="hub-admin-list-item-main">
+            <span class="hub-admin-list-item-title">${esc(b.scope)}${b.provider_id ? ' (' + esc(b.provider_id) + ')' : ''}</span>
+            <span class="hub-admin-list-item-meta">${esc(b.period)} — in:${formatTokens(b.max_tokens_in ?? 0)} out:${formatTokens(b.max_tokens_out ?? 0)}, ${b.max_requests ?? 0} reqs</span>
+          </div>
         `;
 
-        const actionsCell = tr.querySelector('td:last-child')!;
+        const actions = document.createElement('div');
+        actions.className = 'hub-admin-list-item-actions';
         const delBtn = document.createElement('button');
-        delBtn.className = 'hub-admin-btn hub-admin-btn--danger';
+        delBtn.className = 'hub-admin-btn-sm hub-admin-btn--danger';
         delBtn.textContent = 'Delete';
         delBtn.addEventListener('click', async () => {
           await deleteLLMBudget(b.id);
-          this.render();
+          this.loadSection('budgets');
         });
-        actionsCell.appendChild(delBtn);
+        actions.appendChild(delBtn);
 
-        tbody.appendChild(tr);
+        row.appendChild(actions);
+        container.appendChild(row);
       }
-
-      table.appendChild(tbody);
-      container.appendChild(table);
     } catch (err: any) {
       container.innerHTML = `<div class="hub-admin-error">${err.message}</div>`;
     }
@@ -359,32 +356,31 @@ export class AdminPanelWidget extends Widget {
 
   private showAddBudgetForm(container: HTMLElement): void {
     const form = document.createElement('div');
-    form.className = 'hub-admin-section';
+    form.className = 'hub-admin-form';
     form.innerHTML = `
-      <h3>Add Budget</h3>
       <div class="hub-admin-form-group">
-        <label>Scope</label>
-        <select id="bud-scope">
-          <option value="global">Global</option>
-          <option value="role">Role</option>
-          <option value="user">User</option>
-        </select>
+        <label>Scope (e.g. global, user:alice, role:analyst)</label>
+        <input type="text" id="bud-scope" value="global" />
       </div>
       <div class="hub-admin-form-group">
-        <label>Scope ID (role name or user ID, empty for global)</label>
-        <input type="text" id="bud-scope-id" />
+        <label>Provider ID (empty = all providers)</label>
+        <input type="text" id="bud-provider" />
       </div>
       <div class="hub-admin-form-group">
         <label>Period</label>
         <select id="bud-period">
-          <option value="daily">Daily</option>
-          <option value="weekly">Weekly</option>
-          <option value="monthly">Monthly</option>
+          <option value="hour">Hour</option>
+          <option value="day">Day</option>
+          <option value="month">Month</option>
         </select>
       </div>
       <div class="hub-admin-form-group">
-        <label>Max Tokens</label>
-        <input type="number" id="bud-tokens" value="1000000" />
+        <label>Max Input Tokens</label>
+        <input type="number" id="bud-tokens-in" value="1000000" />
+      </div>
+      <div class="hub-admin-form-group">
+        <label>Max Output Tokens</label>
+        <input type="number" id="bud-tokens-out" value="500000" />
       </div>
       <div class="hub-admin-form-group">
         <label>Max Requests</label>
@@ -393,34 +389,28 @@ export class AdminPanelWidget extends Widget {
     `;
 
     const btnRow = document.createElement('div');
-    btnRow.style.display = 'flex';
-    btnRow.style.gap = '8px';
-    btnRow.style.marginTop = '8px';
+    btnRow.className = 'hub-admin-form-actions';
 
     const saveBtn = document.createElement('button');
     saveBtn.className = 'hub-admin-btn hub-admin-btn--primary';
     saveBtn.textContent = 'Save';
     saveBtn.addEventListener('click', async () => {
-      const scope = (form.querySelector('#bud-scope') as HTMLSelectElement).value;
-      const scopeId = (form.querySelector('#bud-scope-id') as HTMLInputElement).value;
+      const scope = (form.querySelector('#bud-scope') as HTMLInputElement).value;
+      const providerId = (form.querySelector('#bud-provider') as HTMLInputElement).value;
       const period = (form.querySelector('#bud-period') as HTMLSelectElement).value;
-      const maxTokens = parseInt((form.querySelector('#bud-tokens') as HTMLInputElement).value, 10);
+      const maxTokensIn = parseInt((form.querySelector('#bud-tokens-in') as HTMLInputElement).value, 10);
+      const maxTokensOut = parseInt((form.querySelector('#bud-tokens-out') as HTMLInputElement).value, 10);
       const maxRequests = parseInt((form.querySelector('#bud-requests') as HTMLInputElement).value, 10);
-
       await insertLLMBudget({
-        scope,
-        scope_id: scopeId || '*',
-        period,
-        max_tokens: maxTokens,
-        max_requests: maxRequests,
+        scope, provider_id: providerId || null as any, period, max_tokens_in: maxTokensIn, max_tokens_out: maxTokensOut, max_requests: maxRequests,
       });
-      this.render();
+      this.loadSection('budgets');
     });
 
     const cancelBtn = document.createElement('button');
     cancelBtn.className = 'hub-admin-btn';
     cancelBtn.textContent = 'Cancel';
-    cancelBtn.addEventListener('click', () => this.render());
+    cancelBtn.addEventListener('click', () => this.loadSection('budgets'));
 
     btnRow.appendChild(saveBtn);
     btnRow.appendChild(cancelBtn);
@@ -443,60 +433,49 @@ export class AdminPanelWidget extends Widget {
         return;
       }
 
-      const table = document.createElement('table');
-      table.className = 'hub-admin-table';
-      table.innerHTML = `
-        <thead><tr>
-          <th>User</th><th>Type</th><th>Status</th><th>Started</th><th>Actions</th>
-        </tr></thead>
-      `;
-      const tbody = document.createElement('tbody');
-
       for (const inst of instances) {
-        const tr = document.createElement('tr');
-        const statusClass =
-          inst.status === 'running'
-            ? 'hub-admin-badge--running'
-            : inst.status === 'error'
-              ? 'hub-admin-badge--error'
-              : 'hub-admin-badge--stopped';
+        const row = document.createElement('div');
+        row.className = 'hub-admin-list-item';
 
-        tr.innerHTML = `
-          <td>${esc(inst.user_id)}</td>
-          <td>${esc(inst.agent_type_id)}</td>
-          <td><span class="hub-admin-badge ${statusClass}">${esc(inst.status)}</span></td>
-          <td>${formatDate(inst.started_at)}</td>
-          <td></td>
+        const statusDot =
+          inst.status === 'running' ? 'hub-admin-dot--active'
+            : inst.status === 'error' ? 'hub-admin-dot--error'
+              : 'hub-admin-dot--inactive';
+
+        row.innerHTML = `
+          <div class="hub-admin-list-item-main">
+            <span class="hub-admin-dot ${statusDot}"></span>
+            <span class="hub-admin-list-item-title">${esc(inst.user_id)}</span>
+            <span class="hub-admin-list-item-meta">${esc(inst.agent_type_id)} — ${formatDate(inst.started_at)}</span>
+          </div>
         `;
 
-        const actionsCell = tr.querySelector('td:last-child')!;
+        const actions = document.createElement('div');
+        actions.className = 'hub-admin-list-item-actions';
 
         if (inst.status === 'running') {
           const stopBtn = document.createElement('button');
-          stopBtn.className = 'hub-admin-btn hub-admin-btn--danger';
+          stopBtn.className = 'hub-admin-btn-sm hub-admin-btn--danger';
           stopBtn.textContent = 'Stop';
           stopBtn.addEventListener('click', async () => {
             await stopAgent(inst.id);
-            this.render();
+            this.loadSection('agents');
           });
-          actionsCell.appendChild(stopBtn);
+          actions.appendChild(stopBtn);
         }
 
         const clearBtn = document.createElement('button');
-        clearBtn.className = 'hub-admin-btn';
+        clearBtn.className = 'hub-admin-btn-sm';
         clearBtn.textContent = 'Clear Memory';
-        clearBtn.style.marginLeft = '4px';
         clearBtn.addEventListener('click', async () => {
           await clearAgentMemory(inst.user_id);
-          this.render();
+          this.loadSection('agents');
         });
-        actionsCell.appendChild(clearBtn);
+        actions.appendChild(clearBtn);
 
-        tbody.appendChild(tr);
+        row.appendChild(actions);
+        container.appendChild(row);
       }
-
-      table.appendChild(tbody);
-      container.appendChild(table);
     } catch (err: any) {
       container.innerHTML = `<div class="hub-admin-error">${err.message}</div>`;
     }
@@ -505,8 +484,9 @@ export class AdminPanelWidget extends Widget {
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
-function createHeading(text: string): HTMLElement {
-  const h = document.createElement('h2');
+function createSubheading(text: string): HTMLElement {
+  const h = document.createElement('div');
+  h.className = 'hub-admin-subheading';
   h.textContent = text;
   return h;
 }

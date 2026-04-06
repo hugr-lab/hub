@@ -28,7 +28,6 @@ export class ChatPanelWidget extends Widget {
   constructor() {
     super();
     this.id = 'hub-chat-panel';
-    this.title.label = 'Hub Chat';
     this.title.closable = true;
     this.addClass('hub-chat-panel');
 
@@ -73,32 +72,26 @@ export class ChatPanelWidget extends Widget {
     this.updateStatus('disconnected');
   }
 
-  onAfterShow(): void {
-    if (!this.ws) {
-      this.connect();
-    }
-  }
-
-  onBeforeHide(): void {
-    // Keep connection alive when hidden
-  }
-
   dispose(): void {
     this.disconnect();
     super.dispose();
   }
 
   private connect(): void {
-    const settings = ServerConnection.makeSettings();
-    // Hub Service WebSocket URL — proxied through JupyterHub
-    const baseUrl = settings.baseUrl.replace(/^http/, 'ws');
-    // User ID will be extracted from the session
-    const wsUrl = `${baseUrl}hugr/ws/current`;
+    // Read WebSocket URL from environment (set by pre_spawn_hook or page config)
+    const hubServiceUrl = document.body.dataset.hubServiceWs
+      || (window as any).__hubServiceWs
+      || '';
+
+    if (!hubServiceUrl) {
+      this.updateStatus('not configured');
+      return;
+    }
 
     this.updateStatus('connecting');
 
     try {
-      this.ws = new WebSocket(wsUrl);
+      this.ws = new WebSocket(hubServiceUrl);
     } catch {
       this.updateStatus('error');
       return;
@@ -116,12 +109,6 @@ export class ChatPanelWidget extends Widget {
     this.ws.onclose = () => {
       this.ws = null;
       this.updateStatus('disconnected');
-      // Auto-reconnect after 3s
-      setTimeout(() => {
-        if (!this.isDisposed) {
-          this.connect();
-        }
-      }, 3000);
     };
 
     this.ws.onerror = () => {
@@ -139,8 +126,13 @@ export class ChatPanelWidget extends Widget {
   private sendMessage(): void {
     const text = this.inputEl.value.trim();
     if (!text) return;
+
+    // Lazy connect on first message
+    if (!this.ws) {
+      this.connect();
+    }
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      this.updateStatus('error');
+      this.updateStatus('not connected');
       return;
     }
 
