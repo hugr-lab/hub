@@ -169,6 +169,7 @@ export class AdminPanelWidget extends Widget {
           },
           { headerName: 'Name', field: 'name', minWidth: 100, filter: true, sortable: true },
           { headerName: 'Type', field: 'type', minWidth: 70, width: 90, filter: true, sortable: true },
+          { headerName: 'Description', field: 'description', minWidth: 80 },
           { headerName: 'Cat', field: 'catalogs', width: 45, minWidth: 45, maxWidth: 45, sortable: true },
           {
             headerName: '',
@@ -428,6 +429,7 @@ export class AdminPanelWidget extends Widget {
         columnDefs: [
           { headerName: 'Name', field: 'name', minWidth: 80, filter: true, sortable: true },
           { headerName: 'Type', field: 'type', width: 70, minWidth: 60, filter: true, sortable: true },
+          { headerName: 'Description', field: 'description', minWidth: 80 },
           { headerName: 'DS', field: 'linkedDS', minWidth: 60 },
           {
             headerName: '',
