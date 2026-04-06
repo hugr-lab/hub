@@ -150,12 +150,13 @@ export class AdminPanelWidget extends Widget {
       gridDiv.style.height = `${Math.min(sources.length * 32 + 34, 400)}px`;
       el.appendChild(gridDiv);
 
-      const gridOptions: GridOptions = {
-        rowData: sources.map(ds => ({
-          ...ds,
-          catalogs: links.filter(l => l.data_source_name === ds.name).length,
-          modelInfo: models.find(m => m.name === ds.name),
-        })),
+      const rowData = sources.map(ds => ({
+        ...ds,
+        catalogs: links.filter(l => l.data_source_name === ds.name).length,
+      }));
+
+      createGrid(gridDiv, {
+        rowData,
         columnDefs: [
           {
             headerName: '',
@@ -165,29 +166,29 @@ export class AdminPanelWidget extends Widget {
           },
           { headerName: 'Name', field: 'name', flex: 2, filter: true, sortable: true },
           { headerName: 'Type', field: 'type', flex: 1, filter: true, sortable: true },
-          {
-            headerName: 'Model',
-            valueGetter: (p: any) => p.data.modelInfo ? `${p.data.modelInfo.provider}/${p.data.modelInfo.model}` : '',
-            flex: 2,
-          },
+          { headerName: 'Description', field: 'description', flex: 2 },
           { headerName: 'Cat', field: 'catalogs', width: 50, sortable: true },
           {
             headerName: '',
-            width: 140,
+            width: 80,
             cellRenderer: (p: any) => {
               const div = document.createElement('div');
               div.className = 'hub-admin-grid-actions';
-              const editB = iconBtn(ICON.edit, 'Edit');
-              editB.addEventListener('click', () => this.openDataSourceModal(p.data));
-              div.appendChild(editB);
-              const loadB = iconBtn(ICON.upload, 'Load');
-              loadB.addEventListener('click', async () => { await loadDataSource(p.data.name); this.loadSection('datasources'); });
-              div.appendChild(loadB);
-              const unloadB = iconBtn(ICON.download, 'Unload');
-              unloadB.addEventListener('click', async () => { await unloadDataSource(p.data.name); this.loadSection('datasources'); });
-              div.appendChild(unloadB);
+              const toggleBtn = iconBtn(p.data.disabled ? ICON.play : ICON.power, p.data.disabled ? 'Load' : 'Unload');
+              toggleBtn.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                if (p.data.disabled) { await loadDataSource(p.data.name); }
+                else { await unloadDataSource(p.data.name); }
+                this.loadSection('datasources');
+              });
+              div.appendChild(toggleBtn);
               const delB = iconBtn(ICON.trash, 'Delete', 'hub-admin-icon-btn hub-admin-icon-btn--danger');
-              delB.addEventListener('click', async () => { await deleteDataSource(p.data.name); this.loadSection('datasources'); });
+              delB.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                if (!confirm(`Delete data source "${p.data.name}"?`)) return;
+                await deleteDataSource(p.data.name);
+                this.loadSection('datasources');
+              });
               div.appendChild(delB);
               return div;
             },
@@ -197,9 +198,8 @@ export class AdminPanelWidget extends Widget {
         rowHeight: 32,
         suppressCellFocus: true,
         domLayout: 'normal',
-      };
-
-      createGrid(gridDiv, gridOptions);
+        onRowClicked: (e: any) => { if (e.data) this.openDataSourceModal(e.data); },
+      });
     } catch (err: any) {
       el.innerHTML = `<div class="hub-admin-error">${err.message}</div>`;
     }
@@ -227,7 +227,7 @@ export class AdminPanelWidget extends Widget {
       <div class="hub-admin-form-group"><label>Type</label>
         <select id="m-type" ${isEdit ? 'disabled' : ''}>${DS_TYPES.map(t => `<option value="${t}" ${existing?.type === t ? 'selected' : ''}>${t}</option>`).join('')}</select>
       </div>
-      <div class="hub-admin-form-group"><label>Prefix</label><input type="text" id="m-prefix" value="${esc(existing?.prefix ?? '')}" ${isEdit ? 'disabled' : ''} /></div>
+      <div class="hub-admin-form-group"><label>Prefix</label><input type="text" id="m-prefix" value="${esc(existing?.prefix ?? '')}" /></div>
       <div class="hub-admin-form-group"><label>Path</label><input type="text" id="m-path" value="${esc(existing?.path ?? '')}" /></div>
       <div class="hub-admin-form-group"><label>Description</label><input type="text" id="m-desc" value="${esc(existing?.description ?? '')}" /></div>
       <div class="hub-admin-form-row">
@@ -310,7 +310,7 @@ export class AdminPanelWidget extends Widget {
       catForm.className = 'hub-admin-modal-cat-add';
       catForm.innerHTML = `
         <input type="text" id="mc-name" placeholder="Catalog name" style="flex:2" />
-        <select id="mc-type" style="flex:1"><option value="localFS">localFS</option><option value="uri">uri</option><option value="text">text</option></select>
+        <select id="mc-type" style="flex:1"><option value="localFS">localFS</option><option value="uri">uri</option><option value="uriFile">uriFile</option><option value="text">text</option></select>
         <input type="text" id="mc-path" placeholder="Path" style="flex:3" />
       `;
       const okBtn = iconBtn(ICON.check, 'Add', 'hub-admin-icon-btn hub-admin-icon-btn--small');
@@ -331,6 +331,18 @@ export class AdminPanelWidget extends Widget {
     });
 
     // ── Actions ──
+    if (isEdit) {
+      modal.addAction('Load', 'hub-admin-btn', async () => {
+        await loadDataSource(existing!.name);
+        modal.close();
+        this.loadSection('datasources');
+      });
+      modal.addAction('Unload', 'hub-admin-btn', async () => {
+        await unloadDataSource(existing!.name);
+        modal.close();
+        this.loadSection('datasources');
+      });
+    }
     modal.addAction(isEdit ? 'Save' : 'Create', 'hub-admin-btn hub-admin-btn--primary', async () => {
       const name = (form.querySelector('#m-name') as HTMLInputElement).value;
       const type = (form.querySelector('#m-type') as HTMLSelectElement).value;
@@ -346,7 +358,7 @@ export class AdminPanelWidget extends Widget {
 
       try {
         if (isEdit) {
-          await updateDataSource(name, { path, description: desc, read_only: readOnly, as_module: asModule, self_defined: selfDefined, disabled } as any);
+          await updateDataSource(name, { prefix, path, description: desc, read_only: readOnly, as_module: asModule, self_defined: selfDefined, disabled } as any);
           // Handle catalog changes
           const oldNames = new Set(linkedCatalogs.map(l => l.catalog_name));
           const newNames = new Set(catRows.map(r => r.name));
@@ -413,18 +425,22 @@ export class AdminPanelWidget extends Widget {
         columnDefs: [
           { headerName: 'Name', field: 'name', flex: 2, filter: true, sortable: true },
           { headerName: 'Type', field: 'type', width: 80, filter: true, sortable: true },
+          { headerName: 'Description', field: 'description', flex: 2 },
+          { headerName: 'Path', field: 'path', flex: 2 },
           { headerName: 'Data Sources', field: 'linkedDS', flex: 2 },
           {
             headerName: '',
-            width: 80,
+            width: 50,
             cellRenderer: (p: any) => {
               const div = document.createElement('div');
               div.className = 'hub-admin-grid-actions';
-              const editB = iconBtn(ICON.edit, 'Edit');
-              editB.addEventListener('click', () => this.openCatalogModal(p.data, links));
-              div.appendChild(editB);
               const delB = iconBtn(ICON.trash, 'Delete', 'hub-admin-icon-btn hub-admin-icon-btn--danger');
-              delB.addEventListener('click', async () => { await deleteCatalogSource(p.data.name); this.loadSection('catalogs'); });
+              delB.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                if (!confirm(`Delete catalog "${p.data.name}"?`)) return;
+                await deleteCatalogSource(p.data.name);
+                this.loadSection('catalogs');
+              });
               div.appendChild(delB);
               return div;
             },
@@ -434,6 +450,7 @@ export class AdminPanelWidget extends Widget {
         rowHeight: 32,
         suppressCellFocus: true,
         domLayout: 'normal',
+        onRowClicked: (e: any) => { if (e.data) this.openCatalogModal(e.data, links); },
       });
     } catch (err: any) {
       el.innerHTML = `<div class="hub-admin-error">${err.message}</div>`;

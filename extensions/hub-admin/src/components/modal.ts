@@ -64,6 +64,8 @@ export class Modal {
   }
 
   close(): void {
-    this.overlay.remove();
+    if (this.overlay.parentNode) {
+      this.overlay.parentNode.removeChild(this.overlay);
+    }
   }
 }
