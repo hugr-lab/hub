@@ -35,6 +35,7 @@
     "@jupyterlab/services": "^7.0.0",
     "@jupyterlab/ui-components": "^4.0.0",
     "@lumino/widgets": "^2.0.0",
+    "ag-grid-community": "^35.2.0",
     "apache-arrow": "^18.0.0"
   },
   "devDependencies": {

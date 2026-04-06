@@ -1,4 +1,6 @@
 /* Hub Admin Panel Styles — JupyterLab sidebar pattern */
+@import "ag-grid-community/styles/ag-grid.css";
+@import "ag-grid-community/styles/ag-theme-alpine.css";
 
 .hub-admin-panel {
   overflow-y: auto;
@@ -7,7 +9,7 @@
   color: var(--jp-ui-font-color0);
 }
 
-/* ── Collapsible section headers (like Running panel) ─────────── */
+/* ── Collapsible section headers ──────────────────────── */
 
 .hub-admin-section-header {
   display: flex;
@@ -24,9 +26,7 @@
   user-select: none;
 }
 
-.hub-admin-section-header:hover {
-  background: var(--jp-layout-color3);
-}
+.hub-admin-section-header:hover { background: var(--jp-layout-color3); }
 
 .hub-admin-section-caret {
   display: inline-block;
@@ -35,28 +35,201 @@
   transition: transform 0.15s ease;
 }
 
-.hub-admin-section-header--expanded .hub-admin-section-caret {
-  transform: rotate(90deg);
-}
+.hub-admin-section-header--expanded .hub-admin-section-caret { transform: rotate(90deg); }
 
 .hub-admin-section-body {
-  padding: 8px 12px;
+  padding: 8px 8px;
   border-bottom: 1px solid var(--jp-border-color2);
 }
 
-/* ── Subheading inside sections ───────────────────────────────── */
+/* ── AG Grid overrides ────────────────────────────────── */
 
-.hub-admin-subheading {
-  font-size: 11px;
+.hub-admin-grid {
+  width: 100%;
+  min-height: 100px;
+}
+
+.hub-admin-grid .ag-root-wrapper {
+  border: 1px solid var(--jp-border-color2);
+  border-radius: 3px;
+  font-family: var(--jp-ui-font-family);
+  font-size: 12px;
+}
+
+.hub-admin-grid .ag-header-cell-label { font-weight: 600; }
+.hub-admin-grid .ag-row { border-bottom: 1px solid var(--jp-border-color3); }
+.hub-admin-grid .ag-row:hover { background: var(--jp-layout-color2); }
+.hub-admin-grid-actions { display: flex; gap: 2px; align-items: center; }
+
+/* ── Icon buttons ─────────────────────────────────────── */
+
+.hub-admin-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--jp-border-color1);
+  border-radius: 3px;
+  background: var(--jp-layout-color1);
+  color: var(--jp-ui-font-color1);
+  cursor: pointer;
+}
+
+.hub-admin-icon-btn:hover {
+  background: var(--jp-layout-color2);
+  color: var(--jp-ui-font-color0);
+}
+
+.hub-admin-icon-btn--primary {
+  background: var(--jp-brand-color1);
+  color: white;
+  border-color: var(--jp-brand-color1);
+}
+
+.hub-admin-icon-btn--primary:hover { background: var(--jp-brand-color0); }
+
+.hub-admin-icon-btn--danger { color: var(--jp-error-color1); border-color: var(--jp-error-color1); }
+.hub-admin-icon-btn--danger:hover { background: var(--jp-error-color2); }
+
+.hub-admin-icon-btn--small { width: 22px; height: 22px; }
+.hub-admin-icon-btn--small svg { width: 12px; height: 12px; }
+
+/* ── Modal ────────────────────────────────────────────── */
+
+.hub-admin-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+}
+
+.hub-admin-modal {
+  background: var(--jp-layout-color1);
+  border: 1px solid var(--jp-border-color1);
+  border-radius: 6px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  max-height: 80vh;
+  overflow-y: auto;
+  min-width: 350px;
+}
+
+.hub-admin-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--jp-border-color2);
   font-weight: 600;
-  text-transform: uppercase;
+  font-size: 13px;
+}
+
+.hub-admin-modal-body { padding: 12px; }
+
+.hub-admin-modal-footer {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+  padding: 8px 12px;
+  border-top: 1px solid var(--jp-border-color2);
+}
+
+.hub-admin-modal-form .hub-admin-form-group { margin-bottom: 8px; }
+
+.hub-admin-modal-form .hub-admin-form-group label {
+  display: block;
+  font-weight: 500;
+  margin-bottom: 2px;
+  font-size: 11px;
   color: var(--jp-ui-font-color2);
-  margin: 12px 0 4px;
+}
+
+.hub-admin-modal-form input,
+.hub-admin-modal-form select {
+  width: 100%;
+  padding: 4px 8px;
+  border: 1px solid var(--jp-border-color1);
+  border-radius: 3px;
+  background: var(--jp-layout-color0);
+  color: var(--jp-ui-font-color0);
+  font-size: var(--jp-ui-font-size1);
+  box-sizing: border-box;
+}
+
+.hub-admin-modal-form input:disabled,
+.hub-admin-modal-form select:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.hub-admin-form-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+
+.hub-admin-form-row label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+
+/* ── Modal catalog sub-section ────────────────────────── */
+
+.hub-admin-modal-subsection {
+  margin-top: 12px;
   padding-top: 8px;
   border-top: 1px solid var(--jp-border-color2);
 }
 
-/* ── List items (providers, budgets, agents) ──────────────────── */
+.hub-admin-modal-subsection-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+
+.hub-admin-modal-cat-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--jp-border-color3);
+  font-size: 12px;
+}
+
+.hub-admin-modal-cat-name { font-weight: 500; }
+.hub-admin-modal-cat-meta { font-size: 11px; color: var(--jp-ui-font-color2); margin-left: 6px; }
+
+.hub-admin-modal-cat-add {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.hub-admin-modal-cat-add input,
+.hub-admin-modal-cat-add select {
+  padding: 2px 4px;
+  border: 1px solid var(--jp-border-color1);
+  border-radius: 3px;
+  background: var(--jp-layout-color0);
+  color: var(--jp-ui-font-color0);
+  font-size: 11px;
+}
+
+/* ── Shared ───────────────────────────────────────────── */
 
 .hub-admin-list-item {
   display: flex;
@@ -66,9 +239,7 @@
   border-bottom: 1px solid var(--jp-border-color3);
 }
 
-.hub-admin-list-item:last-child {
-  border-bottom: none;
-}
+.hub-admin-list-item:last-child { border-bottom: none; }
 
 .hub-admin-list-item-main {
   display: flex;
@@ -78,75 +249,14 @@
   min-width: 0;
 }
 
-.hub-admin-list-item-title {
-  font-weight: 500;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
+.hub-admin-list-item-title { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hub-admin-list-item-meta { font-size: 11px; color: var(--jp-ui-font-color2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hub-admin-list-item-actions { display: flex; gap: 4px; flex-shrink: 0; }
 
-.hub-admin-list-item-meta {
-  font-size: 11px;
-  color: var(--jp-ui-font-color2);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.hub-admin-list-item-actions {
-  display: flex;
-  gap: 4px;
-  flex-shrink: 0;
-}
-
-/* ── Status dots ──────────────────────────────────────────────── */
-
-.hub-admin-dot {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.hub-admin-dot--active {
-  background: var(--jp-success-color1);
-}
-
-.hub-admin-dot--inactive {
-  background: var(--jp-ui-font-color3);
-}
-
-.hub-admin-dot--error {
-  background: var(--jp-error-color1);
-}
-
-/* ── Tables ───────────────────────────────────────────────────── */
-
-.hub-admin-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: var(--jp-ui-font-size0);
-}
-
-.hub-admin-table th,
-.hub-admin-table td {
-  padding: 3px 6px;
-  text-align: left;
-  border-bottom: 1px solid var(--jp-border-color3);
-}
-
-.hub-admin-table th {
-  font-weight: 600;
-  color: var(--jp-ui-font-color2);
-  font-size: 11px;
-}
-
-.hub-admin-table tr:hover td {
-  background: var(--jp-layout-color2);
-}
-
-/* ── Buttons ──────────────────────────────────────────────────── */
+.hub-admin-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.hub-admin-dot--active { background: var(--jp-success-color1); }
+.hub-admin-dot--inactive { background: var(--jp-ui-font-color3); }
+.hub-admin-dot--error { background: var(--jp-error-color1); }
 
 .hub-admin-btn {
   padding: 4px 12px;
@@ -158,131 +268,16 @@
   font-size: var(--jp-ui-font-size0);
 }
 
-.hub-admin-btn:hover {
-  background: var(--jp-layout-color2);
-}
+.hub-admin-btn:hover { background: var(--jp-layout-color2); }
+.hub-admin-btn--primary { background: var(--jp-brand-color1); color: white; border-color: var(--jp-brand-color1); }
+.hub-admin-btn--primary:hover { background: var(--jp-brand-color0); }
 
-.hub-admin-btn--primary {
-  background: var(--jp-brand-color1);
-  color: white;
-  border-color: var(--jp-brand-color1);
-}
+.hub-admin-toolbar { display: flex; gap: 6px; margin-bottom: 8px; }
 
-.hub-admin-btn--primary:hover {
-  background: var(--jp-brand-color0);
-}
+.hub-admin-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 8px; }
+.hub-admin-stat { padding: 6px 8px; background: var(--jp-layout-color2); border-radius: 4px; }
+.hub-admin-stat-value { font-size: 16px; font-weight: 600; color: var(--jp-brand-color1); }
+.hub-admin-stat-label { font-size: 10px; color: var(--jp-ui-font-color2); display: block; }
 
-.hub-admin-btn--danger {
-  color: var(--jp-error-color1);
-  border-color: var(--jp-error-color1);
-}
-
-.hub-admin-btn--danger:hover {
-  background: var(--jp-error-color2);
-}
-
-.hub-admin-btn-sm {
-  padding: 2px 8px;
-  border: 1px solid var(--jp-border-color1);
-  border-radius: 3px;
-  background: var(--jp-layout-color1);
-  color: var(--jp-ui-font-color0);
-  cursor: pointer;
-  font-size: 11px;
-}
-
-.hub-admin-btn-sm:hover {
-  background: var(--jp-layout-color2);
-}
-
-/* ── Toolbar ──────────────────────────────────────────────────── */
-
-.hub-admin-toolbar {
-  display: flex;
-  gap: 6px;
-  margin-bottom: 8px;
-}
-
-/* ── Stats grid ───────────────────────────────────────────────── */
-
-.hub-admin-stats {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 6px;
-  margin-bottom: 8px;
-}
-
-.hub-admin-stat {
-  padding: 6px 8px;
-  background: var(--jp-layout-color2);
-  border-radius: 4px;
-}
-
-.hub-admin-stat-value {
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--jp-brand-color1);
-}
-
-.hub-admin-stat-label {
-  font-size: 10px;
-  color: var(--jp-ui-font-color2);
-  display: block;
-}
-
-/* ── Forms ─────────────────────────────────────────────────────── */
-
-.hub-admin-form {
-  padding: 8px;
-  background: var(--jp-layout-color2);
-  border-radius: 4px;
-  margin-bottom: 8px;
-}
-
-.hub-admin-form-group {
-  margin-bottom: 6px;
-}
-
-.hub-admin-form-group label {
-  display: block;
-  font-weight: 500;
-  margin-bottom: 2px;
-  font-size: 11px;
-  color: var(--jp-ui-font-color2);
-}
-
-.hub-admin-form-group input,
-.hub-admin-form-group select {
-  width: 100%;
-  padding: 3px 6px;
-  border: 1px solid var(--jp-border-color1);
-  border-radius: 3px;
-  background: var(--jp-layout-color0);
-  color: var(--jp-ui-font-color0);
-  font-size: var(--jp-ui-font-size1);
-  box-sizing: border-box;
-}
-
-.hub-admin-form-actions {
-  display: flex;
-  gap: 6px;
-  margin-top: 8px;
-}
-
-/* ── Loading / empty / error ──────────────────────────────────── */
-
-.hub-admin-loading,
-.hub-admin-empty {
-  text-align: center;
-  padding: 16px;
-  color: var(--jp-ui-font-color2);
-  font-size: 12px;
-}
-
-.hub-admin-error {
-  padding: 8px;
-  background: var(--jp-error-color2);
-  border-radius: 4px;
-  color: var(--jp-ui-font-color0);
-  font-size: 12px;
-}
+.hub-admin-loading, .hub-admin-empty { text-align: center; padding: 16px; color: var(--jp-ui-font-color2); font-size: 12px; }
+.hub-admin-error { padding: 8px; background: var(--jp-error-color2); border-radius: 4px; color: var(--jp-ui-font-color0); font-size: 12px; }
