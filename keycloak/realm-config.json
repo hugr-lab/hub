@@ -44,7 +44,9 @@
       "firstName": "Admin",
       "lastName": "User",
       "attributes": {
-        "hugr-role": ["admin"]
+        "hugr-role": [
+          "admin"
+        ]
       },
       "credentials": [
         {
@@ -53,9 +55,13 @@
           "temporary": false
         }
       ],
-      "realmRoles": ["admin"],
+      "realmRoles": [
+        "admin"
+      ],
       "clientRoles": {
-        "realm-management": ["realm-admin"]
+        "realm-management": [
+          "realm-admin"
+        ]
       }
     },
     {
@@ -66,7 +72,9 @@
       "firstName": "Viewer",
       "lastName": "User",
       "attributes": {
-        "hugr-role": ["viewer"]
+        "hugr-role": [
+          "viewer"
+        ]
       },
       "credentials": [
         {
@@ -75,7 +83,9 @@
           "temporary": false
         }
       ],
-      "realmRoles": ["viewer"]
+      "realmRoles": [
+        "viewer"
+      ]
     },
     {
       "username": "analyst",
@@ -85,7 +95,9 @@
       "firstName": "Analyst",
       "lastName": "User",
       "attributes": {
-        "hugr-role": ["analyst"]
+        "hugr-role": [
+          "analyst"
+        ]
       },
       "credentials": [
         {
@@ -94,7 +106,9 @@
           "temporary": false
         }
       ],
-      "realmRoles": ["analyst"]
+      "realmRoles": [
+        "analyst"
+      ]
     }
   ],
   "clients": [
@@ -220,5 +234,10 @@
         "display.on.consent.screen": "true"
       }
     }
-  ]
+  ],
+  "ssoSessionIdleTimeout": 28800,
+  "ssoSessionMaxLifespan": 86400,
+  "offlineSessionIdleTimeout": 2592000,
+  "offlineSessionMaxLifespan": 5184000,
+  "accessTokenLifespan": 1800
 }
