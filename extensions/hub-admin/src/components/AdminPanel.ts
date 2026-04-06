@@ -231,7 +231,7 @@ export class AdminPanelWidget extends Widget {
         <select id="m-type" ${isEdit ? 'disabled' : ''}>${DS_TYPES.map(t => `<option value="${t}" ${existing?.type === t ? 'selected' : ''}>${t}</option>`).join('')}</select>
       </div>
       <div class="hub-admin-form-group"><label>Prefix</label><input type="text" id="m-prefix" value="${esc(existing?.prefix ?? '')}" /></div>
-      <div class="hub-admin-form-group"><label>Path</label><input type="text" id="m-path" value="${esc(existing?.path ?? '')}" /></div>
+      <div class="hub-admin-form-group"><label>Path</label><textarea id="m-path" rows="3" style="resize:vertical;font-family:monospace;font-size:12px">${esc(existing?.path ?? '')}</textarea></div>
       <div class="hub-admin-form-group"><label>Description</label><input type="text" id="m-desc" value="${esc(existing?.description ?? '')}" /></div>
       <div class="hub-admin-form-row">
         <label><input type="checkbox" id="m-readonly" ${existing?.read_only ? 'checked' : ''} /> Read Only</label>
@@ -350,7 +350,7 @@ export class AdminPanelWidget extends Widget {
       const name = (form.querySelector('#m-name') as HTMLInputElement).value;
       const type = (form.querySelector('#m-type') as HTMLSelectElement).value;
       const prefix = (form.querySelector('#m-prefix') as HTMLInputElement).value;
-      const path = (form.querySelector('#m-path') as HTMLInputElement).value;
+      const path = (form.querySelector('#m-path') as HTMLTextAreaElement).value;
       const desc = (form.querySelector('#m-desc') as HTMLInputElement).value;
       const readOnly = (form.querySelector('#m-readonly') as HTMLInputElement).checked;
       const asModule = (form.querySelector('#m-module') as HTMLInputElement).checked;
@@ -471,7 +471,7 @@ export class AdminPanelWidget extends Widget {
       <div class="hub-admin-form-group"><label>Type</label>
         <select id="mc-type"><option value="localFS" ${existing?.type === 'localFS' ? 'selected' : ''}>localFS</option><option value="uri" ${existing?.type === 'uri' ? 'selected' : ''}>uri</option><option value="text" ${existing?.type === 'text' ? 'selected' : ''}>text</option></select>
       </div>
-      <div class="hub-admin-form-group"><label>Path</label><input type="text" id="mc-path" value="${esc(existing?.path ?? '')}" /></div>
+      <div class="hub-admin-form-group"><label>Path</label><textarea id="mc-path" rows="3" style="resize:vertical;font-family:monospace;font-size:12px">${esc(existing?.path ?? '')}</textarea></div>
       <div class="hub-admin-form-group"><label>Description</label><input type="text" id="mc-desc" value="${esc(existing?.description ?? '')}" /></div>
       <div class="hub-admin-form-group"><label>Link to data source</label><input type="text" id="mc-ds" placeholder="data source name" /></div>
     `;
@@ -504,7 +504,7 @@ export class AdminPanelWidget extends Widget {
     modal.addAction(isEdit ? 'Save' : 'Create', 'hub-admin-btn hub-admin-btn--primary', async () => {
       const name = (form.querySelector('#mc-name') as HTMLInputElement).value;
       const type = (form.querySelector('#mc-type') as HTMLSelectElement).value;
-      const path = (form.querySelector('#mc-path') as HTMLInputElement).value;
+      const path = (form.querySelector('#mc-path') as HTMLTextAreaElement).value;
       const desc = (form.querySelector('#mc-desc') as HTMLInputElement).value;
       const dsName = (form.querySelector('#mc-ds') as HTMLInputElement).value;
       if (!name || !path) return;

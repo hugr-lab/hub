@@ -178,7 +178,7 @@ export async function deleteDataSource(name: string): Promise<void> {
 export async function loadDataSource(name: string): Promise<void> {
   await hugrQuery(
     `mutation($name: String!) {
-      function { core { ds { load_data_source(name: $name) { affected_rows } } } }
+      function { core { load_data_source(name: $name) { affected_rows success message } } }
     }`,
     { name },
   );
@@ -187,7 +187,7 @@ export async function loadDataSource(name: string): Promise<void> {
 export async function unloadDataSource(name: string): Promise<void> {
   await hugrQuery(
     `mutation($name: String!) {
-      function { core { ds { unload_data_source(name: $name) { affected_rows } } } }
+      function { core { unload_data_source(name: $name) { affected_rows success message } } }
     }`,
     { name },
   );

@@ -151,7 +151,8 @@
 }
 
 .hub-admin-modal-form input,
-.hub-admin-modal-form select {
+.hub-admin-modal-form select,
+.hub-admin-modal-form textarea {
   width: 100%;
   padding: 4px 8px;
   border: 1px solid var(--jp-border-color1);
@@ -163,7 +164,8 @@
 }
 
 .hub-admin-modal-form input:disabled,
-.hub-admin-modal-form select:disabled {
+.hub-admin-modal-form select:disabled,
+.hub-admin-modal-form textarea:disabled {
   opacity: 0.6;
   cursor: not-allowed;
 }
