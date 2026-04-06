@@ -248,6 +248,26 @@ export class HugrClient {
       const contentType = response.headers.get('Content-Type') || '';
 
       if (!response.ok) {
+        // Retry once on 401 — connection_service may be refreshing token
+        if (response.status === 401 && !body._retried) {
+          await new Promise(r => setTimeout(r, 3000));
+          body._retried = true;
+          const retryResp = await fetch(this._url, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(body),
+            signal: controller.signal,
+            credentials: 'same-origin',
+          });
+          if (retryResp.ok) {
+            const ct = retryResp.headers.get('Content-Type') || '';
+            if (ct.includes('multipart/mixed')) {
+              return this._parseMultipartResponse(await retryResp.arrayBuffer());
+            }
+            const json = await retryResp.json();
+            return { data: json.data ?? {}, errors: json.errors ?? [], extensions: json.extensions ?? {} };
+          }
+        }
         const msg = response.status === 401
           ? 'Authentication failed — token expired or missing.'
           : response.status === 403
