@@ -42,6 +42,7 @@ func (m *Manager) StartAgent(ctx context.Context, userID, agentTypeID string) (s
 		MCPURL:      mcpURL,
 		Mounts: []Mount{
 			{Source: fmt.Sprintf("hub-user-%s-shared", userID), Target: "/shared"},
+			{Source: "hub-agent-tools", Target: "/tools"},
 		},
 	})
 	if err != nil {

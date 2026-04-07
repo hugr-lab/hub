@@ -64,6 +64,27 @@ func New(hugrClient *client.Client, logger *slog.Logger) *Router {
 
 // Complete routes a request through Hugr's core.models.chat_completion.
 func (r *Router) Complete(ctx context.Context, req CompletionRequest) (CompletionResponse, error) {
+	// 0. Resolve model: if empty, pick first available
+	if req.Model == "" {
+		models, err := r.ListModels(ctx)
+		if err != nil {
+			r.logger.Warn("auto-resolve model: list failed", "error", err)
+			return CompletionResponse{}, fmt.Errorf("list models: %w", err)
+		}
+		r.logger.Debug("auto-resolve model", "available", len(models))
+		for _, m := range models {
+			r.logger.Debug("model candidate", "name", m.Name, "type", m.Type)
+			if m.Type == "llm" {
+				req.Model = m.Name
+				break
+			}
+		}
+		if req.Model == "" {
+			return CompletionResponse{}, fmt.Errorf("no LLM models configured")
+		}
+		r.logger.Info("auto-resolved model", "model", req.Model)
+	}
+
 	// 1. Check budget
 	if err := r.budget.Check(ctx, req.UserID, req.Model); err != nil {
 		return CompletionResponse{}, fmt.Errorf("budget exceeded: %w", err)
@@ -83,6 +104,9 @@ func (r *Router) Complete(ctx context.Context, req CompletionRequest) (Completio
 		toolStrings = append(toolStrings, string(b))
 	}
 
+	varsDebug, _ := json.Marshal(map[string]any{"model": req.Model, "messages": msgStrings})
+	r.logger.Debug("graphql request", "vars", string(varsDebug))
+
 	// 4. Call Hugr GraphQL: function.core.models.chat_completion
 	vars := map[string]any{
 		"model":    req.Model,
@@ -98,13 +122,29 @@ func (r *Router) Complete(ctx context.Context, req CompletionRequest) (Completio
 		vars["max_tokens"] = req.MaxTokens
 	}
 
-	gql := `query($model: String!, $messages: [String!]!, $tools: [String!], $tool_choice: String, $max_tokens: Int) {
+	// Build GraphQL query dynamically — only include optional args that are set.
+	// Hugr query-engine rejects null values for [String!] typed variables.
+	var extraParams, extraArgs string
+	if len(toolStrings) > 0 {
+		extraParams += ", $tools: [String!]"
+		extraArgs += ", tools: $tools"
+	}
+	if req.ToolChoice != "" {
+		extraParams += ", $tool_choice: String"
+		extraArgs += ", tool_choice: $tool_choice"
+	}
+	if req.MaxTokens > 0 {
+		extraParams += ", $max_tokens: Int"
+		extraArgs += ", max_tokens: $max_tokens"
+	}
+
+	gql := fmt.Sprintf(`query($model: String!, $messages: [String!]!%s) {
 		function { core { models {
-			chat_completion(model: $model, messages: $messages, tools: $tools, tool_choice: $tool_choice, max_tokens: $max_tokens) {
+			chat_completion(model: $model, messages: $messages%s) {
 				content model finish_reason prompt_tokens completion_tokens total_tokens provider latency_ms tool_calls
 			}
 		} } }
-	}`
+	}`, extraParams, extraArgs)
 
 	res, err := r.hugrClient.Query(ctx, gql, vars)
 	if err != nil {

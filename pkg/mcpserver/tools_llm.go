@@ -13,10 +13,12 @@ import (
 func (s *Server) registerLLMTools(mcpSrv *server.MCPServer, userID string) {
 	mcpSrv.AddTool(
 		mcp.NewTool("llm-complete",
-			mcp.WithDescription("Send messages to LLM and get completion. Budget is enforced per user."),
+			mcp.WithDescription("Send messages to LLM and get completion with optional tool calling. Budget is enforced per user."),
 			mcp.WithString("model", mcp.Description("LLM data source name (e.g. claude, gpt4). Empty = first available.")),
-			mcp.WithObject("messages", mcp.Required(), mcp.Description("Array of {role, content} message objects")),
+			mcp.WithObject("messages", mcp.Required(), mcp.Description("Array of {role, content, tool_calls?, tool_call_id?} message objects")),
 			mcp.WithNumber("max_tokens", mcp.Description("Max output tokens")),
+			mcp.WithObject("tools", mcp.Description("Array of {name, description, parameters} tool definitions for LLM")),
+			mcp.WithString("tool_choice", mcp.Description("Tool choice: auto, none, or tool name")),
 		),
 		s.handleLLMComplete(userID),
 	)
@@ -52,11 +54,26 @@ func (s *Server) handleLLMComplete(userID string) server.ToolHandlerFunc {
 			maxTokens = int(mt)
 		}
 
+		var tools []llmrouter.Tool
+		if toolsRaw, ok := args["tools"]; ok {
+			data, _ := json.Marshal(toolsRaw)
+			json.Unmarshal(data, &tools)
+		}
+		toolChoice, _ := args["tool_choice"].(string)
+
+		s.logger.Debug("llm-complete request",
+			"user", userID, "model", model,
+			"messages", len(messages), "tools", len(tools),
+			"tool_choice", toolChoice, "max_tokens", maxTokens,
+		)
+
 		resp, err := s.llmRouter.Complete(ctx, llmrouter.CompletionRequest{
-			Model:     model,
-			Messages:  messages,
-			MaxTokens: maxTokens,
-			UserID:    userID,
+			Model:      model,
+			Messages:   messages,
+			Tools:      tools,
+			ToolChoice: toolChoice,
+			MaxTokens:  maxTokens,
+			UserID:     userID,
 		})
 		if err != nil {
 			return toolError(fmt.Sprintf("LLM error: %v", err)), nil

@@ -25,12 +25,29 @@ func main() {
 		skillsDir = "/.agent/skills"
 	}
 
+	configPath := os.Getenv("AGENT_CONFIG")
+	if configPath == "" {
+		configPath = "/.agent/config.json"
+	}
+
+	cfg, err := agent.LoadConfig(configPath)
+	if err != nil {
+		logger.Error("failed to load config", "path", configPath, "error", err)
+		os.Exit(1)
+	}
+
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	a := agent.New(mcpURL, skillsDir, logger)
+	a := agent.New(mcpURL, skillsDir, cfg, logger)
 
-	logger.Info("hub-agent starting", "mcp_url", mcpURL, "skills_dir", skillsDir)
+	logger.Info("hub-agent starting",
+		"mcp_url", mcpURL,
+		"skills_dir", skillsDir,
+		"config", configPath,
+		"mcp_servers", len(cfg.MCPServers),
+		"max_turns", cfg.MaxTurns,
+	)
 
 	if err := a.Run(ctx); err != nil {
 		logger.Error("agent failed", "error", err)

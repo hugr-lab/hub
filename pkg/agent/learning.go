@@ -62,7 +62,7 @@ func (l *Learner) storeSchemaMemory(ctx context.Context, toolName string, args m
 
 	content := strings.Join(parts, "\n") + "\n\nResult:\n" + truncate(result, 2000)
 
-	_, err := l.agent.CallTool(ctx, "memory-store", map[string]any{
+	_, err := l.agent.CallHubTool(ctx, "memory-store", map[string]any{
 		"content":  content,
 		"category": "schema",
 		"source":   toolName,
@@ -82,7 +82,7 @@ func (l *Learner) storeQueryPattern(ctx context.Context, toolName string, args m
 	name := queryPatternName(query)
 	desc := fmt.Sprintf("Auto-learned from %s. Result preview: %s", toolName, truncate(result, 200))
 
-	_, err := l.agent.CallTool(ctx, "registry-save", map[string]any{
+	_, err := l.agent.CallHubTool(ctx, "registry-save", map[string]any{
 		"name":        name,
 		"query":       query,
 		"description": desc,
@@ -98,7 +98,7 @@ func (l *Learner) RetrieveContext(ctx context.Context, userMessage string) strin
 	var sections []string
 
 	// Search memories (schemas, patterns)
-	memories, err := l.agent.CallTool(ctx, "memory-search", map[string]any{
+	memories, err := l.agent.CallHubTool(ctx, "memory-search", map[string]any{
 		"query": userMessage,
 		"limit": float64(5),
 	})
@@ -107,7 +107,7 @@ func (l *Learner) RetrieveContext(ctx context.Context, userMessage string) strin
 	}
 
 	// Search query registry
-	registry, err := l.agent.CallTool(ctx, "registry-search", map[string]any{
+	registry, err := l.agent.CallHubTool(ctx, "registry-search", map[string]any{
 		"query": userMessage,
 		"limit": float64(3),
 	})

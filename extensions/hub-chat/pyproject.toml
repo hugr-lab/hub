@@ -19,8 +19,12 @@ artifacts = ["hub_chat/labextension"]
 packages = ["hub_chat"]
 ignore-vcs = true
 
+[project.entry-points."jupyter_server.serverextension"]
+hub_chat = "hub_chat.app"
+
 [tool.hatch.build.targets.wheel.shared-data]
 "hub_chat/labextension" = "share/jupyter/labextensions/@hugr-lab/jupyterlab-hub-chat"
+"jupyter-config/hub_chat.json" = "etc/jupyter/jupyter_server_config.d/hub_chat.json"
 
 [tool.hatch.build.hooks.jupyter-builder]
 dependencies = ["hatch-jupyter-builder>=0.5"]

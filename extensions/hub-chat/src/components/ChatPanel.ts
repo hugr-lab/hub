@@ -77,21 +77,25 @@ export class ChatPanelWidget extends Widget {
     super.dispose();
   }
 
-  private connect(): void {
-    // Read WebSocket URL from environment (set by pre_spawn_hook or page config)
-    const hubServiceUrl = document.body.dataset.hubServiceWs
-      || (window as any).__hubServiceWs
-      || '';
+  private async connect(): Promise<void> {
+    this.updateStatus('connecting');
 
-    if (!hubServiceUrl) {
+    // Get WebSocket URL from server extension
+    let wsUrl: string;
+    try {
+      const settings = ServerConnection.makeSettings();
+      const baseUrl = settings.baseUrl;
+      const resp = await ServerConnection.makeRequest(baseUrl + 'hub-chat/api/config', {}, settings);
+      if (!resp.ok) throw new Error(`config: ${resp.status}`);
+      const config = await resp.json();
+      wsUrl = config.ws_url;
+    } catch (err) {
       this.updateStatus('not configured');
       return;
     }
 
-    this.updateStatus('connecting');
-
     try {
-      this.ws = new WebSocket(hubServiceUrl);
+      this.ws = new WebSocket(wsUrl);
     } catch {
       this.updateStatus('error');
       return;

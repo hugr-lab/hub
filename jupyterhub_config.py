@@ -449,7 +449,9 @@ async def pre_spawn_hook(spawner, auth_state):
     if spawner.user.admin:
         spawner.environment["HUGR_HUB_ADMIN"] = "true"
 
-    # 8. Pass Hugr connection
+    # 8. Pass Hub Service + Hugr connection
+    if HUB_SERVICE_URL:
+        spawner.environment["HUB_SERVICE_URL"] = HUB_SERVICE_URL
     spawner.environment["HUGR_URL"] = HUGR_URL
     spawner.environment["HUGR_CONNECTION_NAME"] = HUGR_CONNECTION_NAME
     if HUGR_TLS_SKIP_VERIFY:
