@@ -293,13 +293,56 @@ export async function fetchAgentSessions(): Promise<AgentSession[]> {
   return data?.hub?.db?.agent_sessions ?? [];
 }
 
-export async function stopAgent(instanceId: string): Promise<void> {
+export async function stopAgentDB(instanceId: string): Promise<void> {
   await hugrQuery(
     `mutation($filter: hub_db_agent_instances_filter!, $data: hub_db_agent_instances_mut_data!) {
       hub { db { update_agent_instances(filter: $filter, data: $data) { affected_rows } } }
     }`,
     { filter: { id: { eq: instanceId } }, data: { status: 'stopped' } },
   );
+}
+
+// ── Hub Service API (via proxy) ─────────────────────────
+
+async function hubServiceAPI(path: string, method = 'GET', body?: any): Promise<any> {
+  const baseUrl = PageConfig.getBaseUrl();
+  const settings = ServerConnection.makeSettings();
+  const url = baseUrl + 'hub-admin/api/hub/' + path.replace(/^\//, '');
+  const init: RequestInit = { method };
+  if (body) {
+    init.body = JSON.stringify(body);
+    init.headers = { 'Content-Type': 'application/json' };
+  }
+  const resp = await ServerConnection.makeRequest(url, init, settings);
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(`Hub Service error: ${resp.status} ${text}`);
+  }
+  return resp.json();
+}
+
+export interface AgentType {
+  id: string;
+  display_name: string;
+  description: string;
+  image: string;
+}
+
+export async function fetchAgentTypes(): Promise<AgentType[]> {
+  const data = await hugrQuery(`{
+    hub { db { agent_types {
+      id display_name description image
+    } } }
+  }`);
+  return data?.hub?.db?.agent_types ?? [];
+}
+
+export async function startAgent(userId: string, agentTypeId: string): Promise<{ status: string; container_id: string }> {
+  return hubServiceAPI('api/agent/start', 'POST', { user_id: userId, agent_type_id: agentTypeId });
+}
+
+export async function stopAgent(userId: string): Promise<{ status: string }> {
+  return hubServiceAPI('api/agent/stop', 'POST', { user_id: userId });
 }
 
 export async function clearAgentMemory(userId: string): Promise<void> {

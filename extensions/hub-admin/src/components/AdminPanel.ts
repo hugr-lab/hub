@@ -11,11 +11,11 @@ import {
   fetchCatalogSources, fetchCatalogs, insertCatalogSource, updateCatalogSource,
   deleteCatalogSource, linkCatalog, unlinkCatalog,
   fetchModelSources,
-  fetchAgentInstances, fetchAgentSessions,
+  fetchAgentInstances, fetchAgentSessions, fetchAgentTypes,
+  startAgent, stopAgent, stopAgentDB, clearAgentMemory,
   fetchLLMBudgets, fetchLLMUsage, insertLLMBudget, deleteLLMBudget,
-  stopAgent, clearAgentMemory,
 } from '../api.js';
-import type { DataSource, CatalogSource, CatalogLink, ModelSource } from '../api.js';
+import type { DataSource, CatalogSource, CatalogLink, ModelSource, AgentType } from '../api.js';
 import { ICON, iconBtn } from './icons.js';
 import { Modal } from './modal.js';
 
@@ -656,8 +656,25 @@ export class AdminPanelWidget extends Widget {
   private async renderAgents(el: HTMLElement): Promise<void> {
     el.innerHTML = '<div class="hub-admin-loading">Loading...</div>';
     try {
-      const instances = await fetchAgentInstances();
+      const [instances, agentTypes] = await Promise.all([
+        fetchAgentInstances(),
+        fetchAgentTypes(),
+      ]);
       el.innerHTML = '';
+
+      // Toolbar: Start Agent
+      const toolbar = document.createElement('div');
+      toolbar.className = 'hub-admin-toolbar';
+      if (agentTypes.length > 0) {
+        const startBtn = iconBtn(ICON.play, 'Start Agent', 'hub-admin-icon-btn hub-admin-icon-btn--primary');
+        startBtn.addEventListener('click', () => this.openStartAgentModal(agentTypes));
+        toolbar.appendChild(startBtn);
+      }
+      const refreshBtn = iconBtn(ICON.refresh, 'Refresh');
+      refreshBtn.addEventListener('click', () => this.loadSection('agents'));
+      toolbar.appendChild(refreshBtn);
+      el.appendChild(toolbar);
+
       if (instances.length === 0) { el.appendChild(empty('No agent instances')); return; }
       for (const inst of instances) {
         const row = document.createElement('div');
@@ -674,11 +691,22 @@ export class AdminPanelWidget extends Widget {
         actions.className = 'hub-admin-list-item-actions';
         if (inst.status === 'running') {
           const stopBtn = iconBtn(ICON.stop, 'Stop', 'hub-admin-icon-btn hub-admin-icon-btn--danger');
-          stopBtn.addEventListener('click', async () => { await stopAgent(inst.id); this.loadSection('agents'); });
+          stopBtn.addEventListener('click', async () => {
+            if (!confirm(`Stop agent for "${inst.user_id}"?`)) return;
+            await this.runBusy(`Stopping agent...`, async () => {
+              try { await stopAgent(inst.user_id); }
+              catch { await stopAgentDB(inst.id); }
+            });
+            this.loadSection('agents');
+          });
           actions.appendChild(stopBtn);
         }
         const clearBtn = iconBtn(ICON.eraser, 'Clear Memory');
-        clearBtn.addEventListener('click', async () => { await clearAgentMemory(inst.user_id); this.loadSection('agents'); });
+        clearBtn.addEventListener('click', async () => {
+          if (!confirm(`Clear all memory for "${inst.user_id}"?`)) return;
+          await clearAgentMemory(inst.user_id);
+          this.loadSection('agents');
+        });
         actions.appendChild(clearBtn);
         row.appendChild(actions);
         el.appendChild(row);
@@ -686,6 +714,35 @@ export class AdminPanelWidget extends Widget {
     } catch (err: any) {
       el.innerHTML = `<div class="hub-admin-error">${err.message}</div>`;
     }
+  }
+
+  private openStartAgentModal(agentTypes: AgentType[]): void {
+    const modal = new Modal({ title: 'Start Agent', width: '400px' });
+    const form = document.createElement('div');
+    form.className = 'hub-admin-modal-form';
+    form.innerHTML = `
+      <div class="hub-admin-form-group"><label>User ID</label><input type="text" id="sa-user" /></div>
+      <div class="hub-admin-form-group"><label>Agent Type</label>
+        <select id="sa-type">${agentTypes.map(t => `<option value="${t.id}">${esc(t.display_name || t.id)}</option>`).join('')}</select>
+      </div>
+    `;
+    modal.body.appendChild(form);
+
+    modal.addAction('Start', 'hub-admin-btn hub-admin-btn--primary', async () => {
+      const userId = (form.querySelector('#sa-user') as HTMLInputElement).value.trim();
+      const typeId = (form.querySelector('#sa-type') as HTMLSelectElement).value;
+      if (!userId) return;
+      modal.close();
+      await this.runBusy(`Starting agent for ${userId}...`, async () => {
+        try {
+          const res = await startAgent(userId, typeId);
+          alert(`Agent started: ${res.container_id?.substring(0, 12)}`);
+        } catch (err: any) { alert(err.message); }
+      });
+      this.loadSection('agents');
+    });
+    modal.addAction('Cancel', 'hub-admin-btn', () => modal.close());
+    modal.open();
   }
 }
 

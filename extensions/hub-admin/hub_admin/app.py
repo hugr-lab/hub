@@ -49,6 +49,8 @@ def setup_handlers(web_app):
 
 def _load_jupyter_server_extension(server_app):
     setup_handlers(server_app.web_app)
+    from . import hub_proxy
+    hub_proxy.setup_handlers(server_app.web_app)
     server_app.log.info("hub_admin server extension loaded")
 
 
