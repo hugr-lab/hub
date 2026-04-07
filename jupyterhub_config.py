@@ -454,6 +454,9 @@ async def pre_spawn_hook(spawner, auth_state):
     spawner.environment["HUGR_CONNECTION_NAME"] = HUGR_CONNECTION_NAME
     if HUGR_TLS_SKIP_VERIFY:
         spawner.environment["HUGR_TLS_SKIP_VERIFY"] = "true"
+    _query_timeout = os.environ.get("HUGR_QUERY_TIMEOUT")
+    if _query_timeout:
+        spawner.environment["HUGR_QUERY_TIMEOUT"] = _query_timeout
     if access_token:
         spawner.environment["HUGR_INITIAL_ACCESS_TOKEN"] = access_token
 

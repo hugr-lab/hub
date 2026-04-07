@@ -6,7 +6,7 @@ import { Widget } from '@lumino/widgets';
 import { createGrid, GridApi, GridOptions, themeQuartz } from 'ag-grid-community';
 
 import {
-  fetchDataSources, insertDataSource, updateDataSource, deleteDataSource,
+  fetchDataSources, fetchDataSourceStatus, insertDataSource, updateDataSource, deleteDataSource,
   loadDataSource, unloadDataSource,
   fetchCatalogSources, fetchCatalogs, insertCatalogSource, updateCatalogSource,
   deleteCatalogSource, linkCatalog, unlinkCatalog,
@@ -44,6 +44,7 @@ export class AdminPanelWidget extends Widget {
   // Cache for cross-section data
   private _catalogLinks: CatalogLink[] = [];
   private _models: ModelSource[] = [];
+  private _busy = false;
 
   constructor() {
     super();
@@ -51,6 +52,22 @@ export class AdminPanelWidget extends Widget {
     this.title.closable = true;
     this.addClass('hub-admin-panel');
     this.buildLayout();
+  }
+
+  /** Run an async operation with a spinner overlay. Prevents double-clicks. */
+  private async runBusy<T>(label: string, fn: () => Promise<T>): Promise<T | undefined> {
+    if (this._busy) return undefined;
+    this._busy = true;
+    const overlay = document.createElement('div');
+    overlay.className = 'hub-admin-busy-overlay';
+    overlay.innerHTML = `<div class="hub-admin-busy-spinner"></div><div>${label}</div>`;
+    this.node.appendChild(overlay);
+    try {
+      return await fn();
+    } finally {
+      this._busy = false;
+      overlay.remove();
+    }
   }
 
   private buildLayout(): void {
@@ -150,8 +167,13 @@ export class AdminPanelWidget extends Widget {
       gridDiv.style.height = `${Math.min(sources.length * 32 + 34, 400)}px`;
       el.appendChild(gridDiv);
 
-      const rowData = sources.map(ds => ({
+      // Fetch statuses in parallel
+      const statuses = await Promise.all(
+        sources.map(ds => fetchDataSourceStatus(ds.name).catch(() => 'unknown'))
+      );
+      const rowData = sources.map((ds, i) => ({
         ...ds,
+        status: statuses[i],
         catalogs: links.filter(l => l.data_source_name === ds.name).length,
       }));
 
@@ -161,11 +183,17 @@ export class AdminPanelWidget extends Widget {
         columnDefs: [
           {
             headerName: '',
-            field: 'disabled',
+            field: 'status',
             width: 28,
             minWidth: 28,
             maxWidth: 28,
-            cellRenderer: (p: any) => `<span class="hub-admin-dot ${p.value ? 'hub-admin-dot--inactive' : 'hub-admin-dot--active'}"></span>`,
+            cellRenderer: (p: any) => {
+              const s = p.value as string;
+              const cls = s === 'attached' ? 'hub-admin-dot--active'
+                : s === 'detached' ? 'hub-admin-dot--inactive'
+                : 'hub-admin-dot--error';
+              return `<span class="hub-admin-dot ${cls}"></span>`;
+            },
           },
           { headerName: 'Name', field: 'name', minWidth: 100, filter: true, sortable: true },
           { headerName: 'Type', field: 'type', minWidth: 70, width: 90, filter: true, sortable: true },
@@ -177,11 +205,19 @@ export class AdminPanelWidget extends Widget {
             cellRenderer: (p: any) => {
               const div = document.createElement('div');
               div.className = 'hub-admin-grid-actions';
-              const toggleBtn = iconBtn(p.data.disabled ? ICON.play : ICON.power, p.data.disabled ? 'Load' : 'Unload');
+              const isDetached = p.data.status !== 'attached';
+              const toggleBtn = iconBtn(isDetached ? ICON.play : ICON.power, isDetached ? 'Load' : 'Unload');
               toggleBtn.addEventListener('click', async (e) => {
                 e.stopPropagation();
-                if (p.data.disabled) { await loadDataSource(p.data.name); }
-                else { await unloadDataSource(p.data.name); }
+                if (!isDetached && !confirm(`Unload data source "${p.data.name}"?`)) return;
+                await this.runBusy(isDetached ? `Loading ${p.data.name}...` : `Unloading ${p.data.name}...`, async () => {
+                  try {
+                    const res = isDetached
+                      ? await loadDataSource(p.data.name)
+                      : await unloadDataSource(p.data.name);
+                    if (!res.success && res.message) { alert(res.message); }
+                  } catch (err: any) { alert(err.message); }
+                });
                 this.loadSection('datasources');
               });
               div.appendChild(toggleBtn);
@@ -294,8 +330,11 @@ export class AdminPanelWidget extends Widget {
         const rowEl = document.createElement('div');
         rowEl.className = 'hub-admin-modal-cat-row';
         rowEl.innerHTML = `
-          <span class="hub-admin-modal-cat-name">${esc(row.name)}</span>
-          <span class="hub-admin-modal-cat-meta">${esc(row.type)}</span>
+          <div style="flex:1;min-width:0">
+            <span class="hub-admin-modal-cat-name">${esc(row.name)}</span>
+            <span class="hub-admin-modal-cat-meta">${esc(row.type)}</span>
+            <div class="hub-admin-modal-cat-meta" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(row.path)}">${esc(row.path)}</div>
+          </div>
         `;
         const delCatBtn = iconBtn(ICON.trash, row.isLinked ? 'Unlink' : 'Remove', 'hub-admin-icon-btn hub-admin-icon-btn--danger hub-admin-icon-btn--small');
         delCatBtn.addEventListener('click', () => {
@@ -336,13 +375,35 @@ export class AdminPanelWidget extends Widget {
     // ── Actions ──
     if (isEdit) {
       modal.addAction('Load', 'hub-admin-btn', async () => {
-        await loadDataSource(existing!.name);
         modal.close();
+        await this.runBusy(`Loading ${existing!.name}...`, async () => {
+          try {
+            const res = await loadDataSource(existing!.name);
+            if (res.message) { alert(res.success ? `✓ ${res.message}` : res.message); }
+          } catch (err: any) { alert(err.message); }
+        });
         this.loadSection('datasources');
       });
       modal.addAction('Unload', 'hub-admin-btn', async () => {
-        await unloadDataSource(existing!.name);
+        if (!confirm(`Unload data source "${existing!.name}"?`)) return;
         modal.close();
+        await this.runBusy(`Unloading ${existing!.name}...`, async () => {
+          try {
+            const res = await unloadDataSource(existing!.name);
+            if (res.message) { alert(res.success ? `✓ ${res.message}` : res.message); }
+          } catch (err: any) { alert(err.message); }
+        });
+        this.loadSection('datasources');
+      });
+      modal.addAction('Hard Unload', 'hub-admin-btn hub-admin-icon-btn--danger', async () => {
+        if (!confirm(`Hard unload "${existing!.name}"? This will completely remove the data source.`)) return;
+        modal.close();
+        await this.runBusy(`Hard unloading ${existing!.name}...`, async () => {
+          try {
+            const res = await unloadDataSource(existing!.name, true);
+            if (res.message) { alert(res.success ? `✓ ${res.message}` : res.message); }
+          } catch (err: any) { alert(err.message); }
+        });
         this.loadSection('datasources');
       });
     }

@@ -179,7 +179,7 @@ export class HugrClient {
     this._token = options.token;
     this._role = options.role;
     this._connectionName = options.connectionName;
-    this._timeout = options.timeout ?? 30000;
+    this._timeout = options.timeout ?? 300000;
   }
 
   private async _fetchBrowserToken(): Promise<string | undefined> {

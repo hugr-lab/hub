@@ -5,7 +5,7 @@
 # and JupyterLab extensions from PyPI.
 # =============================================================================
 
-ARG HUGR_KERNEL_VERSION=v0.2.14
+ARG HUGR_KERNEL_VERSION=v0.2.16
 ARG DUCKDB_KERNEL_VERSION=v0.3.4
 
 # -----------------------------------------------------------------------------

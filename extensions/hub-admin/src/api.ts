@@ -97,7 +97,7 @@ async function getClient(): Promise<HugrClient> {
     throw new Error(`Failed to get connections: ${resp.status}`);
   }
 
-  const connections: Array<{ name: string; status?: string }> = await resp.json();
+  const connections: Array<{ name: string; status?: string; query_timeout?: number }> = await resp.json();
   const defaultConn = connections.find(c => c.status === 'default') || connections[0];
   if (!defaultConn) {
     throw new Error('No Hugr connection configured');
@@ -107,6 +107,7 @@ async function getClient(): Promise<HugrClient> {
     url: baseUrl + 'hugr/proxy/' + encodeURIComponent(defaultConn.name),
     authType: 'public',
     connectionName: defaultConn.name,
+    timeout: defaultConn.query_timeout ? defaultConn.query_timeout * 1000 : undefined,
   });
 
   return _client;
@@ -135,13 +136,11 @@ export async function fetchDataSources(): Promise<DataSource[]> {
 export async function fetchDataSourceStatus(name: string): Promise<string> {
   const data = await hugrQuery(
     `query($name: String!) {
-      function { core { ds {
-        data_source_status(name: $name)
-      } } }
+      function { core { data_source_status(name: $name) } }
     }`,
     { name },
   );
-  return data?.function?.core?.ds?.data_source_status ?? 'unknown';
+  return data?.function?.core?.data_source_status ?? 'unknown';
 }
 
 export async function insertDataSource(ds: Partial<DataSource> & { name: string; type: string; path: string; prefix: string }, catalogs?: Array<{ name: string; type: string; path: string }>): Promise<void> {
@@ -175,22 +174,31 @@ export async function deleteDataSource(name: string): Promise<void> {
   );
 }
 
-export async function loadDataSource(name: string): Promise<void> {
-  await hugrQuery(
+export interface DSOperationResult {
+  success: boolean;
+  message: string;
+}
+
+export async function loadDataSource(name: string): Promise<DSOperationResult> {
+  const data = await hugrQuery(
     `mutation($name: String!) {
       function { core { load_data_source(name: $name) { affected_rows success message } } }
     }`,
     { name },
   );
+  const r = data?.function?.core?.load_data_source;
+  return { success: r?.success ?? false, message: r?.message ?? '' };
 }
 
-export async function unloadDataSource(name: string): Promise<void> {
-  await hugrQuery(
-    `mutation($name: String!) {
-      function { core { unload_data_source(name: $name) { affected_rows success message } } }
+export async function unloadDataSource(name: string, hard = false): Promise<DSOperationResult> {
+  const data = await hugrQuery(
+    `mutation($name: String!, $hard: Boolean) {
+      function { core { unload_data_source(name: $name, hard: $hard) { affected_rows success message } } }
     }`,
-    { name },
+    { name, hard },
   );
+  const r = data?.function?.core?.unload_data_source;
+  return { success: r?.success ?? false, message: r?.message ?? '' };
 }
 
 // ── Catalogs (core.*) ────────────────────────────────────
