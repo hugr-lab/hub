@@ -66,6 +66,8 @@ type agent_instances @table(name: "agent_instances") {
   )
   """Docker container ID or K8s pod name"""
   container_id: String
+  """Authentication token for agent-to-hub communication"""
+  auth_token: String
   """Lifecycle state: creating, running, idle, stopping, stopped"""
   status: String
   """When the container was started"""

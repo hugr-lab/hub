@@ -45,6 +45,14 @@ func (g *Gateway) Handler() http.Handler {
 		}
 		userID := parts[0]
 
+		// Verify auth context matches path user
+		if authUser, ok := auth.UserFromContext(r.Context()); ok {
+			if authUser.AuthType == "jwt" && authUser.ID != userID {
+				http.Error(w, "forbidden: user mismatch", http.StatusForbidden)
+				return
+			}
+		}
+
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 			OriginPatterns: []string{"*"},
 		})

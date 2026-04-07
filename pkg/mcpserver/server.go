@@ -45,6 +45,15 @@ func (s *Server) Handler() http.Handler {
 		}
 		userID := parts[0]
 
+		// Verify auth context matches path user
+		if authUser, ok := auth.UserFromContext(r.Context()); ok {
+			if authUser.AuthType == "jwt" && authUser.ID != userID {
+				http.Error(w, "forbidden: user mismatch", http.StatusForbidden)
+				return
+			}
+			// For agent/management: allow access to path user's MCP
+		}
+
 		// Inject user identity into context — UserTransport adds headers to Hugr requests
 		ctx := auth.ContextWithUser(r.Context(), auth.UserInfo{ID: userID})
 		r = r.WithContext(ctx)

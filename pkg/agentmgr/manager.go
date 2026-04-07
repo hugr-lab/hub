@@ -2,6 +2,8 @@ package agentmgr
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 
@@ -33,13 +35,20 @@ func (m *Manager) StartAgent(ctx context.Context, userID, agentTypeID string) (s
 		return "", fmt.Errorf("get agent type: %w", err)
 	}
 
-	// 2. Create container
+	// 2. Generate agent auth token
+	authToken, err := generateToken(32)
+	if err != nil {
+		return "", fmt.Errorf("generate auth token: %w", err)
+	}
+
+	// 3. Create container
 	mcpURL := fmt.Sprintf("%s/mcp/%s", m.baseURL, userID)
 	containerID, err := m.backend.Create(ctx, AgentConfig{
 		UserID:      userID,
 		AgentTypeID: agentTypeID,
 		Image:       agentType.Image,
 		MCPURL:      mcpURL,
+		Env:         map[string]string{"AGENT_TOKEN": authToken},
 		Mounts: []Mount{
 			{Source: fmt.Sprintf("hub-user-%s-shared", userID), Target: "/shared"},
 			{Source: "hub-agent-tools", Target: "/tools"},
@@ -49,17 +58,18 @@ func (m *Manager) StartAgent(ctx context.Context, userID, agentTypeID string) (s
 		return "", fmt.Errorf("create container: %w", err)
 	}
 
-	// 3. Record instance in hub DB
+	// 4. Record instance in hub DB
 	res, err := m.hugrClient.Query(ctx,
-		`mutation($uid: String!, $tid: String!, $cid: String!) {
+		`mutation($uid: String!, $tid: String!, $cid: String!, $token: String!) {
 			hub { db { insert_agent_instances(data: {
 				user_id: $uid
 				agent_type_id: $tid
 				container_id: $cid
+				auth_token: $token
 				status: "running"
 			}) { id } } }
 		}`,
-		map[string]any{"uid": userID, "tid": agentTypeID, "cid": containerID},
+		map[string]any{"uid": userID, "tid": agentTypeID, "cid": containerID, "token": authToken},
 	)
 	if err != nil {
 		m.logger.Warn("failed to record instance", "error", err)
@@ -68,7 +78,7 @@ func (m *Manager) StartAgent(ctx context.Context, userID, agentTypeID string) (s
 		defer res.Close()
 	}
 
-	// 4. Start container
+	// 5. Start container
 	if err := m.backend.Start(ctx, containerID); err != nil {
 		return "", fmt.Errorf("start container: %w", err)
 	}
@@ -167,4 +177,12 @@ func (m *Manager) getRunningInstance(ctx context.Context, userID string) (instan
 		return instanceInfo{}, fmt.Errorf("no running agent for user %q", userID)
 	}
 	return instances[0], nil
+}
+
+func generateToken(bytes int) (string, error) {
+	b := make([]byte, bytes)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }

@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS agent_instances (
   user_id TEXT NOT NULL REFERENCES users(id),
   agent_type_id TEXT NOT NULL REFERENCES agent_types(id),
   container_id TEXT,
+  auth_token TEXT,
   status TEXT DEFAULT 'creating',
   started_at TIMESTAMPTZ DEFAULT now(),
   last_activity_at TIMESTAMPTZ DEFAULT now(),

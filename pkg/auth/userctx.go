@@ -9,9 +9,10 @@ type userContextKey struct{}
 
 // UserInfo holds user identity for Hugr requests.
 type UserInfo struct {
-	ID   string
-	Name string
-	Role string
+	ID       string
+	Name     string
+	Role     string
+	AuthType string // "management", "jwt", "agent"
 }
 
 // ContextWithUser returns a context with user identity.

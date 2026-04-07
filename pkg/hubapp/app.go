@@ -5,11 +5,12 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-
 	"net/http"
+	"strings"
 
 	"github.com/hugr-lab/airport-go/catalog"
 	"github.com/hugr-lab/hub/pkg/agentmgr"
+	"github.com/hugr-lab/hub/pkg/auth"
 	"github.com/hugr-lab/hub/pkg/llmrouter"
 	"github.com/hugr-lab/hub/pkg/mcpserver"
 	"github.com/hugr-lab/hub/pkg/wsgateway"
@@ -125,7 +126,20 @@ func (a *HubApp) Init(ctx context.Context) error {
 		w.Write([]byte(`{"status":"ok"}`))
 	})
 
-	a.server = &http.Server{Addr: a.config.ListenAddr, Handler: mux}
+	// Auth middleware — validates JWT, agent tokens, or secret key
+	// HugrURL may have /ipc suffix — strip for OIDC discovery
+	hugrBase := strings.TrimSuffix(a.config.HugrURL, "/ipc")
+	jwksProvider := auth.NewJWKSProvider(hugrBase)
+	jwtValidator := auth.NewJWTValidator(jwksProvider)
+	agentValidator := auth.NewAgentTokenValidator(a.client)
+	handler := auth.Middleware(mux, auth.AuthConfig{
+		SecretKey:      a.config.HugrSecretKey,
+		JWTValidator:   jwtValidator,
+		AgentValidator: agentValidator,
+		Logger:         a.logger,
+	})
+
+	a.server = &http.Server{Addr: a.config.ListenAddr, Handler: handler}
 	go func() {
 		a.logger.Info("HTTP server starting", "addr", a.config.ListenAddr)
 		if err := a.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {

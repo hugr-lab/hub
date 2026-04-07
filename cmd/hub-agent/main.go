@@ -30,6 +30,8 @@ func main() {
 		configPath = "/.agent/config.json"
 	}
 
+	authToken := os.Getenv("AGENT_TOKEN")
+
 	cfg, err := agent.LoadConfig(configPath)
 	if err != nil {
 		logger.Error("failed to load config", "path", configPath, "error", err)
@@ -39,7 +41,7 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	a := agent.New(mcpURL, skillsDir, cfg, logger)
+	a := agent.New(mcpURL, authToken, skillsDir, cfg, logger)
 
 	logger.Info("hub-agent starting",
 		"mcp_url", mcpURL,

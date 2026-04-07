@@ -35,21 +35,43 @@ class ChatWebSocketHandler(JupyterHandler, tornado.websocket.WebSocketHandler):
             self.close(1011, "Hub service not configured")
             return
 
+        # Get OIDC access token for authentication
+        token = self._get_access_token()
+
         # Connect to upstream hub-service WebSocket
         ws_url = hub_service_url.replace("http://", "ws://").replace("https://", "wss://")
         ws_url = f"{ws_url}/ws/{user}"
 
-        log.info("Connecting to upstream: %s", ws_url)
+        log.info("Connecting to upstream: %s (token: %s)", ws_url, "yes" if token else "no")
 
         try:
-            self.upstream = await tornado.websocket.websocket_connect(
+            headers = {}
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            request = tornado.httpclient.HTTPRequest(
                 ws_url,
+                headers=headers,
+            )
+            self.upstream = await tornado.websocket.websocket_connect(
+                request,
                 on_message_callback=self._on_upstream_message,
             )
             log.info("Connected to hub-service WebSocket for user %s", user)
         except Exception as e:
             log.error("Failed to connect to hub-service: %s", e)
             self.close(1011, f"Upstream connection failed: {e}")
+
+    def _get_access_token(self) -> str | None:
+        """Get current OIDC access token from hub_token_provider in-memory store."""
+        try:
+            from hugr_connection_service.hub_token_provider import get_hub_token
+            connection_name = os.environ.get("HUGR_CONNECTION_NAME", "default")
+            token_data = get_hub_token(connection_name)
+            if token_data:
+                return token_data.get("access_token")
+        except ImportError:
+            log.debug("hugr_connection_service not available")
+        return None
 
     def _on_upstream_message(self, message):
         """Forward message from hub-service → browser."""

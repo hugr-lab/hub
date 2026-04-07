@@ -11,6 +11,7 @@ import (
 	"os"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -18,6 +19,7 @@ import (
 // collects tools into a unified registry, and runs multi-turn LLM reasoning.
 type Agent struct {
 	hubURL     string
+	authToken  string // AGENT_TOKEN for hub-service authentication
 	hubClient  *mcpclient.Client
 	mcpManager *MCPServerManager
 	registry   *ToolRegistry
@@ -27,13 +29,14 @@ type Agent struct {
 	logger     *slog.Logger
 }
 
-func New(hubURL string, skillsDir string, config *AgentConfig, logger *slog.Logger) *Agent {
+func New(hubURL, authToken, skillsDir string, config *AgentConfig, logger *slog.Logger) *Agent {
 	a := &Agent{
-		hubURL:   hubURL,
-		registry: NewToolRegistry(),
-		skills:   NewSkillsEngine(skillsDir, logger),
-		config:   config,
-		logger:   logger,
+		hubURL:    hubURL,
+		authToken: authToken,
+		registry:  NewToolRegistry(),
+		skills:    NewSkillsEngine(skillsDir, logger),
+		config:    config,
+		logger:    logger,
 	}
 	a.learner = NewLearner(a)
 	a.mcpManager = NewMCPServerManager(config.MCPServers, logger)
@@ -43,7 +46,13 @@ func New(hubURL string, skillsDir string, config *AgentConfig, logger *slog.Logg
 // Connect establishes all MCP connections and builds the tool registry.
 func (a *Agent) Connect(ctx context.Context) error {
 	// 1. Connect to Hub Service MCP (HTTP transport)
-	client, err := mcpclient.NewStreamableHttpClient(a.hubURL)
+	var opts []transport.StreamableHTTPCOption
+	if a.authToken != "" {
+		opts = append(opts, transport.WithHTTPHeaders(map[string]string{
+			"Authorization": "Bearer " + a.authToken,
+		}))
+	}
+	client, err := mcpclient.NewStreamableHttpClient(a.hubURL, opts...)
 	if err != nil {
 		return fmt.Errorf("create Hub MCP client: %w", err)
 	}
