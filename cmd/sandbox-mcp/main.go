@@ -192,8 +192,10 @@ func checkAllowedPath(path string) error {
 	if err != nil {
 		return fmt.Errorf("invalid path: %w", err)
 	}
+	abs = filepath.Clean(abs)
 	for _, allowed := range allowedPaths {
-		if strings.HasPrefix(abs, allowed) {
+		allowed = filepath.Clean(allowed)
+		if abs == allowed || strings.HasPrefix(abs, allowed+string(os.PathSeparator)) {
 			return nil
 		}
 	}

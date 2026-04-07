@@ -101,12 +101,13 @@ type usageSummary struct {
 }
 
 func (b *BudgetChecker) getBudget(ctx context.Context, scope, providerID string) (*budgetRule, error) {
-	gql := fmt.Sprintf(`{ hub { db { llm_budgets(
-		filter: { scope: { eq: "%s" } }
-		limit: 1
-	) { period max_tokens_in max_tokens_out max_requests } } } }`, scope)
-
-	res, err := b.hugrClient.Query(ctx, gql, nil)
+	res, err := b.hugrClient.Query(ctx,
+		`query($scope: String!) { hub { db { llm_budgets(
+			filter: { scope: { eq: $scope } }
+			limit: 1
+		) { period max_tokens_in max_tokens_out max_requests } } } }`,
+		map[string]any{"scope": scope},
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -126,12 +127,12 @@ func (b *BudgetChecker) getBudget(ctx context.Context, scope, providerID string)
 func (b *BudgetChecker) getUsage(ctx context.Context, userID, providerID, period string) (usageSummary, error) {
 	periodKey := currentPeriodKey(period)
 
-	gql := fmt.Sprintf(`{ hub { db { llm_usage_aggregation(
-		filter: { user_id: { eq: "%s" }, period_key: { eq: "%s" } }
-	) { aggregations { tokens_in { sum } tokens_out { sum } _rows_count } } } } }`,
-		userID, periodKey)
-
-	res, err := b.hugrClient.Query(ctx, gql, nil)
+	res, err := b.hugrClient.Query(ctx,
+		`query($uid: String!, $pk: String!) { hub { db { llm_usage_aggregation(
+			filter: { user_id: { eq: $uid }, period_key: { eq: $pk } }
+		) { aggregations { tokens_in { sum } tokens_out { sum } _rows_count } } } } }`,
+		map[string]any{"uid": userID, "pk": periodKey},
+	)
 	if err != nil {
 		return usageSummary{}, err
 	}

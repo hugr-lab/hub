@@ -56,7 +56,7 @@ func Middleware(next http.Handler, cfg AuthConfig) http.Handler {
 					return
 				}
 				if cfg.Logger != nil {
-					cfg.Logger.Debug("JWT validation failed", "error", err)
+					cfg.Logger.Warn("JWT validation failed", "error", err)
 				}
 			}
 
@@ -69,7 +69,7 @@ func Middleware(next http.Handler, cfg AuthConfig) http.Handler {
 					return
 				}
 				if cfg.Logger != nil {
-					cfg.Logger.Debug("agent token validation failed", "error", err)
+					cfg.Logger.Warn("agent token validation failed", "error", err)
 				}
 			}
 		}

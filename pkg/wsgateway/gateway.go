@@ -62,13 +62,16 @@ func (g *Gateway) Handler() http.Handler {
 		}
 		defer conn.CloseNow()
 
+		var prev *websocket.Conn
 		g.mu.Lock()
-		// Close previous connection for this user if any
-		if prev, ok := g.conns[userID]; ok {
-			prev.Close(websocket.StatusGoingAway, "replaced by new connection")
+		if old, ok := g.conns[userID]; ok {
+			prev = old
 		}
 		g.conns[userID] = conn
 		g.mu.Unlock()
+		if prev != nil {
+			prev.Close(websocket.StatusGoingAway, "replaced by new connection")
+		}
 
 		defer func() {
 			g.mu.Lock()

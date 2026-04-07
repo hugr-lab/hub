@@ -82,10 +82,9 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) HandleUserMessage(ctx context.Context, userID, message string) (string, error) {
 	// Search relevant memories
 	var memoryCtx string
-	filter := fmt.Sprintf(`{ user_id: { eq: "%s" } }`, userID)
 	res, err := s.hugrClient.Query(ctx,
-		fmt.Sprintf(`{ hub { db { agent_memory(filter: %s, limit: 5, order_by: [{field: "created_at", direction: DESC}]) { content category } } } }`, filter),
-		nil,
+		`query($uid: String!) { hub { db { agent_memory(filter: { user_id: { eq: $uid } }, limit: 5, order_by: [{field: "created_at", direction: DESC}]) { content category } } } }`,
+		map[string]any{"uid": userID},
 	)
 	if err == nil {
 		defer res.Close()

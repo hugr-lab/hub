@@ -54,7 +54,9 @@ func (m *Manager) StartAgent(ctx context.Context, userID, agentTypeID, role stri
 	}
 
 	// 4. Ensure user exists in hub DB (for FK)
-	m.ensureUser(ctx, agentID, role)
+	if err := m.ensureUser(ctx, agentID, role); err != nil {
+		return "", fmt.Errorf("ensure user: %w", err)
+	}
 
 	// 6. Create container
 	mcpURL := fmt.Sprintf("%s/mcp/%s", m.baseURL, agentID)
@@ -101,6 +103,7 @@ func (m *Manager) StartAgent(ctx context.Context, userID, agentTypeID, role stri
 
 	// 8. Start container
 	if err := m.backend.Start(ctx, containerID); err != nil {
+		_ = m.backend.Remove(ctx, containerID)
 		return "", fmt.Errorf("start container: %w", err)
 	}
 
@@ -124,11 +127,11 @@ func (m *Manager) StopAgent(ctx context.Context, userID string) error {
 
 	// Update status in DB
 	res, err := m.hugrClient.Query(ctx,
-		fmt.Sprintf(`mutation { hub { db { update_agent_instances(
-			filter: { id: { eq: "%s" } }
+		`mutation($id: String!) { hub { db { update_agent_instances(
+			filter: { id: { eq: $id } }
 			data: { status: "stopped" }
-		) { success } } } }`, instance.ID),
-		nil,
+		) { affected_rows } } } }`,
+		map[string]any{"id": instance.ID},
 	)
 	if err != nil {
 		m.logger.Warn("failed to update instance status", "error", err)
@@ -156,8 +159,8 @@ type agentTypeInfo struct {
 
 func (m *Manager) getAgentType(ctx context.Context, typeID string) (agentTypeInfo, error) {
 	res, err := m.hugrClient.Query(ctx,
-		fmt.Sprintf(`{ hub { db { agent_types(filter: { id: { eq: "%s" } }) { image } } } }`, typeID),
-		nil,
+		`query($id: String!) { hub { db { agent_types(filter: { id: { eq: $id } }) { image } } } }`,
+		map[string]any{"id": typeID},
 	)
 	if err != nil {
 		return agentTypeInfo{}, err
@@ -180,11 +183,11 @@ type instanceInfo struct {
 
 func (m *Manager) getRunningInstance(ctx context.Context, userID string) (instanceInfo, error) {
 	res, err := m.hugrClient.Query(ctx,
-		fmt.Sprintf(`{ hub { db { agent_instances(
-			filter: { user_id: { eq: "%s" }, status: { eq: "running" } }
+		`query($uid: String!) { hub { db { agent_instances(
+			filter: { user_id: { eq: $uid }, status: { eq: "running" } }
 			limit: 1
-		) { id container_id } } } }`, userID),
-		nil,
+		) { id container_id } } } }`,
+		map[string]any{"uid": userID},
 	)
 	if err != nil {
 		return instanceInfo{}, err
@@ -201,17 +204,17 @@ func (m *Manager) getRunningInstance(ctx context.Context, userID string) (instan
 }
 
 // ensureUser creates a user record if it doesn't exist (for agent identity).
-func (m *Manager) ensureUser(ctx context.Context, userID, role string) {
+func (m *Manager) ensureUser(ctx context.Context, userID, role string) error {
 	// Check if user exists
 	res, err := m.hugrClient.Query(ctx,
-		fmt.Sprintf(`{ hub { db { users(filter: { id: { eq: "%s" } }, limit: 1) { id } } } }`, userID),
-		nil,
+		`query($id: String!) { hub { db { users(filter: { id: { eq: $id } }, limit: 1) { id } } } }`,
+		map[string]any{"id": userID},
 	)
 	if err == nil {
 		defer res.Close()
 		var users []struct{ ID string `json:"id"` }
 		if err := res.ScanData("hub.db.users", &users); err == nil && len(users) > 0 {
-			return // already exists
+			return nil // already exists
 		}
 	}
 
@@ -225,13 +228,14 @@ func (m *Manager) ensureUser(ctx context.Context, userID, role string) {
 		map[string]any{"id": userID, "name": userID, "role": role},
 	)
 	if err != nil {
-		m.logger.Warn("failed to ensure user", "user", userID, "error", err)
-		return
+		return fmt.Errorf("create user %s: %w", userID, err)
 	}
-	if res2 != nil {
-		res2.Close()
+	defer res2.Close()
+	if res2.Err() != nil {
+		return fmt.Errorf("create user %s: %w", userID, res2.Err())
 	}
 	m.logger.Info("created agent user", "id", userID, "role", role)
+	return nil
 }
 
 func generateToken(bytes int) (string, error) {

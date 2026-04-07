@@ -90,25 +90,29 @@ func (s *Server) handleMemorySearch(userID string) server.ToolHandlerFunc {
 			limit = int(l)
 		}
 
-		// Build filter
-		filter := fmt.Sprintf(`{ user_id: { eq: "%s" }`, userID)
-		if category != "" {
-			filter += fmt.Sprintf(`, category: { eq: "%s" }`, category)
+		vars := map[string]any{
+			"uid":   userID,
+			"limit": limit,
 		}
-		filter += " }"
+		filterPart := `user_id: { eq: $uid }`
+		varDefs := `$uid: String!, $limit: Int!`
+		if category != "" {
+			filterPart += `, category: { eq: $cat }`
+			varDefs += `, $cat: String!`
+			vars["cat"] = category
+		}
 
-		// Use semantic search via _distance_to_query
-		gql := fmt.Sprintf(`{
+		gql := fmt.Sprintf(`query(%s) {
 			hub { db { agent_memory(
-				filter: %s
-				limit: %d
+				filter: { %s }
+				limit: $limit
 				order_by: [{field: "created_at", direction: DESC}]
 			) {
 				id content category source created_at
 			} } }
-		}`, filter, limit)
+		}`, varDefs, filterPart)
 
-		res, err := s.hugrClient.Query(ctx, gql, nil)
+		res, err := s.hugrClient.Query(ctx, gql, vars)
 		if err != nil {
 			return toolError(fmt.Sprintf("memory search failed: %v", err)), nil
 		}
@@ -130,23 +134,29 @@ func (s *Server) handleMemoryList(userID string) server.ToolHandlerFunc {
 			limit = int(l)
 		}
 
-		filter := fmt.Sprintf(`{ user_id: { eq: "%s" }`, userID)
-		if category != "" {
-			filter += fmt.Sprintf(`, category: { eq: "%s" }`, category)
+		vars := map[string]any{
+			"uid":   userID,
+			"limit": limit,
 		}
-		filter += " }"
+		filterPart := `user_id: { eq: $uid }`
+		varDefs := `$uid: String!, $limit: Int!`
+		if category != "" {
+			filterPart += `, category: { eq: $cat }`
+			varDefs += `, $cat: String!`
+			vars["cat"] = category
+		}
 
-		gql := fmt.Sprintf(`{
+		gql := fmt.Sprintf(`query(%s) {
 			hub { db { agent_memory(
-				filter: %s
-				limit: %d
+				filter: { %s }
+				limit: $limit
 				order_by: [{field: "created_at", direction: DESC}]
 			) {
 				id content category source created_at
 			} } }
-		}`, filter, limit)
+		}`, varDefs, filterPart)
 
-		res, err := s.hugrClient.Query(ctx, gql, nil)
+		res, err := s.hugrClient.Query(ctx, gql, vars)
 		if err != nil {
 			return toolError(fmt.Sprintf("memory list failed: %v", err)), nil
 		}
