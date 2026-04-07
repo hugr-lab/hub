@@ -40,6 +40,10 @@ func (b *DockerBackend) Create(ctx context.Context, cfg AgentConfig) (string, er
 		})
 	}
 
+	// Remove existing container with same name (stale from previous run)
+	containerName := fmt.Sprintf("hub-agent-%s", cfg.UserID)
+	_ = b.client.ContainerRemove(ctx, containerName, container.RemoveOptions{Force: true})
+
 	resp, err := b.client.ContainerCreate(ctx,
 		&container.Config{
 			Image: cfg.Image,
@@ -55,7 +59,7 @@ func (b *DockerBackend) Create(ctx context.Context, cfg AgentConfig) (string, er
 			NetworkMode: container.NetworkMode(b.network),
 		},
 		nil, nil,
-		fmt.Sprintf("hub-agent-%s", cfg.UserID),
+		containerName,
 	)
 	if err != nil {
 		return "", fmt.Errorf("container create: %w", err)

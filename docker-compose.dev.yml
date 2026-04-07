@@ -48,6 +48,8 @@ services:
       HUB_DATABASE_DSN: "postgres://hugr:hugr_password@host.docker.internal:18032/hub"
       HUB_REDIS_URL: "redis://host.docker.internal:6379/0"
       LOG_LEVEL: "debug"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "8082:8082"
       - "50051:50051"

@@ -27,8 +27,10 @@ func NewManager(backend Backend, hugrClient *client.Client, baseURL string, logg
 	}
 }
 
-// StartAgent creates and starts an agent container for a user.
-func (m *Manager) StartAgent(ctx context.Context, userID, agentTypeID string) (string, error) {
+// StartAgent creates and starts an agent container.
+// userID is optional — empty for autonomous agents.
+// role is the Hugr role for the agent (default: from agent type or "agent").
+func (m *Manager) StartAgent(ctx context.Context, userID, agentTypeID, role string) (string, error) {
 	// 1. Lookup agent type
 	agentType, err := m.getAgentType(ctx, agentTypeID)
 	if err != nil {
@@ -41,16 +43,32 @@ func (m *Manager) StartAgent(ctx context.Context, userID, agentTypeID string) (s
 		return "", fmt.Errorf("generate auth token: %w", err)
 	}
 
-	// 3. Create container
-	mcpURL := fmt.Sprintf("%s/mcp/%s", m.baseURL, userID)
+	// 3. Determine agent identity
+	agentID := userID
+	if agentID == "" {
+		short, _ := generateToken(4)
+		agentID = "agent-" + agentTypeID + "-" + short
+	}
+	if role == "" {
+		role = "agent"
+	}
+
+	// 4. Ensure user exists in hub DB (for FK)
+	m.ensureUser(ctx, agentID, role)
+
+	// 6. Create container
+	mcpURL := fmt.Sprintf("%s/mcp/%s", m.baseURL, agentID)
 	containerID, err := m.backend.Create(ctx, AgentConfig{
-		UserID:      userID,
+		UserID:      agentID,
 		AgentTypeID: agentTypeID,
 		Image:       agentType.Image,
 		MCPURL:      mcpURL,
-		Env:         map[string]string{"AGENT_TOKEN": authToken},
+		Env: map[string]string{
+			"AGENT_TOKEN": authToken,
+			"AGENT_ROLE":  role,
+		},
 		Mounts: []Mount{
-			{Source: fmt.Sprintf("hub-user-%s-shared", userID), Target: "/shared"},
+			{Source: fmt.Sprintf("hub-agent-%s-shared", agentID), Target: "/shared"},
 			{Source: "hub-agent-tools", Target: "/tools"},
 		},
 	})
@@ -58,10 +76,12 @@ func (m *Manager) StartAgent(ctx context.Context, userID, agentTypeID string) (s
 		return "", fmt.Errorf("create container: %w", err)
 	}
 
-	// 4. Record instance in hub DB
+	// 7. Record instance in hub DB
+	instanceID, _ := generateToken(16) // UUID-like hex ID
 	res, err := m.hugrClient.Query(ctx,
-		`mutation($uid: String!, $tid: String!, $cid: String!, $token: String!) {
+		`mutation($id: String!, $uid: String!, $tid: String!, $cid: String!, $token: String!) {
 			hub { db { insert_agent_instances(data: {
+				id: $id
 				user_id: $uid
 				agent_type_id: $tid
 				container_id: $cid
@@ -69,16 +89,17 @@ func (m *Manager) StartAgent(ctx context.Context, userID, agentTypeID string) (s
 				status: "running"
 			}) { id } } }
 		}`,
-		map[string]any{"uid": userID, "tid": agentTypeID, "cid": containerID, "token": authToken},
+		map[string]any{"id": instanceID, "uid": agentID, "tid": agentTypeID, "cid": containerID, "token": authToken},
 	)
 	if err != nil {
-		m.logger.Warn("failed to record instance", "error", err)
+		return "", fmt.Errorf("record instance: %w", err)
 	}
-	if res != nil {
-		defer res.Close()
+	defer res.Close()
+	if res.Err() != nil {
+		return "", fmt.Errorf("record instance: %w", res.Err())
 	}
 
-	// 5. Start container
+	// 8. Start container
 	if err := m.backend.Start(ctx, containerID); err != nil {
 		return "", fmt.Errorf("start container: %w", err)
 	}
@@ -177,6 +198,40 @@ func (m *Manager) getRunningInstance(ctx context.Context, userID string) (instan
 		return instanceInfo{}, fmt.Errorf("no running agent for user %q", userID)
 	}
 	return instances[0], nil
+}
+
+// ensureUser creates a user record if it doesn't exist (for agent identity).
+func (m *Manager) ensureUser(ctx context.Context, userID, role string) {
+	// Check if user exists
+	res, err := m.hugrClient.Query(ctx,
+		fmt.Sprintf(`{ hub { db { users(filter: { id: { eq: "%s" } }, limit: 1) { id } } } }`, userID),
+		nil,
+	)
+	if err == nil {
+		defer res.Close()
+		var users []struct{ ID string `json:"id"` }
+		if err := res.ScanData("hub.db.users", &users); err == nil && len(users) > 0 {
+			return // already exists
+		}
+	}
+
+	// Create user
+	res2, err := m.hugrClient.Query(ctx,
+		`mutation($id: String!, $name: String!, $role: String!) {
+			hub { db { insert_users(data: {
+				id: $id, display_name: $name, hugr_role: $role
+			}) { id } } }
+		}`,
+		map[string]any{"id": userID, "name": userID, "role": role},
+	)
+	if err != nil {
+		m.logger.Warn("failed to ensure user", "user", userID, "error", err)
+		return
+	}
+	if res2 != nil {
+		res2.Close()
+	}
+	m.logger.Info("created agent user", "id", userID, "role", role)
 }
 
 func generateToken(bytes int) (string, error) {

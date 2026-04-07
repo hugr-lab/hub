@@ -16,17 +16,18 @@ func (a *HubApp) handleAgentStart(mgr *agentmgr.Manager) http.HandlerFunc {
 		var req struct {
 			UserID      string `json:"user_id"`
 			AgentTypeID string `json:"agent_type_id"`
+			Role        string `json:"role"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "invalid body", http.StatusBadRequest)
 			return
 		}
-		if req.UserID == "" || req.AgentTypeID == "" {
-			http.Error(w, "user_id and agent_type_id required", http.StatusBadRequest)
+		if req.AgentTypeID == "" {
+			http.Error(w, "agent_type_id required", http.StatusBadRequest)
 			return
 		}
 
-		containerID, err := mgr.StartAgent(r.Context(), req.UserID, req.AgentTypeID)
+		containerID, err := mgr.StartAgent(r.Context(), req.UserID, req.AgentTypeID, req.Role)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

@@ -105,11 +105,12 @@ func (a *HubApp) Init(ctx context.Context) error {
 	mux.Handle("/v1/", router.OpenAICompatHandler()) // OpenAI-compatible for third-party agents
 
 	// Agent management (Docker backend for now)
-	dockerBackend, err := agentmgr.NewDockerBackend("hub-network")
+	agentNetwork := envOrDefault("HUB_AGENT_NETWORK", "hub-dev-network")
+	dockerBackend, err := agentmgr.NewDockerBackend(agentNetwork)
 	if err != nil {
 		a.logger.Warn("Docker backend unavailable, agent management disabled", "error", err)
 	} else {
-		mgr := agentmgr.NewManager(dockerBackend, a.client, "http://localhost"+a.config.ListenAddr, a.logger)
+		mgr := agentmgr.NewManager(dockerBackend, a.client, a.config.InternalURL, a.logger)
 		mux.HandleFunc("/api/agent/start", a.handleAgentStart(mgr))
 		mux.HandleFunc("/api/agent/stop", a.handleAgentStop(mgr))
 		mux.HandleFunc("/api/agent/status", a.handleAgentStatus(mgr))

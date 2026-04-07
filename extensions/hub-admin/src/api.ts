@@ -337,8 +337,11 @@ export async function fetchAgentTypes(): Promise<AgentType[]> {
   return data?.hub?.db?.agent_types ?? [];
 }
 
-export async function startAgent(userId: string, agentTypeId: string): Promise<{ status: string; container_id: string }> {
-  return hubServiceAPI('api/agent/start', 'POST', { user_id: userId, agent_type_id: agentTypeId });
+export async function startAgent(userId?: string, agentTypeId?: string, role?: string): Promise<{ status: string; container_id: string }> {
+  const body: Record<string, string> = { agent_type_id: agentTypeId ?? 'default' };
+  if (userId) body.user_id = userId;
+  if (role) body.role = role;
+  return hubServiceAPI('api/agent/start', 'POST', body);
 }
 
 export async function stopAgent(userId: string): Promise<{ status: string }> {

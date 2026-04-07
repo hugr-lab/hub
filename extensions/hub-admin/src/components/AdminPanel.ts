@@ -721,7 +721,8 @@ export class AdminPanelWidget extends Widget {
     const form = document.createElement('div');
     form.className = 'hub-admin-modal-form';
     form.innerHTML = `
-      <div class="hub-admin-form-group"><label>User ID</label><input type="text" id="sa-user" /></div>
+      <div class="hub-admin-form-group"><label>User ID <span style="color:var(--jp-ui-font-color2)">(optional — leave empty for autonomous agent)</span></label><input type="text" id="sa-user" placeholder="e.g. admin" /></div>
+      <div class="hub-admin-form-group"><label>Hugr Role</label><input type="text" id="sa-role" value="admin" placeholder="e.g. admin, analyst" /></div>
       <div class="hub-admin-form-group"><label>Agent Type</label>
         <select id="sa-type">${agentTypes.map(t => `<option value="${t.id}">${esc(t.display_name || t.id)}</option>`).join('')}</select>
       </div>
@@ -730,12 +731,13 @@ export class AdminPanelWidget extends Widget {
 
     modal.addAction('Start', 'hub-admin-btn hub-admin-btn--primary', async () => {
       const userId = (form.querySelector('#sa-user') as HTMLInputElement).value.trim();
+      const role = (form.querySelector('#sa-role') as HTMLInputElement).value.trim();
       const typeId = (form.querySelector('#sa-type') as HTMLSelectElement).value;
-      if (!userId) return;
+      const label = userId || 'autonomous';
       modal.close();
-      await this.runBusy(`Starting agent for ${userId}...`, async () => {
+      await this.runBusy(`Starting agent (${label})...`, async () => {
         try {
-          const res = await startAgent(userId, typeId);
+          const res = await startAgent(userId || undefined, typeId, role || undefined);
           alert(`Agent started: ${res.container_id?.substring(0, 12)}`);
         } catch (err: any) { alert(err.message); }
       });
