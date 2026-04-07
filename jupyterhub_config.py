@@ -162,8 +162,10 @@ if _admin_users:
 _admin_claim = os.environ.get("HUGR_ADMIN_CLAIM", "")
 _admin_values = set(os.environ.get("HUGR_ADMIN_VALUES", "admin").split(","))
 
+HUB_SERVICE_URL = os.environ.get("HUB_SERVICE_URL")
+
 async def _post_auth_hook(authenticator, handler, authentication):
-    """Extract OIDC roles → JupyterHub groups + admin flag."""
+    """Extract OIDC roles → JupyterHub groups + admin flag + notify Hub Service."""
     from hub_profiles.resolver import extract_claim
 
     auth_state = authentication.get("auth_state", {})
@@ -195,10 +197,43 @@ async def _post_auth_hook(authenticator, handler, authentication):
         if any(r in _admin_values for r in roles):
             authentication["admin"] = True
 
+    # Notify Hub Service about user login (sync to hub.users)
+    if HUB_SERVICE_URL:
+        async with httpx.AsyncClient(verify=_hugr_tls_verify) as client:
+            try:
+                await client.post(
+                    f"{HUB_SERVICE_URL}/api/user/login",
+                    json={
+                        "user_id": authentication["name"],
+                        "user_name": auth_state.get("name", authentication["name"]),
+                        "role": roles[0] if roles else "",
+                        "email": auth_state.get("email", ""),
+                    },
+                    timeout=5,
+                )
+            except Exception as e:
+                logger.warning("Failed to notify Hub Service: %s", e)
+
     return authentication
 
 c.GenericOAuthenticator.post_auth_hook = _post_auth_hook
 c.GenericOAuthenticator.manage_groups = True
+
+# Override default auth_state_groups_key ("oauth_user.groups") which doesn't exist
+# in Keycloak userinfo and causes groups to be wiped on refresh_pre_spawn.
+# This callable extracts groups from our custom OIDC claims — same logic as post_auth_hook.
+def _groups_from_auth_state(auth_state):
+    from hub_profiles.resolver import extract_claim
+    groups = []
+    _pc = os.environ.get("HUGR_PROFILE_CLAIM", "")
+    if _pc:
+        for v in extract_claim(auth_state, _pc):
+            groups.append(f"profile:{v}")
+    for r in extract_claim(auth_state, os.environ.get("HUGR_ROLE_CLAIM", "x-hugr-role")):
+        groups.append(f"role:{r}")
+    return groups
+
+c.GenericOAuthenticator.auth_state_groups_key = _groups_from_auth_state
 
 c.GenericOAuthenticator.enable_auth_state = True
 c.GenericOAuthenticator.refresh_pre_spawn = True
@@ -410,11 +445,20 @@ async def pre_spawn_hook(spawner, auth_state):
     if user_tz:
         spawner.environment["TZ"] = user_tz
 
-    # 7. Pass Hugr connection
+    # 7. Admin flag for hub-admin extension
+    if spawner.user.admin:
+        spawner.environment["HUGR_HUB_ADMIN"] = "true"
+
+    # 8. Pass Hub Service + Hugr connection
+    if HUB_SERVICE_URL:
+        spawner.environment["HUB_SERVICE_URL"] = HUB_SERVICE_URL
     spawner.environment["HUGR_URL"] = HUGR_URL
     spawner.environment["HUGR_CONNECTION_NAME"] = HUGR_CONNECTION_NAME
     if HUGR_TLS_SKIP_VERIFY:
         spawner.environment["HUGR_TLS_SKIP_VERIFY"] = "true"
+    _query_timeout = os.environ.get("HUGR_QUERY_TIMEOUT")
+    if _query_timeout:
+        spawner.environment["HUGR_QUERY_TIMEOUT"] = _query_timeout
     if access_token:
         spawner.environment["HUGR_INITIAL_ACCESS_TOKEN"] = access_token
 
@@ -483,32 +527,5 @@ c.JupyterHub.load_roles = [
     },
 ]
 
-# ===========================================================================
-# Hub Service notification (optional, for Stage 2+)
-# ===========================================================================
 
-HUB_SERVICE_URL = os.environ.get("HUB_SERVICE_URL")
 
-if HUB_SERVICE_URL:
-
-    async def post_auth_hook(authenticator, handler, authentication):
-        auth_state = authentication.get("auth_state", {})
-        async with httpx.AsyncClient(verify=_hugr_tls_verify) as client:
-            try:
-                await client.post(
-                    f"{HUB_SERVICE_URL}/api/user/login",
-                    json={
-                        "user_id": authentication["name"],
-                        "user_name": auth_state.get(
-                            "name", authentication["name"]
-                        ),
-                        "role": auth_state.get("x-hugr-role", ""),
-                        "email": auth_state.get("email", ""),
-                    },
-                    timeout=5,
-                )
-            except Exception as e:
-                logger.warning("Failed to notify Hub Service: %s", e)
-        return authentication
-
-    c.Authenticator.post_auth_hook = post_auth_hook

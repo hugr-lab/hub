@@ -1,0 +1,7 @@
+{
+  "ServerApp": {
+    "jpserver_extensions": {
+      "hub_admin.app": true
+    }
+  }
+}

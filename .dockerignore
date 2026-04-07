@@ -15,6 +15,8 @@ work/
 __pycache__/
 *.pyc
 node_modules/
+extensions/*/lib/
+extensions/*/hub_*/labextension/
 hub-data/
 hugr-data/
 hub-db-data/

@@ -1,0 +1,18 @@
+FROM golang:1.26-alpine AS builder
+
+RUN apk add --no-cache gcc musl-dev
+
+WORKDIR /build
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY cmd/ cmd/
+COPY pkg/ pkg/
+RUN CGO_ENABLED=1 go build -tags duckdb_arrow -o /hub-service ./cmd/hub-service/
+
+FROM alpine:latest
+RUN apk add --no-cache ca-certificates
+COPY --from=builder /hub-service /usr/local/bin/hub-service
+
+EXPOSE 8082 50051
+ENTRYPOINT ["hub-service"]

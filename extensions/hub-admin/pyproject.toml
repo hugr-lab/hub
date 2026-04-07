@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling>=1.5.0", "jupyterlab>=4.0.0,<5", "hatch-nodejs-version>=0.3.2", "hatch-jupyter-builder>=0.5"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hugr-hub-admin"
+version = "0.1.0"
+description = "JupyterLab extension for Analytics Hub administration"
+license = {text = "MIT"}
+requires-python = ">=3.11"
+dependencies = [
+    "jupyter_server>=2.0.0",
+]
+
+[tool.hatch.build]
+artifacts = ["hub_admin/labextension"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["hub_admin"]
+ignore-vcs = true
+
+[project.entry-points."jupyter_server.serverextension"]
+hub_admin = "hub_admin.app"
+
+[tool.hatch.build.targets.wheel.shared-data]
+"hub_admin/labextension" = "share/jupyter/labextensions/@hugr-lab/jupyterlab-hub-admin"
+"jupyter-config/hub_admin.json" = "etc/jupyter/jupyter_server_config.d/hub_admin.json"
+
+[tool.hatch.build.hooks.jupyter-builder]
+dependencies = ["hatch-jupyter-builder>=0.5"]
+build-function = "hatch_jupyter_builder.npm_builder"
+ensured-targets = [
+    "hub_admin/labextension/static/style.js",
+    "hub_admin/labextension/package.json",
+]
+skip-if-exists = ["hub_admin/labextension/static/style.js"]
+
+[tool.hatch.build.hooks.jupyter-builder.build-kwargs]
+build_cmd = "build:prod"
+npm = ["jlpm"]

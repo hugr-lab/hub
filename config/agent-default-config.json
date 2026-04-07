@@ -1,0 +1,6 @@
+{
+  "mcp_servers": [
+    {"name": "sandbox", "command": "/tools/sandbox-mcp", "auto_start": true}
+  ],
+  "max_turns": 20
+}

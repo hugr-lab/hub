@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling>=1.5.0", "jupyterlab>=4.0.0,<5", "hatch-nodejs-version>=0.3.2", "hatch-jupyter-builder>=0.5"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hugr-hub-chat"
+version = "0.1.0"
+description = "JupyterLab extension for Analytics Hub chat"
+license = {text = "MIT"}
+requires-python = ">=3.11"
+dependencies = [
+    "jupyter_server>=2.0.0",
+]
+
+[tool.hatch.build]
+artifacts = ["hub_chat/labextension"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["hub_chat"]
+ignore-vcs = true
+
+[project.entry-points."jupyter_server.serverextension"]
+hub_chat = "hub_chat.app"
+
+[tool.hatch.build.targets.wheel.shared-data]
+"hub_chat/labextension" = "share/jupyter/labextensions/@hugr-lab/jupyterlab-hub-chat"
+"jupyter-config/hub_chat.json" = "etc/jupyter/jupyter_server_config.d/hub_chat.json"
+
+[tool.hatch.build.hooks.jupyter-builder]
+dependencies = ["hatch-jupyter-builder>=0.5"]
+build-function = "hatch_jupyter_builder.npm_builder"
+ensured-targets = [
+    "hub_chat/labextension/static/style.js",
+    "hub_chat/labextension/package.json",
+]
+skip-if-exists = ["hub_chat/labextension/static/style.js"]
+
+[tool.hatch.build.hooks.jupyter-builder.build-kwargs]
+build_cmd = "build:prod"
+npm = ["jlpm"]
