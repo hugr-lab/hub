@@ -5,8 +5,8 @@
 # and JupyterLab extensions from PyPI.
 # =============================================================================
 
-ARG HUGR_KERNEL_VERSION=v0.2.16
-ARG DUCKDB_KERNEL_VERSION=v0.3.4
+ARG HUGR_KERNEL_VERSION=v0.2.18
+ARG DUCKDB_KERNEL_VERSION=v0.3.5
 
 # -----------------------------------------------------------------------------
 # Stage 1: Build Hub JupyterLab extensions (needs Node.js + Python)
