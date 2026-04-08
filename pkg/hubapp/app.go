@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/hugr-lab/airport-go/catalog"
 	"github.com/hugr-lab/hub/pkg/agentmgr"
@@ -115,11 +116,23 @@ func (a *HubApp) Init(ctx context.Context) error {
 		mux.HandleFunc("/api/agent/stop", a.handleAgentStop(mgr))
 		mux.HandleFunc("/api/agent/status", a.handleAgentStatus(mgr))
 	}
-	// WebSocket gateway for chat UI
-	ws := wsgateway.New(func(ctx context.Context, userID, message string) (string, error) {
-		// Route through MCP — same path as agent
-		return mcpSrv.HandleUserMessage(ctx, userID, message)
-	}, a.logger)
+	// WebSocket gateway for chat UI — conversation-based routing
+	ws := wsgateway.New(wsgateway.Config{
+		Lookup: func(ctx context.Context, conversationID string) (*wsgateway.ConversationInfo, error) {
+			return a.lookupConversation(ctx, conversationID)
+		},
+		LLM: func(ctx context.Context, model, conversationID, message string) (string, error) {
+			return router.CompleteDirect(ctx, model, message)
+		},
+		Tools: func(ctx context.Context, userID, conversationID, message string) (string, error) {
+			return mcpSrv.HandleUserMessage(ctx, userID, message)
+		},
+		// Agent handler wired when agentconn manager is implemented (T025)
+		Persist: func(ctx context.Context, conversationID, role, content string) {
+			a.persistMessage(ctx, conversationID, role, content)
+		},
+		Logger: a.logger,
+	})
 	mux.Handle("/ws/", ws.Handler())
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -149,6 +162,55 @@ func (a *HubApp) Init(ctx context.Context) error {
 	}()
 
 	return nil
+}
+
+func (a *HubApp) lookupConversation(ctx context.Context, conversationID string) (*wsgateway.ConversationInfo, error) {
+	res, err := a.client.Query(ctx,
+		`query($id: String!) { hub { db { conversations(
+			filter: { id: { eq: $id } }
+			limit: 1
+		) { id user_id mode agent_instance_id model } } } }`,
+		map[string]any{"id": conversationID},
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Close()
+	if res.Err() != nil {
+		return nil, res.Err()
+	}
+	var convs []struct {
+		ID              string `json:"id"`
+		UserID          string `json:"user_id"`
+		Mode            string `json:"mode"`
+		AgentInstanceID string `json:"agent_instance_id"`
+		Model           string `json:"model"`
+	}
+	if err := res.ScanData("hub.db.conversations", &convs); err != nil || len(convs) == 0 {
+		return nil, fmt.Errorf("conversation %s not found", conversationID)
+	}
+	c := convs[0]
+	return &wsgateway.ConversationInfo{
+		ID: c.ID, UserID: c.UserID, Mode: c.Mode,
+		AgentInstanceID: c.AgentInstanceID, Model: c.Model,
+	}, nil
+}
+
+func (a *HubApp) persistMessage(ctx context.Context, conversationID, role, content string) {
+	msgID := fmt.Sprintf("msg-%d", time.Now().UnixNano())
+	res, err := a.client.Query(ctx,
+		`mutation($id: String!, $cid: String!, $role: String!, $content: String!) {
+			hub { db { insert_agent_messages(data: {
+				id: $id, conversation_id: $cid, role: $role, content: $content
+			}) { id } } }
+		}`,
+		map[string]any{"id": msgID, "cid": conversationID, "role": role, "content": content},
+	)
+	if err != nil {
+		a.logger.Warn("failed to persist message", "conversation", conversationID, "error", err)
+		return
+	}
+	defer res.Close()
 }
 
 func (a *HubApp) Shutdown(ctx context.Context) error {
