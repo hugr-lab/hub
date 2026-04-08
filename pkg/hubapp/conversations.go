@@ -56,6 +56,9 @@ func (a *HubApp) handleConversationCreate(w http.ResponseWriter, r *http.Request
 		req.Title = "New Chat"
 	}
 
+	// Ensure user exists (may not be synced yet after DB recreate)
+	a.ensureUser(r.Context(), user.ID, user.Role)
+
 	convID := fmt.Sprintf("conv-%d", time.Now().UnixNano())
 
 	res, err := a.client.Query(r.Context(),
@@ -93,7 +96,7 @@ func (a *HubApp) handleConversationList(w http.ResponseWriter, r *http.Request) 
 
 	res, err := a.client.Query(r.Context(),
 		`query($uid: String!) { hub { db { conversations(
-			filter: { user_id: { eq: $uid }, deleted_at: { is_null: true } }
+			filter: { user_id: { eq: $uid } }
 			order_by: [{field: "updated_at", direction: DESC}]
 		) { id title folder mode agent_instance_id model updated_at created_at } } } }`,
 		map[string]any{"uid": user.ID},
@@ -186,11 +189,10 @@ func (a *HubApp) handleConversationDelete(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Soft delete — filter by user_id ensures ownership
+	// Soft delete via Hugr @table(soft_delete) — sets deleted_at = NOW()
 	res, err := a.client.Query(r.Context(),
-		`mutation($id: String!, $uid: String!) { hub { db { update_conversations(
+		`mutation($id: String!, $uid: String!) { hub { db { delete_conversations(
 			filter: { id: { eq: $id }, user_id: { eq: $uid } }
-			data: { deleted_at: "NOW()" }
 		) { affected_rows } } } }`,
 		map[string]any{"id": req.ID, "uid": user.ID},
 	)

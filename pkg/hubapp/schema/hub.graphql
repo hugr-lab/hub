@@ -17,7 +17,7 @@ type users @table(name: "users") {
 }
 
 """Persistent chat thread belonging to a user. Supports three modes: llm, tools, agent."""
-type conversations @table(name: "conversations") {
+type conversations @table(name: "conversations", soft_delete: true, soft_delete_cond: "deleted_at IS NULL", soft_delete_set: "deleted_at = NOW()") {
   """Conversation ID"""
   id: String! @pk
   """Owner user"""

@@ -1,9 +1,40 @@
 package hubapp
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 )
+
+// ensureUser creates user if not exists (for conversation FK).
+func (a *HubApp) ensureUser(ctx context.Context, userID, role string) {
+	res, err := a.client.Query(ctx,
+		`query($id: String!) { hub { db { users(filter: { id: { eq: $id } }, limit: 1) { id } } } }`,
+		map[string]any{"id": userID},
+	)
+	if err == nil {
+		defer res.Close()
+		var users []struct{ ID string `json:"id"` }
+		if err := res.ScanData("hub.db.users", &users); err == nil && len(users) > 0 {
+			return
+		}
+	}
+	if role == "" {
+		role = "user"
+	}
+	insRes, err := a.client.Query(ctx,
+		`mutation($id: String!, $name: String!, $role: String!) {
+			hub { db { insert_users(data: { id: $id, display_name: $name, hugr_role: $role }) { id } } }
+		}`,
+		map[string]any{"id": userID, "name": userID, "role": role},
+	)
+	if err != nil {
+		a.logger.Warn("ensureUser failed", "user", userID, "error", err)
+		return
+	}
+	defer insRes.Close()
+	a.logger.Info("auto-created user", "id", userID, "role", role)
+}
 
 type userLoginRequest struct {
 	UserID   string `json:"user_id"`
