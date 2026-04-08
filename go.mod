@@ -7,8 +7,8 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/hugr-lab/airport-go v0.2.1
-	github.com/hugr-lab/query-engine v0.3.19
-	github.com/hugr-lab/query-engine/client v0.3.19
+	github.com/hugr-lab/query-engine v0.3.20
+	github.com/hugr-lab/query-engine/client v0.3.20
 	github.com/mark3labs/mcp-go v0.47.0
 	nhooyr.io/websocket v1.8.17
 )

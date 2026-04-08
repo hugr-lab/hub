@@ -78,56 +78,178 @@ func (s *Server) Handler() http.Handler {
 	})
 }
 
-// HandleUserMessage processes a chat message from the WebSocket gateway.
-// Searches memory for context, then calls LLM with the user message.
+// HandleUserMessage processes a chat message via multi-turn agentic loop.
+// Uses LLM with Hugr tools (discovery, schema, data, memory, registry).
+// This is the "tools" mode handler — no agent container needed.
 func (s *Server) HandleUserMessage(ctx context.Context, userID, message string) (string, error) {
-	// Search relevant memories
+	const maxTurns = 15
+
+	// Build system prompt with memory context
+	systemPrompt := "You are a helpful data assistant for Analytics Hub. You have access to Hugr Data Mesh tools for data discovery, schema exploration, and query execution. Use tools to find and analyze data."
+
 	var memoryCtx string
-	res, err := s.hugrClient.Query(ctx,
+	memRes, err := s.hugrClient.Query(ctx,
 		`query($uid: String!) { hub { db { agent_memory(filter: { user_id: { eq: $uid } }, limit: 5, order_by: [{field: "created_at", direction: DESC}]) { content category } } } }`,
 		map[string]any{"uid": userID},
 	)
 	if err == nil {
-		defer res.Close()
-		if res.Err() == nil {
-			data, _ := json.Marshal(res.Data)
-			memoryCtx = string(data)
+		defer memRes.Close()
+		if memRes.Err() == nil {
+			var memories []map[string]any
+			if scanErr := memRes.ScanData("hub.db.agent_memory", &memories); scanErr == nil && len(memories) > 0 {
+				data, _ := json.Marshal(memories)
+				memoryCtx = string(data)
+			}
 		}
 	}
-
-	// Call LLM
-	systemPrompt := "You are a helpful data assistant for Analytics Hub."
 	if memoryCtx != "" {
 		systemPrompt += "\n\nRelevant memories:\n" + memoryCtx
 	}
 
-	resp, err := s.llmRouter.Complete(ctx, llmrouter.CompletionRequest{
-		Messages: []llmrouter.Message{
-			{Role: "system", Content: systemPrompt},
-			{Role: "user", Content: message},
-		},
-		UserID: userID,
+	// Build available tools from Hugr MCP (discovery, schema, data tools)
+	// For tools mode we use a predefined set, not the full agent toolset
+	tools := s.getToolsForLLM()
+
+	history := []llmrouter.Message{
+		{Role: "system", Content: systemPrompt},
+		{Role: "user", Content: message},
+	}
+
+	// Multi-turn loop
+	for turn := 0; turn < maxTurns; turn++ {
+		resp, err := s.llmRouter.Complete(ctx, llmrouter.CompletionRequest{
+			Messages: history,
+			Tools:    tools,
+			UserID:   userID,
+		})
+		if err != nil {
+			return "", fmt.Errorf("turn %d: %w", turn, err)
+		}
+
+		// No tool calls — final response
+		if resp.ToolCalls == "" || resp.FinishReason == "stop" {
+			return resp.Content, nil
+		}
+
+		// Parse tool calls
+		var toolCalls []struct {
+			ID        string         `json:"id"`
+			Name      string         `json:"name"`
+			Arguments map[string]any `json:"arguments"`
+		}
+		if err := json.Unmarshal([]byte(resp.ToolCalls), &toolCalls); err != nil {
+			return resp.Content, nil // can't parse, treat as final
+		}
+		if len(toolCalls) == 0 {
+			return resp.Content, nil
+		}
+
+		// Add assistant message with tool calls
+		history = append(history, llmrouter.Message{
+			Role:      "assistant",
+			Content:   resp.Content,
+			ToolCalls: toAnySlice(toolCalls),
+		})
+
+		// Execute each tool call via MCP
+		for _, tc := range toolCalls {
+			result, toolErr := s.executeTool(ctx, userID, tc.Name, tc.Arguments)
+			if toolErr != nil {
+				result = fmt.Sprintf("Error: %v", toolErr)
+			}
+			history = append(history, llmrouter.Message{
+				Role:       "tool",
+				Content:    result,
+				ToolCallID: tc.ID,
+			})
+		}
+	}
+
+	return "", fmt.Errorf("max turns (%d) reached", maxTurns)
+}
+
+// executeTool calls a tool server-side for tools mode.
+// Creates a temporary MCP server with all tools and invokes via HandleMessage.
+func (s *Server) executeTool(ctx context.Context, userID, toolName string, args map[string]any) (string, error) {
+	authCtx := auth.ContextWithUser(ctx, auth.UserInfo{ID: userID})
+
+	mcpSrv := server.NewMCPServer("hub-internal", "0.1.0", server.WithToolCapabilities(true))
+	s.registerMemoryTools(mcpSrv, userID)
+	s.registerRegistryTools(mcpSrv, userID)
+
+	hugrMCP := qemcp.New(s.hugrClient, mcpSrv, s.debug)
+	_ = hugrMCP
+
+	// Call tool via MCP HandleMessage
+	reqMsg, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params":  map[string]any{"name": toolName, "arguments": args},
 	})
-	if err != nil {
-		return "", fmt.Errorf("llm complete: %w", err)
+
+	result := mcpSrv.HandleMessage(authCtx, json.RawMessage(reqMsg))
+
+	// Parse response
+	resultBytes, _ := json.Marshal(result)
+	var resp struct {
+		Result struct {
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+			IsError bool `json:"isError"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(resultBytes, &resp); err != nil {
+		return string(resultBytes), nil
 	}
 
-	// Store user pattern
-	storeCtx := auth.ContextWithUser(ctx, auth.UserInfo{ID: userID})
-	storeRes, err := s.hugrClient.Query(storeCtx,
-		`mutation($uid: String!, $content: String!) {
-			hub { db { insert_agent_memory(
-				data: { id: $uid, user_id: $uid, content: $content, category: "user_pattern" }
-				summary: $content
-			) { id } } }
-		}`,
-		map[string]any{"uid": userID, "content": fmt.Sprintf("User asked: %s", message)},
-	)
-	if err == nil {
-		defer storeRes.Close()
+	var text string
+	for _, c := range resp.Result.Content {
+		if c.Type == "text" {
+			text += c.Text
+		}
 	}
+	if resp.Result.IsError {
+		return text, fmt.Errorf("tool error: %s", text)
+	}
+	return text, nil
+}
 
-	return resp.Content, nil
+// getToolsForLLM returns tool definitions for the LLM in tools mode.
+func (s *Server) getToolsForLLM() []llmrouter.Tool {
+	// These are the Hugr discovery/schema/data tools that the LLM can call
+	return []llmrouter.Tool{
+		{Name: "discovery-search_modules", Description: "Search for data modules by keyword", Parameters: map[string]any{
+			"type": "object", "properties": map[string]any{"query": map[string]any{"type": "string", "description": "Search query"}}, "required": []string{"query"},
+		}},
+		{Name: "discovery-search_module_data_objects", Description: "Search tables/views in a module", Parameters: map[string]any{
+			"type": "object", "properties": map[string]any{"module": map[string]any{"type": "string"}, "query": map[string]any{"type": "string"}}, "required": []string{"module"},
+		}},
+		{Name: "schema-type_fields", Description: "List fields of a type with descriptions", Parameters: map[string]any{
+			"type": "object", "properties": map[string]any{"type_name": map[string]any{"type": "string", "description": "GraphQL type name"}}, "required": []string{"type_name"},
+		}},
+		{Name: "data-inline_graphql_result", Description: "Execute a GraphQL query and return results", Parameters: map[string]any{
+			"type": "object", "properties": map[string]any{"query": map[string]any{"type": "string", "description": "GraphQL query"}, "jq": map[string]any{"type": "string", "description": "Optional jq filter"}}, "required": []string{"query"},
+		}},
+		{Name: "data-validate_graphql_query", Description: "Validate a GraphQL query without executing", Parameters: map[string]any{
+			"type": "object", "properties": map[string]any{"query": map[string]any{"type": "string"}}, "required": []string{"query"},
+		}},
+		{Name: "memory-store", Description: "Store information in agent memory", Parameters: map[string]any{
+			"type": "object", "properties": map[string]any{"content": map[string]any{"type": "string"}, "category": map[string]any{"type": "string"}}, "required": []string{"content"},
+		}},
+		{Name: "memory-search", Description: "Search agent memory for relevant information", Parameters: map[string]any{
+			"type": "object", "properties": map[string]any{"query": map[string]any{"type": "string"}, "limit": map[string]any{"type": "number"}}, "required": []string{"query"},
+		}},
+	}
+}
+
+func toAnySlice(v any) []any {
+	data, _ := json.Marshal(v)
+	var result []any
+	json.Unmarshal(data, &result)
+	return result
 }
 
 func toolError(msg string) *mcp.CallToolResult {
