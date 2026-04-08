@@ -16,7 +16,9 @@ export class ChatDocumentWidget extends Widget {
   private renderer: MessageRenderer;
   private messagesEl: HTMLDivElement;
   private inputEl: HTMLTextAreaElement;
+  private stopBtn: HTMLButtonElement;
   private statusEl: HTMLDivElement;
+  private processing = false;
   private ws: WebSocket | null = null;
   private loading = false;
   private oldestTimestamp: string | null = null;
@@ -60,7 +62,14 @@ export class ChatDocumentWidget extends Widget {
     sendBtn.className = 'hub-chat-send-btn';
     sendBtn.textContent = 'Send';
     sendBtn.addEventListener('click', () => this.handleSend());
+
+    this.stopBtn = document.createElement('button');
+    this.stopBtn.className = 'hub-chat-stop-btn';
+    this.stopBtn.textContent = 'Stop';
+    this.stopBtn.style.display = 'none';
+    this.stopBtn.addEventListener('click', () => this.handleStop());
     inputArea.appendChild(sendBtn);
+    inputArea.appendChild(this.stopBtn);
 
     this.node.appendChild(inputArea);
 
@@ -149,12 +158,23 @@ export class ChatDocumentWidget extends Widget {
     }
   }
 
+  private handleStop(): void {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type: 'cancel' }));
+    }
+    this.processing = false;
+    this.stopBtn.style.display = 'none';
+    this.removeStatus();
+  }
+
   private async handleSend(): Promise<void> {
     const text = this.inputEl.value.trim();
     if (!text || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
 
     this.inputEl.value = '';
     this.inputEl.style.height = 'auto';
+    this.processing = true;
+    this.stopBtn.style.display = '';
 
     // Show user message immediately
     await this.appendMessage('user', text);
@@ -170,14 +190,26 @@ export class ChatDocumentWidget extends Widget {
     switch (msg.type) {
       case 'response':
         this.removeStatus();
+        this.processing = false;
+        this.stopBtn.style.display = 'none';
         await this.appendMessage('assistant', msg.content);
         this.scrollToBottom();
         break;
       case 'status':
-        this.showStatus(msg.content);
+        if (msg.content === 'cancelled') {
+          this.removeStatus();
+          this.processing = false;
+          this.stopBtn.style.display = 'none';
+          await this.appendMessage('system', 'Cancelled by user');
+          this.scrollToBottom();
+        } else {
+          this.showStatus(msg.content);
+        }
         break;
       case 'error':
         this.removeStatus();
+        this.processing = false;
+        this.stopBtn.style.display = 'none';
         await this.appendMessage('system', `Error: ${msg.content}`);
         this.scrollToBottom();
         break;

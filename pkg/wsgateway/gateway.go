@@ -134,6 +134,14 @@ type ChatMessage struct {
 }
 
 func (g *Gateway) readLoop(ctx context.Context, conn *websocket.Conn, userID, conversationID string) {
+	var cancelCurrent context.CancelFunc
+
+	defer func() {
+		if cancelCurrent != nil {
+			cancelCurrent() // cancel any running handleMessage on disconnect
+		}
+	}()
+
 	for {
 		_, data, err := conn.Read(ctx)
 		if err != nil {
@@ -153,7 +161,20 @@ func (g *Gateway) readLoop(ctx context.Context, conn *websocket.Conn, userID, co
 
 		switch msg.Type {
 		case "message":
-			g.handleMessage(ctx, conn, userID, conversationID, msg.Content)
+			// Cancel previous request if still running
+			if cancelCurrent != nil {
+				cancelCurrent()
+			}
+			msgCtx, cancel := context.WithCancel(ctx)
+			cancelCurrent = cancel
+			g.handleMessage(msgCtx, conn, userID, conversationID, msg.Content)
+		case "cancel":
+			// Explicit cancel from UI
+			if cancelCurrent != nil {
+				cancelCurrent()
+				cancelCurrent = nil
+				g.writeJSON(ctx, conn, ChatMessage{Type: "status", Content: "cancelled"})
+			}
 		default:
 			g.writeJSON(ctx, conn, ChatMessage{Type: "error", Content: fmt.Sprintf("unknown type: %s", msg.Type)})
 		}

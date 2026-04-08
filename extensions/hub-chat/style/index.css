@@ -160,6 +160,18 @@
 
 .hub-chat-send-btn:hover { background: var(--jp-brand-color0); }
 
+.hub-chat-stop-btn {
+  padding: 8px 16px;
+  background: var(--jp-error-color1);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: var(--jp-ui-font-size1);
+  align-self: flex-end;
+}
+.hub-chat-stop-btn:hover { opacity: 0.8; }
+
 /* Status bar */
 .hub-chat-status-bar {
   padding: 3px 12px;
