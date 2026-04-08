@@ -86,12 +86,25 @@ export async function createConversation(
   return result ?? { id: '', title: title ?? 'New Chat', mode };
 }
 
-export async function listConversations(folder?: string): Promise<Conversation[]> {
-  const body: any = {};
-  if (folder) body.folder = folder;
-  const result = await convAPI('list', body);
-  if (Array.isArray(result)) return result;
-  return [];
+export async function listConversations(): Promise<Conversation[]> {
+  const baseUrl = PageConfig.getBaseUrl();
+  const settings = ServerConnection.makeSettings();
+  const url = baseUrl + 'hub-chat/api/conversations/list';
+  const resp = await ServerConnection.makeRequest(url, {}, settings);
+  if (!resp.ok) {
+    const text = await resp.text();
+    console.error('listConversations error:', resp.status, text);
+    return [];
+  }
+  const text = await resp.text();
+  if (!text) return [];
+  try {
+    const result = JSON.parse(text);
+    return Array.isArray(result) ? result : [];
+  } catch (e) {
+    console.error('listConversations: invalid JSON:', text);
+    return [];
+  }
 }
 
 export async function renameConversation(id: string, title: string): Promise<void> {

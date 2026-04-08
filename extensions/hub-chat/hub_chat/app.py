@@ -86,65 +86,18 @@ class ChatWebSocketHandler(JupyterHandler, tornado.websocket.WebSocketHandler):
 
 
 class ConversationAPIHandler(JupyterHandler):
-    """Proxy REST: browser → Hugr GraphQL for conversation CRUD."""
+    """Proxy REST: browser → Hub Service /api/conversations/* with JWT auth."""
 
     @tornado.web.authenticated
     async def post(self, action: str):
-        body = json.loads(self.request.body) if self.request.body else {}
-        user = os.environ.get("JUPYTERHUB_USER", "")
-        token = _get_access_token()
-
-        # Map action to GraphQL query via hugr connection proxy
-        gql, variables = self._build_query(action, body, user)
-        if not gql:
-            self.set_status(400)
-            self.finish(json.dumps({"error": f"unknown action: {action}"}))
+        hub_service_url = os.environ.get("HUB_SERVICE_URL", "")
+        if not hub_service_url:
+            self.set_status(503)
+            self.finish(json.dumps({"error": "HUB_SERVICE_URL not configured"}))
             return
 
-        result = await self._hugr_query(gql, variables, token)
-        self.set_header("Content-Type", "application/json")
-        self.finish(json.dumps(result))
-
-    def _build_query(self, action, body, user):
-        import time
-        if action == "create":
-            conv_id = f"conv-{int(time.time() * 1000)}"
-            mode = body.get("mode", "tools")
-            title = body.get("title", "New Chat")
-            return (
-                'mutation($id: String!, $uid: String!, $title: String!, $mode: String!) { hub { db { insert_conversations(data: { id: $id, user_id: $uid, title: $title, mode: $mode }) { id title mode } } } }',
-                {"id": conv_id, "uid": user, "title": title, "mode": mode},
-            )
-        if action == "list":
-            return (
-                'query($uid: String!) { hub { db { conversations(filter: { user_id: { eq: $uid }, deleted_at: { is_null: true } }, order_by: [{field: "updated_at", direction: DESC}]) { id title folder mode agent_instance_id model updated_at created_at } } } }',
-                {"uid": user},
-            )
-        if action == "rename":
-            return (
-                'mutation($id: String!, $title: String!) { hub { db { update_conversations(filter: { id: { eq: $id } }, data: { title: $title }) { affected_rows } } } }',
-                {"id": body.get("id", ""), "title": body.get("title", "")},
-            )
-        if action == "delete":
-            return (
-                'mutation($id: String!) { hub { db { update_conversations(filter: { id: { eq: $id } }, data: { deleted_at: "NOW()" }) { affected_rows } } } }',
-                {"id": body.get("id", "")},
-            )
-        if action == "messages":
-            limit = body.get("limit", 50)
-            conv_id = body.get("id", "")
-            return (
-                'query($cid: String!, $limit: Int!) { hub { db { agent_messages(filter: { conversation_id: { eq: $cid } }, order_by: [{field: "created_at", direction: DESC}], limit: $limit) { id role content tool_calls tool_call_id tokens_used model created_at } } } }',
-                {"cid": conv_id, "limit": limit},
-            )
-        return None, None
-
-    async def _hugr_query(self, gql, variables, token):
-        """Execute GraphQL via Hugr IPC endpoint with OIDC token."""
-        # Get Hugr URL from connection config
-        hugr_url = self._get_hugr_url()
-        if not hugr_url:
-            return {"error": "Hugr URL not configured"}
+        token = _get_access_token()
+        url = f"{hub_service_url}/api/conversations/{action}"
 
         headers = {"Content-Type": "application/json"}
         if token:
@@ -152,90 +105,32 @@ class ConversationAPIHandler(JupyterHandler):
 
         client = tornado.httpclient.AsyncHTTPClient()
         try:
+            method = "GET" if action == "list" else "POST"
             response = await client.fetch(
-                hugr_url,
-                method="POST",
+                url,
+                method=method,
                 headers=headers,
-                body=json.dumps({"query": gql, "variables": variables}),
+                body=self.request.body if method == "POST" else None,
+                allow_nonstandard_methods=True,
                 request_timeout=30,
             )
-            resp_body = response.body.decode()
-
-            # Hugr may return multipart/mixed (IPC) or JSON
-            if resp_body.startswith("--HUGR"):
-                # Parse multipart: extract JSON part
-                result = self._parse_hugr_multipart(resp_body)
-            else:
-                result = json.loads(resp_body)
-
-            data = result.get("data", result)
-            # Extract from nested hub.db structure
-            if isinstance(data, dict) and "hub" in data:
-                data = data["hub"]
-            if isinstance(data, dict) and "db" in data:
-                data = data["db"]
-            # Return the first meaningful value
-            if isinstance(data, dict):
-                for k, v in data.items():
-                    return v
-            return data
+            self.set_status(response.code)
+            self.set_header("Content-Type", "application/json")
+            self.finish(response.body)
         except tornado.httpclient.HTTPClientError as e:
-            body_text = e.response.body.decode() if e.response and e.response.body else str(e)
-            return {"error": body_text}
+            code = e.response.code if e.response else 502
+            body = e.response.body if e.response else json.dumps({"error": str(e)}).encode()
+            self.set_status(code)
+            self.finish(body)
         except Exception as e:
-            return {"error": str(e)}
+            log.error("Hub Service request failed: %s", e)
+            self.set_status(502)
+            self.finish(json.dumps({"error": str(e)}))
 
-    def _get_hugr_url(self):
-        """Get Hugr IPC URL from connections.json."""
-        import pathlib
-        config_path = os.environ.get("HUGR_CONFIG_PATH", str(pathlib.Path.home() / ".hugr" / "connections.json"))
-        try:
-            with open(config_path) as f:
-                cfg = json.load(f)
-            default_name = cfg.get("default", "default")
-            for conn in cfg.get("connections", []):
-                if conn.get("name") == default_name:
-                    return conn.get("url", "").rstrip("/")
-        except Exception:
-            pass
-        hugr_url = os.environ.get("HUGR_URL", "")
-        if hugr_url:
-            return hugr_url.rstrip("/")
-        return None
-
-    def _parse_hugr_multipart(self, body):
-        """Parse simple HUGR multipart response to extract JSON data."""
-        result = {}
-        parts = body.split("--HUGR")
-        for part in parts:
-            if "X-Hugr-Part-Type: data" in part:
-                # Extract JSON body after headers
-                lines = part.strip().split("\n\n", 1)
-                if len(lines) > 1:
-                    try:
-                        data = json.loads(lines[1].strip())
-                        # Check for path header
-                        if "X-Hugr-Path:" in lines[0]:
-                            path_line = [l for l in lines[0].split("\n") if "X-Hugr-Path:" in l]
-                            if path_line:
-                                path = path_line[0].split(":", 1)[1].strip().replace("data.", "")
-                                # Set nested
-                                parts_list = path.split(".")
-                                current = result
-                                for p in parts_list[:-1]:
-                                    current.setdefault(p, {})
-                                    current = current[p]
-                                current[parts_list[-1]] = data
-                    except json.JSONDecodeError:
-                        pass
-            elif "X-Hugr-Part-Type: errors" in part:
-                lines = part.strip().split("\n\n", 1)
-                if len(lines) > 1:
-                    try:
-                        result["errors"] = json.loads(lines[1].strip())
-                    except json.JSONDecodeError:
-                        pass
-        return {"data": result} if result else {}
+    @tornado.web.authenticated
+    async def get(self, action: str):
+        """GET for list action."""
+        await self.post(action)
 
 
 class ChatConfigHandler(JupyterHandler):
