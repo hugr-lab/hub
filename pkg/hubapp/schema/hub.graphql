@@ -75,7 +75,7 @@ type agent_types @table(name: "agent_types") {
 """Running agent container bound to a user and agent type."""
 type agent_instances @table(name: "agent_instances") {
   """Instance UUID"""
-  id: String! @pk @default(insert_exp: "gen_random_uuid()")
+  id: String! @pk
   """Owner user"""
   user_id: String! @field_references(
     name: "instances_user_ref"
@@ -113,7 +113,7 @@ type agent_instances @table(name: "agent_instances") {
 """Conversation between a user and their agent."""
 type agent_sessions @table(name: "agent_sessions") {
   """Session UUID"""
-  id: String! @pk @default(insert_exp: "gen_random_uuid()")
+  id: String! @pk
   """User who owns this session"""
   user_id: String! @field_references(
     name: "sessions_user_ref"
@@ -145,7 +145,7 @@ type agent_sessions @table(name: "agent_sessions") {
 """Individual message in an agent conversation."""
 type agent_messages @table(name: "agent_messages") {
   """Message UUID"""
-  id: String! @pk @default(insert_exp: "gen_random_uuid()")
+  id: String! @pk
   """Parent session (legacy, nullable)"""
   session_id: String @field_references(
     name: "messages_session_ref"
@@ -189,7 +189,7 @@ type agent_memory @table(name: "agent_memory") @embeddings(
   distance: Cosine
 ) {
   """Memory entry UUID"""
-  id: String! @pk @default(insert_exp: "gen_random_uuid()")
+  id: String! @pk
   """Owner user"""
   user_id: String! @field_references(
     name: "memory_user_ref"
@@ -215,7 +215,7 @@ type agent_memory @table(name: "agent_memory") @embeddings(
 """Saved query patterns with tags and usage tracking."""
 type query_registry @table(name: "query_registry") {
   """Registry entry UUID"""
-  id: String! @pk @default(insert_exp: "gen_random_uuid()")
+  id: String! @pk
   """Owner user"""
   user_id: String! @field_references(
     name: "registry_user_ref"
@@ -245,7 +245,7 @@ type query_registry @table(name: "query_registry") {
 """Audit record of every tool invocation by an agent."""
 type tool_calls @table(name: "tool_calls") {
   """Tool call UUID"""
-  id: String! @pk @default(insert_exp: "gen_random_uuid()")
+  id: String! @pk
   """Agent session that triggered this call"""
   session_id: String @field_references(
     name: "toolcalls_session_ref"
@@ -279,7 +279,7 @@ LLM providers are now Hugr data sources (llm-openai, llm-anthropic, llm-gemini).
 provider_id references the data source name (e.g. claude, gpt4)."""
 type llm_budgets @table(name: "llm_budgets") {
   """Budget rule UUID"""
-  id: String! @pk @default(insert_exp: "gen_random_uuid()")
+  id: String! @pk
   """Target scope: user:alice, role:analyst, or global"""
   scope: String!
   """LLM data source name (null applies to all providers)"""
@@ -300,7 +300,7 @@ type llm_budgets @table(name: "llm_budgets") {
 provider_id references the LLM data source name."""
 type llm_usage @table(name: "llm_usage") {
   """Usage record UUID"""
-  id: String! @pk @default(insert_exp: "gen_random_uuid()")
+  id: String! @pk
   """User who made the request"""
   user_id: String!
   """LLM data source name (e.g. claude, gpt4)"""

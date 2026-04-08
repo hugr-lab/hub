@@ -65,17 +65,19 @@ func (b *BudgetChecker) Check(ctx context.Context, userID, providerID string) er
 func (b *BudgetChecker) RecordUsage(ctx context.Context, userID, providerID string, tokensIn, tokensOut int) {
 	periodKey := currentPeriodKey("hour")
 
+	usageID := fmt.Sprintf("usage-%d", time.Now().UnixNano())
 	res, err := b.hugrClient.Query(ctx,
 		`mutation($data: hub_db_llm_usage_mut_input_data!) {
 			hub { db { insert_llm_usage(data: $data) { id } } }
 		}`,
 		map[string]any{
 			"data": map[string]any{
-				"user_id":     userID,
-				"provider_id": providerID,
-				"tokens_in":   tokensIn,
-				"tokens_out":  tokensOut,
-				"period_key":  periodKey,
+				"id":           usageID,
+				"user_id":      userID,
+				"provider_id":  providerID,
+				"tokens_in":    tokensIn,
+				"tokens_out":   tokensOut,
+				"period_key":   periodKey,
 			},
 		},
 	)

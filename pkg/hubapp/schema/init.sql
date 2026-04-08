@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS agent_types (
 
 -- Agent instances (running containers)
 CREATE TABLE IF NOT EXISTS agent_instances (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  id UUID PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id),
   agent_type_id TEXT NOT NULL REFERENCES agent_types(id),
   container_id TEXT,
