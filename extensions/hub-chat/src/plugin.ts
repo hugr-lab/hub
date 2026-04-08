@@ -1,13 +1,16 @@
 /**
- * JupyterLab Hub Chat plugin registration.
+ * Hub Chat JupyterLab Extension — conversation sidebar + main area chat widgets.
  */
 import {
   JupyterFrontEnd,
   JupyterFrontEndPlugin,
 } from '@jupyterlab/application';
+import { MainAreaWidget } from '@jupyterlab/apputils';
+import { IRenderMimeRegistry } from '@jupyterlab/rendermime';
 import { LabIcon } from '@jupyterlab/ui-components';
 
-import { ChatPanelWidget } from './components/ChatPanel.js';
+import { ChatDocumentWidget } from './widgets/ChatDocument.js';
+import { ChatSidebarWidget } from './widgets/ChatSidebar.js';
 
 const chatIcon = new LabIcon({
   name: '@hugr-lab/jupyterlab-hub-chat:icon',
@@ -17,14 +20,54 @@ const chatIcon = new LabIcon({
     '</svg>',
 });
 
+/**
+ * Opens a conversation as a main area tab. Reuses if already open.
+ */
+function openConversation(
+  app: JupyterFrontEnd,
+  conversationId: string,
+  title: string,
+  rendermime: IRenderMimeRegistry,
+  openWidgets: Map<string, MainAreaWidget>,
+): void {
+  const existing = openWidgets.get(conversationId);
+  if (existing && !existing.isDisposed) {
+    app.shell.activateById(existing.id);
+    return;
+  }
+
+  const chatWidget = new ChatDocumentWidget(conversationId, title, rendermime);
+  const main = new MainAreaWidget({ content: chatWidget });
+  main.id = `hub-chat-${conversationId}`;
+  main.title.label = title;
+  main.title.closable = true;
+  main.title.icon = chatIcon;
+
+  main.disposed.connect(() => {
+    openWidgets.delete(conversationId);
+  });
+
+  openWidgets.set(conversationId, main);
+  app.shell.add(main, 'main');
+  app.shell.activateById(main.id);
+}
+
 const chatPlugin: JupyterFrontEndPlugin<void> = {
-  id: '@hugr-lab/jupyterlab-hub-chat:panel',
+  id: '@hugr-lab/jupyterlab-hub-chat:plugin',
   autoStart: true,
-  activate: (app: JupyterFrontEnd) => {
-    const widget = new ChatPanelWidget();
-    widget.title.icon = chatIcon;
-    widget.title.caption = 'Hub Chat';
-    app.shell.add(widget, 'right', { rank: 50 });
+  requires: [IRenderMimeRegistry],
+  activate: (app: JupyterFrontEnd, rendermime: IRenderMimeRegistry) => {
+    console.log('Hub Chat extension activated');
+
+    const openWidgets = new Map<string, MainAreaWidget>();
+
+    // Sidebar with conversation tree
+    const sidebar = new ChatSidebarWidget((conversationId, title) => {
+      openConversation(app, conversationId, title, rendermime, openWidgets);
+    });
+    sidebar.title.icon = chatIcon;
+    sidebar.title.caption = 'Hub Chat';
+    app.shell.add(sidebar, 'left', { rank: 200 });
   },
 };
 
