@@ -168,29 +168,69 @@ func (s *Server) HandleUserMessage(ctx context.Context, userID, message string) 
 	return "", fmt.Errorf("max turns (%d) reached", maxTurns)
 }
 
-// executeTool calls a tool server-side for tools mode.
-// Creates a temporary MCP server with all tools and invokes via HandleMessage.
+// executeTool calls a tool handler directly for tools mode.
 func (s *Server) executeTool(ctx context.Context, userID, toolName string, args map[string]any) (string, error) {
 	authCtx := auth.ContextWithUser(ctx, auth.UserInfo{ID: userID})
 
-	mcpSrv := server.NewMCPServer("hub-internal", "0.1.0", server.WithToolCapabilities(true))
-	s.registerMemoryTools(mcpSrv, userID)
-	s.registerRegistryTools(mcpSrv, userID)
+	// Build handler map — register all Hub tools + get their handlers
+	handlers := s.buildToolHandlers(userID)
 
-	hugrMCP := qemcp.New(s.hugrClient, mcpSrv, s.debug)
-	_ = hugrMCP
+	handler, ok := handlers[toolName]
+	if !ok {
+		// Try Hugr tools via query-engine MCP (discovery, schema, data)
+		return s.executeHugrTool(authCtx, toolName, args)
+	}
 
-	// Call tool via MCP HandleMessage
-	reqMsg, _ := json.Marshal(map[string]any{
-		"jsonrpc": "2.0",
-		"id":      1,
-		"method":  "tools/call",
-		"params":  map[string]any{"name": toolName, "arguments": args},
+	req := mcp.CallToolRequest{}
+	req.Params.Name = toolName
+	req.Params.Arguments = args
+
+	result, err := handler(authCtx, req)
+	if err != nil {
+		return "", fmt.Errorf("tool %s: %w", toolName, err)
+	}
+	return extractToolText(result), nil
+}
+
+// buildToolHandlers returns a map of tool name → handler for Hub-specific tools.
+func (s *Server) buildToolHandlers(userID string) map[string]server.ToolHandlerFunc {
+	handlers := make(map[string]server.ToolHandlerFunc)
+
+	// We can't extract handlers from MCPServer directly, so we maintain a parallel map.
+	// This is the same handlers as registered in registerXxxTools.
+	handlers["memory-store"] = s.handleMemoryStore(userID)
+	handlers["memory-search"] = s.handleMemorySearch(userID)
+	handlers["memory-list"] = s.handleMemoryList(userID)
+	handlers["registry-save"] = s.handleRegistrySave(userID)
+	handlers["registry-search"] = s.handleRegistrySearch(userID)
+	return handlers
+}
+
+// executeHugrTool calls a Hugr discovery/schema/data tool via query-engine MCP.
+func (s *Server) executeHugrTool(ctx context.Context, toolName string, args map[string]any) (string, error) {
+	// Create initialized MCP server with Hugr tools
+	mcpSrv := server.NewMCPServer("hugr-tool-exec", "0.1.0", server.WithToolCapabilities(true))
+	wrapped := qemcp.New(s.hugrClient, mcpSrv, s.debug)
+	_ = wrapped
+
+	// Initialize the MCP server (required before tool calls)
+	initMsg, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "initialize",
+		"params": map[string]any{
+			"protocolVersion": "2025-03-26",
+			"capabilities":    map[string]any{},
+			"clientInfo":      map[string]any{"name": "hub-internal", "version": "0.1.0"},
+		},
 	})
+	mcpSrv.HandleMessage(ctx, json.RawMessage(initMsg))
 
-	result := mcpSrv.HandleMessage(authCtx, json.RawMessage(reqMsg))
+	// Now call the tool
+	callMsg, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+		"params": map[string]any{"name": toolName, "arguments": args},
+	})
+	result := mcpSrv.HandleMessage(ctx, json.RawMessage(callMsg))
 
-	// Parse response
 	resultBytes, _ := json.Marshal(result)
 	var resp struct {
 		Result struct {
@@ -215,6 +255,19 @@ func (s *Server) executeTool(ctx context.Context, userID, toolName string, args 
 		return text, fmt.Errorf("tool error: %s", text)
 	}
 	return text, nil
+}
+
+func extractToolText(result *mcp.CallToolResult) string {
+	if result == nil {
+		return ""
+	}
+	var text string
+	for _, c := range result.Content {
+		if tc, ok := c.(mcp.TextContent); ok {
+			text += tc.Text
+		}
+	}
+	return text
 }
 
 // getToolsForLLM returns tool definitions for the LLM in tools mode.
