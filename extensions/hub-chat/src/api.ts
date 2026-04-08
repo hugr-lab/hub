@@ -57,9 +57,9 @@ async function convAPI(action: string, body?: any): Promise<any> {
   if (!text) return null;
   try {
     return JSON.parse(text);
-  } catch {
-    console.warn('Conversation API: non-JSON response:', text);
-    return null;
+  } catch (e) {
+    console.error('Conversation API: failed to parse JSON response:', text, e);
+    throw new Error(`Invalid response from server: ${text.substring(0, 100)}`);
   }
 }
 
@@ -75,14 +75,23 @@ export async function createConversation(
   if (folder) body.folder = folder;
   if (agentInstanceId) body.agent_instance_id = agentInstanceId;
   if (model) body.model = model;
-  return convAPI('create', body);
+  const result = await convAPI('create', body);
+  // Hugr insert returns the inserted row — may be object or nested
+  if (result && typeof result === 'object') {
+    // Might be {id, title, mode} directly or wrapped
+    if (result.id) return result;
+    // Or could be array with single item
+    if (Array.isArray(result) && result.length > 0) return result[0];
+  }
+  return result ?? { id: '', title: title ?? 'New Chat', mode };
 }
 
 export async function listConversations(folder?: string): Promise<Conversation[]> {
   const body: any = {};
   if (folder) body.folder = folder;
   const result = await convAPI('list', body);
-  return result ?? [];
+  if (Array.isArray(result)) return result;
+  return [];
 }
 
 export async function renameConversation(id: string, title: string): Promise<void> {
@@ -101,7 +110,8 @@ export async function loadMessages(
   const body: any = { id: conversationId, limit };
   if (before) body.before = before;
   const result = await convAPI('messages', body);
-  return result ?? [];
+  if (Array.isArray(result)) return result;
+  return [];
 }
 
 // ── WebSocket ──────────────────────────────────────────

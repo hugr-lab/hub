@@ -142,9 +142,15 @@ export class ChatSidebarWidget extends Widget {
       dialog.remove();
 
       try {
-        const conv = await createConversation(mode, title || undefined);
+        const result = await createConversation(mode, title || undefined);
+        console.log('createConversation result:', result);
         await this.refresh();
-        this.onOpen(conv.id, conv.title);
+        // Result might be {id, title, mode} or nested
+        const convId = result?.id;
+        const convTitle = result?.title || title || 'New Chat';
+        if (convId) {
+          this.onOpen(convId, convTitle);
+        }
       } catch (err: any) {
         alert(err.message);
       }
