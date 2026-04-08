@@ -21,6 +21,10 @@ func (a *HubApp) seedAgentTypes(ctx context.Context) {
 			continue
 		}
 		defer res.Close()
+		if res.Err() != nil {
+			a.logger.Warn("failed to check agent type", "id", t.ID, "error", res.Err())
+			continue
+		}
 
 		var existing []struct{ ID string `json:"id"` }
 		_ = res.ScanData("hub.db.agent_types", &existing)

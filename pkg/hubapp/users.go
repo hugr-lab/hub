@@ -14,6 +14,10 @@ func (a *HubApp) ensureUser(ctx context.Context, userID, role string) {
 	)
 	if err == nil {
 		defer res.Close()
+		if res.Err() != nil {
+			a.logger.Warn("ensureUser check error", "user", userID, "error", res.Err())
+			return
+		}
 		var users []struct{ ID string `json:"id"` }
 		if err := res.ScanData("hub.db.users", &users); err == nil && len(users) > 0 {
 			return
@@ -33,6 +37,10 @@ func (a *HubApp) ensureUser(ctx context.Context, userID, role string) {
 		return
 	}
 	defer insRes.Close()
+	if insRes.Err() != nil {
+		a.logger.Warn("ensureUser insert error", "user", userID, "error", insRes.Err())
+		return
+	}
 	a.logger.Info("auto-created user", "id", userID, "role", role)
 }
 
@@ -70,6 +78,11 @@ func (a *HubApp) handleUserLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer checkRes.Close()
+	if checkRes.Err() != nil {
+		a.logger.Error("failed to check user", "user_id", req.UserID, "error", checkRes.Err())
+		http.Error(w, "failed to sync user", http.StatusInternalServerError)
+		return
+	}
 
 	var existing []struct{ ID string `json:"id"` }
 	_ = checkRes.ScanData("hub.db.users", &existing)
@@ -91,6 +104,11 @@ func (a *HubApp) handleUserLogin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer res.Close()
+		if res.Err() != nil {
+			a.logger.Error("failed to update user", "user_id", req.UserID, "error", res.Err())
+			http.Error(w, "failed to sync user", http.StatusInternalServerError)
+			return
+		}
 	} else {
 		// Insert
 		res, err := a.client.Query(r.Context(),
@@ -107,6 +125,11 @@ func (a *HubApp) handleUserLogin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer res.Close()
+		if res.Err() != nil {
+			a.logger.Error("failed to insert user", "user_id", req.UserID, "error", res.Err())
+			http.Error(w, "failed to sync user", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	a.logger.Info("user synced", "user_id", req.UserID, "role", req.Role)

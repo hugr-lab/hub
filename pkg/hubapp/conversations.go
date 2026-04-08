@@ -23,6 +23,9 @@ func (a *HubApp) verifyConversationOwner(ctx context.Context, convID, userID str
 		return err
 	}
 	defer res.Close()
+	if res.Err() != nil {
+		return res.Err()
+	}
 	var convs []any
 	if err := res.ScanData("hub.db.conversations", &convs); err != nil || len(convs) == 0 {
 		return fmt.Errorf("conversation not found or access denied")
@@ -107,6 +110,11 @@ func (a *HubApp) handleConversationList(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	defer res.Close()
+	if res.Err() != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode([]any{})
+		return
+	}
 
 	var convs []any
 	if err := res.ScanData("hub.db.conversations", &convs); err != nil || convs == nil {
@@ -160,6 +168,11 @@ func (a *HubApp) handleConversationMessages(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	defer res.Close()
+	if res.Err() != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode([]any{})
+		return
+	}
 
 	var msgs []any
 	if err := res.ScanData("hub.db.agent_messages", &msgs); err != nil || msgs == nil {
@@ -201,6 +214,10 @@ func (a *HubApp) handleConversationDelete(w http.ResponseWriter, r *http.Request
 		return
 	}
 	defer res.Close()
+	if res.Err() != nil {
+		http.Error(w, fmt.Sprintf("delete: %v", res.Err()), http.StatusInternalServerError)
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"deleted": req.ID})
@@ -239,6 +256,10 @@ func (a *HubApp) handleConversationRename(w http.ResponseWriter, r *http.Request
 		return
 	}
 	defer res.Close()
+	if res.Err() != nil {
+		http.Error(w, fmt.Sprintf("rename: %v", res.Err()), http.StatusInternalServerError)
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"renamed": req.ID})
