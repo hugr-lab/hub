@@ -43,6 +43,20 @@ CREATE TABLE IF NOT EXISTS agent_instances (
   metadata JSONB DEFAULT '{}'
 );
 
+-- Conversations (persistent chat threads)
+CREATE TABLE IF NOT EXISTS conversations (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  title TEXT NOT NULL DEFAULT 'New Chat',
+  folder TEXT,
+  mode TEXT NOT NULL DEFAULT 'tools',
+  agent_instance_id UUID REFERENCES agent_instances(id),
+  model TEXT,
+  deleted_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
 -- Agent sessions
 CREATE TABLE IF NOT EXISTS agent_sessions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -128,20 +142,6 @@ CREATE TABLE IF NOT EXISTS llm_usage (
   duration_ms INT,
   period_key TEXT NOT NULL,
   created_at TIMESTAMPTZ DEFAULT now()
-);
-
--- Conversations (persistent chat threads)
-CREATE TABLE IF NOT EXISTS conversations (
-  id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL REFERENCES users(id),
-  title TEXT NOT NULL DEFAULT 'New Chat',
-  folder TEXT,
-  mode TEXT NOT NULL DEFAULT 'tools',
-  agent_instance_id UUID REFERENCES agent_instances(id),
-  model TEXT,
-  deleted_at TIMESTAMPTZ,
-  created_at TIMESTAMPTZ DEFAULT now(),
-  updated_at TIMESTAMPTZ DEFAULT now()
 );
 
 -- Indexes
