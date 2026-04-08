@@ -56,10 +56,12 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
 -- Agent messages
 CREATE TABLE IF NOT EXISTS agent_messages (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  session_id UUID NOT NULL REFERENCES agent_sessions(id),
+  session_id UUID REFERENCES agent_sessions(id),
+  conversation_id TEXT REFERENCES conversations(id),
   role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system', 'tool')),
   content TEXT NOT NULL,
   tool_calls JSONB,
+  tool_call_id TEXT,
   tokens_used INT,
   model TEXT,
   created_at TIMESTAMPTZ DEFAULT now()
@@ -128,7 +130,23 @@ CREATE TABLE IF NOT EXISTS llm_usage (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
+-- Conversations (persistent chat threads)
+CREATE TABLE IF NOT EXISTS conversations (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  title TEXT NOT NULL DEFAULT 'New Chat',
+  folder TEXT,
+  mode TEXT NOT NULL DEFAULT 'tools',
+  agent_instance_id UUID REFERENCES agent_instances(id),
+  model TEXT,
+  deleted_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
 -- Indexes
+CREATE INDEX IF NOT EXISTS idx_conversations_user ON conversations(user_id, deleted_at);
+CREATE INDEX IF NOT EXISTS idx_agent_messages_conv ON agent_messages(conversation_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_agent_instances_user ON agent_instances(user_id);
 CREATE INDEX IF NOT EXISTS idx_agent_sessions_user ON agent_sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_agent_memory_user ON agent_memory(user_id);

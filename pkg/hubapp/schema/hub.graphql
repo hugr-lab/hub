@@ -16,6 +16,38 @@ type users @table(name: "users") {
   metadata: JSON
 }
 
+"""Persistent chat thread belonging to a user. Supports three modes: llm, tools, agent."""
+type conversations @table(name: "conversations") {
+  """Conversation ID"""
+  id: String! @pk
+  """Owner user"""
+  user_id: String! @field_references(
+    name: "conv_user_ref"
+    references_name: "users"
+    field: "id"
+    query: "user"
+    description: "User who owns this conversation"
+    references_query: "conversations"
+    references_description: "Conversations owned by this user"
+  )
+  """Display title"""
+  title: String!
+  """Folder for grouping (nullable)"""
+  folder: String
+  """Chat mode: llm, tools, or agent"""
+  mode: String!
+  """Agent instance (for mode=agent)"""
+  agent_instance_id: String
+  """LLM model override (for mode=llm)"""
+  model: String
+  """Soft delete timestamp (null = active)"""
+  deleted_at: Timestamp
+  """Creation timestamp"""
+  created_at: Timestamp @default(insert_exp: "NOW()")
+  """Last activity timestamp"""
+  updated_at: Timestamp @default(insert_exp: "NOW()", update_exp: "NOW()")
+}
+
 """Predefined agent configurations — image, capabilities, skills, and policies."""
 type agent_types @table(name: "agent_types") {
   """Unique type identifier (e.g. data-analyst, openclaw)"""
@@ -114,8 +146,8 @@ type agent_sessions @table(name: "agent_sessions") {
 type agent_messages @table(name: "agent_messages") {
   """Message UUID"""
   id: String! @pk @default(insert_exp: "gen_random_uuid()")
-  """Parent session"""
-  session_id: String! @field_references(
+  """Parent session (legacy, nullable)"""
+  session_id: String @field_references(
     name: "messages_session_ref"
     references_name: "agent_sessions"
     field: "id"
@@ -124,12 +156,24 @@ type agent_messages @table(name: "agent_messages") {
     references_query: "messages"
     references_description: "Messages in this session"
   )
+  """Conversation this message belongs to"""
+  conversation_id: String @field_references(
+    name: "messages_conv_ref"
+    references_name: "conversations"
+    field: "id"
+    query: "conversation"
+    description: "Conversation this message belongs to"
+    references_query: "messages"
+    references_description: "Messages in this conversation"
+  )
   """Sender role: user, assistant, system, or tool"""
   role: String!
   """Message text content"""
   content: String!
   """Tool calls made by assistant (JSON array)"""
   tool_calls: JSON
+  """Tool call ID for tool result messages"""
+  tool_call_id: String
   """LLM tokens consumed for this message"""
   tokens_used: Int
   """LLM model used to generate this message"""

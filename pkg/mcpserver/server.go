@@ -70,6 +70,7 @@ func (s *Server) Handler() http.Handler {
 		s.registerMemoryTools(mcpSrv, userID)
 		s.registerRegistryTools(mcpSrv, userID)
 		s.registerLLMTools(mcpSrv, userID)
+		s.registerConversationTools(mcpSrv, userID)
 
 		// Hugr tools added on top by query-engine mcp package
 		hugrMCP := qemcp.New(s.hugrClient, mcpSrv, s.debug)
