@@ -55,7 +55,12 @@ async function convAPI(action: string, body?: any): Promise<any> {
   }
   const text = await resp.text();
   if (!text) return null;
-  return JSON.parse(text);
+  try {
+    return JSON.parse(text);
+  } catch {
+    console.warn('Conversation API: non-JSON response:', text);
+    return null;
+  }
 }
 
 export async function createConversation(

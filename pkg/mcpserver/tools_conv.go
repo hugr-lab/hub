@@ -146,7 +146,11 @@ func (s *Server) handleConversationList(userID string) server.ToolHandlerFunc {
 
 		var convs []any
 		if err := res.ScanData("hub.db.conversations", &convs); err != nil {
-			return toolError(fmt.Sprintf("scan conversations: %v", err)), nil
+			// Empty result is not an error — return empty array
+			return toolResult("[]"), nil
+		}
+		if convs == nil {
+			convs = []any{}
 		}
 
 		data, _ := json.MarshalIndent(convs, "", "  ")
@@ -253,7 +257,10 @@ func (s *Server) handleConversationMessages(userID string) server.ToolHandlerFun
 
 		var msgs []any
 		if err := res.ScanData("hub.db.agent_messages", &msgs); err != nil {
-			return toolError(fmt.Sprintf("scan messages: %v", err)), nil
+			return toolResult("[]"), nil
+		}
+		if msgs == nil {
+			msgs = []any{}
 		}
 
 		data, _ := json.MarshalIndent(msgs, "", "  ")
