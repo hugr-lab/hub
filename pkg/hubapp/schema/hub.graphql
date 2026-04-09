@@ -36,7 +36,9 @@ type conversations @table(name: "conversations", soft_delete: true, soft_delete_
   folder: String
   """Chat mode: llm, tools, or agent"""
   mode: String!
-  """Agent instance (for mode=agent)"""
+  """Agent type (for mode=agent) — stable across instance restarts"""
+  agent_type_id: String
+  """Agent instance (cached, may change on restart)"""
   agent_instance_id: String
   """LLM model override (for mode=llm)"""
   model: String

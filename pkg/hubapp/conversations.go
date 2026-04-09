@@ -48,6 +48,7 @@ func (a *HubApp) handleConversationCreate(w http.ResponseWriter, r *http.Request
 		Title           string `json:"title"`
 		Mode            string `json:"mode"`
 		Model           string `json:"model"`
+		AgentTypeID     string `json:"agent_type_id"`
 		AgentInstanceID string `json:"agent_instance_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -74,6 +75,27 @@ func (a *HubApp) handleConversationCreate(w http.ResponseWriter, r *http.Request
 		varDefs += `, $model: String`
 		dataFields += `, model: $model`
 		vars["model"] = req.Model
+	}
+	// Auto-resolve agent_type_id from instance
+	if req.AgentInstanceID != "" && req.AgentTypeID == "" {
+		instRes, err := a.client.Query(r.Context(),
+			`query($id: String!) { hub { db { agent_instances(filter: { id: { eq: $id } } limit: 1) { agent_type_id } } } }`,
+			map[string]any{"id": req.AgentInstanceID},
+		)
+		if err == nil {
+			defer instRes.Close()
+			if instRes.Err() == nil {
+				var insts []struct{ AgentTypeID string `json:"agent_type_id"` }
+				if instRes.ScanData("hub.db.agent_instances", &insts) == nil && len(insts) > 0 {
+					req.AgentTypeID = insts[0].AgentTypeID
+				}
+			}
+		}
+	}
+	if req.AgentTypeID != "" {
+		varDefs += `, $atid: String`
+		dataFields += `, agent_type_id: $atid`
+		vars["atid"] = req.AgentTypeID
 	}
 	if req.AgentInstanceID != "" {
 		varDefs += `, $aid: String`

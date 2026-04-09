@@ -258,7 +258,7 @@ func (a *HubApp) lookupConversation(ctx context.Context, conversationID string) 
 		`query($id: String!) { hub { db { conversations(
 			filter: { id: { eq: $id } }
 			limit: 1
-		) { id user_id mode agent_instance_id model } } } }`,
+		) { id user_id mode agent_type_id agent_instance_id model } } } }`,
 		map[string]any{"id": conversationID},
 	)
 	if err != nil {
@@ -272,6 +272,7 @@ func (a *HubApp) lookupConversation(ctx context.Context, conversationID string) 
 		ID              string `json:"id"`
 		UserID          string `json:"user_id"`
 		Mode            string `json:"mode"`
+		AgentTypeID     string `json:"agent_type_id"`
 		AgentInstanceID string `json:"agent_instance_id"`
 		Model           string `json:"model"`
 	}
@@ -284,40 +285,35 @@ func (a *HubApp) lookupConversation(ctx context.Context, conversationID string) 
 		AgentInstanceID: c.AgentInstanceID, Model: c.Model,
 	}
 
-	// If agent mode but instance unlinked (deleted), try to find a running instance for user
-	if c.Mode == "agent" && c.AgentInstanceID == "" {
+	// Agent mode: resolve running instance by agent_type_id (stable) instead of instance_id (ephemeral)
+	if c.Mode == "agent" && c.AgentTypeID != "" {
 		findRes, err := a.client.Query(ctx,
-			`query($uid: String!) { hub { db { agent_instances(
-				filter: { user_id: { eq: $uid }, status: { eq: "running" } }
+			`query($tid: String!, $status: String!) { hub { db { agent_instances(
+				filter: { agent_type_id: { eq: $tid }, status: { eq: $status } }
 				limit: 1
-			) { id } } } }`,
-			map[string]any{"uid": c.UserID},
+			) { id display_name } } } }`,
+			map[string]any{"tid": c.AgentTypeID, "status": "running"},
 		)
 		if err == nil {
 			defer findRes.Close()
 			if findRes.Err() == nil {
-				var found []struct{ ID string `json:"id"` }
+				var found []struct {
+					ID          string `json:"id"`
+					DisplayName string `json:"display_name"`
+				}
 				if findRes.ScanData("hub.db.agent_instances", &found) == nil && len(found) > 0 {
 					info.AgentInstanceID = found[0].ID
-					// Re-link conversation to this instance
-					linkRes, _ := a.client.Query(ctx,
-						`mutation($cid: String!, $aid: String!) { hub { db { update_conversations(
-							filter: { id: { eq: $cid } }
-							data: { agent_instance_id: $aid }
-						) { affected_rows } } } }`,
-						map[string]any{"cid": conversationID, "aid": found[0].ID},
-					)
-					if linkRes != nil {
-						linkRes.Close()
+					info.AgentName = found[0].DisplayName
+					if info.AgentName == "" {
+						info.AgentName = c.AgentTypeID
 					}
-					a.logger.Info("re-linked conversation to running agent", "conversation", conversationID, "instance", found[0].ID)
 				}
 			}
 		}
 	}
 
-	// Fetch agent display name if agent mode
-	if info.AgentInstanceID != "" {
+	// Fetch agent display name if not yet resolved
+	if info.AgentName == "" && info.AgentInstanceID != "" {
 		agentRes, err := a.client.Query(ctx,
 			`query($id: String!) { hub { db { agent_instances(
 				filter: { id: { eq: $id } } limit: 1
