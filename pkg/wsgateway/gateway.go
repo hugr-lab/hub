@@ -267,14 +267,18 @@ func (g *Gateway) handleMessage(ctx context.Context, conn *websocket.Conn, userI
 		}
 
 	case "agent":
-		if g.agent != nil && conv.AgentInstanceID != "" {
-			response, err = g.agent(ctx, conv.AgentInstanceID, conversationID, userID, msg.Messages)
+		agentID := conv.AgentInstanceID
+		if g.agent != nil && agentID != "" {
+			response, err = g.agent(ctx, agentID, conversationID, userID, msg.Messages)
 		}
-		if g.agent == nil || conv.AgentInstanceID == "" || err != nil {
-			if err != nil {
-				g.logger.Warn("agent unavailable, falling back to tools", "instance", conv.AgentInstanceID, "error", err)
-				stream(ChatMessage{Type: "status", Content: "agent offline, using tools mode"})
+		if g.agent == nil || agentID == "" || err != nil {
+			if agentID == "" {
+				g.logger.Info("agent mode but no instance linked, falling back to tools", "conversation", conversationID)
 			}
+			if err != nil {
+				g.logger.Warn("agent unavailable, falling back to tools", "instance", agentID, "error", err)
+			}
+			stream(ChatMessage{Type: "status", Content: "agent offline, using tools mode"})
 			if g.tools != nil {
 				response, err = g.tools(ctx, userID, msg.Messages, stream)
 			} else {
