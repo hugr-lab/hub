@@ -20,6 +20,7 @@ type ConversationInfo struct {
 	UserID          string
 	Mode            string // "llm", "tools", "agent"
 	AgentInstanceID string
+	AgentName       string // display name of the agent instance
 	Model           string
 }
 
@@ -155,11 +156,12 @@ func (g *Gateway) Handler() http.Handler {
 
 // ChatMessage is the wire format for WebSocket messages.
 type ChatMessage struct {
-	Type       string `json:"type"`                  // "message", "response", "error", "status", "tool_call", "tool_result"
-	Content    string `json:"content,omitempty"`      // text content
-	Messages   []LLMMessage `json:"messages,omitempty"` // full history (client → server)
-	ToolCalls  any    `json:"tool_calls,omitempty"`  // tool calls from LLM
-	ToolCallID string `json:"tool_call_id,omitempty"` // for tool_result
+	Type       string       `json:"type"`                   // "message", "response", "error", "status", "tool_call", "tool_result", "info"
+	Content    string       `json:"content,omitempty"`      // text content
+	Messages   []LLMMessage `json:"messages,omitempty"`     // full history (client → server)
+	ToolCalls  any          `json:"tool_calls,omitempty"`   // tool calls from LLM
+	ToolCallID string       `json:"tool_call_id,omitempty"` // for tool_result
+	AgentName  string       `json:"agent_name,omitempty"`   // agent display name (for personalization)
 }
 
 func (g *Gateway) readLoop(ctx context.Context, conn *websocket.Conn, userID, conversationID string) {
@@ -297,7 +299,8 @@ func (g *Gateway) handleMessage(ctx context.Context, conn *websocket.Conn, userI
 		go g.persist(context.WithoutCancel(ctx), conversationID, "assistant", response)
 	}
 
-	g.writeJSON(ctx, conn, ChatMessage{Type: "response", Content: response})
+	respMsg := ChatMessage{Type: "response", Content: response, AgentName: conv.AgentName}
+	g.writeJSON(ctx, conn, respMsg)
 
 	// Auto-generate title after first user message
 	if g.genTitle != nil && g.setTitle != nil && msg.Content != "" {

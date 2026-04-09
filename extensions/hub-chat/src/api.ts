@@ -35,6 +35,7 @@ export interface WsMessage {
   content: string;
   tool_calls?: any[];
   tool_call_id?: string;
+  agent_name?: string;
 }
 
 // ── Conversation API ───────────────────────────────────
@@ -165,6 +166,7 @@ export interface AgentInstance {
   id: string;
   user_id: string;
   agent_type_id: string;
+  display_name: string;
   status: string;
   connected: boolean;
   started_at: string;

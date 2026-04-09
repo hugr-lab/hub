@@ -187,7 +187,7 @@ export class ChatSidebarWidget extends Widget {
               const opt = document.createElement('option');
               opt.value = a.id;
               const status = a.connected ? 'connected' : 'disconnected';
-              opt.textContent = `${a.agent_type_id} (${status})`;
+              opt.textContent = `${a.display_name || a.agent_type_id} (${status})`;
               agentSelect.appendChild(opt);
             }
           }

@@ -12,7 +12,7 @@ import {
   deleteCatalogSource, linkCatalog, unlinkCatalog,
   fetchModelSources,
   fetchAgentInstances, fetchAgentSessions, fetchAgentTypes,
-  startAgent, stopAgent, stopAgentDB, deleteAgent, clearAgentMemory,
+  startAgent, stopAgent, stopAgentDB, renameAgent, deleteAgent, clearAgentMemory,
   fetchLLMBudgets, fetchLLMUsage, insertLLMBudget, deleteLLMBudget,
 } from '../api.js';
 import type { DataSource, CatalogSource, CatalogLink, ModelSource, AgentType } from '../api.js';
@@ -707,11 +707,12 @@ export class AdminPanelWidget extends Widget {
           inst.status === 'running' ? 'hub-admin-dot--warning' :
           inst.status === 'error' ? 'hub-admin-dot--error' : 'hub-admin-dot--inactive';
         const connLabel = inst.status === 'running' ? (isConnected ? 'connected' : 'disconnected') : inst.status;
+        const displayName = inst.display_name || `${inst.agent_type_id} (${inst.user_id})`;
         row.innerHTML = `
           <div class="hub-admin-list-item-main">
             <span class="hub-admin-dot ${dot}" title="${connLabel}"></span>
-            <span class="hub-admin-list-item-title">${esc(inst.user_id)}</span>
-            <span class="hub-admin-list-item-meta">${esc(inst.agent_type_id)} — ${connLabel} — ${fmtDate(inst.started_at)}</span>
+            <span class="hub-admin-list-item-title">${esc(displayName)}</span>
+            <span class="hub-admin-list-item-meta">${connLabel} — ${fmtDate(inst.started_at)}</span>
           </div>
         `;
         const actions = document.createElement('div');
@@ -728,6 +729,16 @@ export class AdminPanelWidget extends Widget {
           });
           actions.appendChild(stopBtn);
         }
+        const renBtn = iconBtn(ICON.edit, 'Rename');
+        renBtn.addEventListener('click', async () => {
+          const newName = prompt('Agent display name:', inst.display_name || '');
+          if (newName !== null && newName !== inst.display_name) {
+            await renameAgent(inst.id, newName);
+            this.loadSection('agents');
+          }
+        });
+        actions.appendChild(renBtn);
+
         const clearBtn = iconBtn(ICON.eraser, 'Clear Memory');
         clearBtn.addEventListener('click', async () => {
           if (!confirm(`Clear all memory for "${inst.user_id}"?`)) return;

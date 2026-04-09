@@ -251,7 +251,9 @@ export class ChatDocumentWidget extends Widget {
         this.stopBtn.style.display = 'none';
         // Add to history
         this.chatHistory.push({ role: 'assistant', content: msg.content });
-        await this.appendMessage('assistant', msg.content);
+        // Show agent name if available
+        const label = msg.agent_name || 'assistant';
+        await this.appendMessage(label, msg.content);
         this.scrollToBottom();
         break;
 

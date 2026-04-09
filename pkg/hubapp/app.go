@@ -120,6 +120,7 @@ func (a *HubApp) Init(ctx context.Context) error {
 
 	mux.Handle("/agent/ws/", agentMgr.Handler())
 	mux.HandleFunc("/api/agent/instances", a.handleAgentInstances(agentMgr))
+	mux.HandleFunc("/api/agent/rename", a.handleAgentRename)
 	go agentMgr.StartHeartbeat(ctx)
 
 	// Agent management (Docker backend for now)
@@ -278,10 +279,37 @@ func (a *HubApp) lookupConversation(ctx context.Context, conversationID string) 
 		return nil, fmt.Errorf("conversation %s not found", conversationID)
 	}
 	c := convs[0]
-	return &wsgateway.ConversationInfo{
+	info := &wsgateway.ConversationInfo{
 		ID: c.ID, UserID: c.UserID, Mode: c.Mode,
 		AgentInstanceID: c.AgentInstanceID, Model: c.Model,
-	}, nil
+	}
+
+	// Fetch agent display name if agent mode
+	if c.AgentInstanceID != "" {
+		agentRes, err := a.client.Query(ctx,
+			`query($id: String!) { hub { db { agent_instances(
+				filter: { id: { eq: $id } } limit: 1
+			) { display_name agent_type_id } } } }`,
+			map[string]any{"id": c.AgentInstanceID},
+		)
+		if err == nil {
+			defer agentRes.Close()
+			if agentRes.Err() == nil {
+				var agents []struct {
+					DisplayName string `json:"display_name"`
+					AgentTypeID string `json:"agent_type_id"`
+				}
+				if err := agentRes.ScanData("hub.db.agent_instances", &agents); err == nil && len(agents) > 0 {
+					info.AgentName = agents[0].DisplayName
+					if info.AgentName == "" {
+						info.AgentName = agents[0].AgentTypeID
+					}
+				}
+			}
+		}
+	}
+
+	return info, nil
 }
 
 func toAnySlice(v any) []any {

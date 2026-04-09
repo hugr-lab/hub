@@ -86,6 +86,8 @@ type agent_instances @table(name: "agent_instances") {
     references_query: "agent_instances"
     references_description: "Agent instances owned by this user"
   )
+  """Human-readable name for this instance"""
+  display_name: String
   """Agent type configuration"""
   agent_type_id: String! @field_references(
     name: "instances_type_ref"

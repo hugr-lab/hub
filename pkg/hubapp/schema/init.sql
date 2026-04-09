@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS agent_instances (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id),
   agent_type_id TEXT NOT NULL REFERENCES agent_types(id),
+  display_name TEXT,
   container_id TEXT,
   auth_token TEXT,
   status TEXT DEFAULT 'creating',

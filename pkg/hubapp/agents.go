@@ -19,13 +19,20 @@ func (a *HubApp) handleAgentInstances(connMgr *agentconn.Manager) http.HandlerFu
 			return
 		}
 
-		// Query running instances from DB
-		res, err := a.client.Query(r.Context(),
-			`query($uid: String!) { hub { db { agent_instances(
+		// Query running instances — admin sees all, regular users see only their own
+		var gql string
+		vars := map[string]any{}
+		if user.Role == "admin" || user.AuthType == "management" {
+			gql = `{ hub { db { agent_instances(
+				filter: { status: { eq: "running" } }
+			) { id user_id agent_type_id display_name status started_at } } } }`
+		} else {
+			gql = `query($uid: String!) { hub { db { agent_instances(
 				filter: { user_id: { eq: $uid }, status: { eq: "running" } }
-			) { id user_id agent_type_id status started_at } } } }`,
-			map[string]any{"uid": user.ID},
-		)
+			) { id user_id agent_type_id display_name status started_at } } } }`
+			vars["uid"] = user.ID
+		}
+		res, err := a.client.Query(r.Context(), gql, vars)
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode([]any{})
@@ -42,6 +49,7 @@ func (a *HubApp) handleAgentInstances(connMgr *agentconn.Manager) http.HandlerFu
 			ID          string `json:"id"`
 			UserID      string `json:"user_id"`
 			AgentTypeID string `json:"agent_type_id"`
+			DisplayName string `json:"display_name"`
 			Status      string `json:"status"`
 			StartedAt   string `json:"started_at"`
 		}
@@ -56,6 +64,7 @@ func (a *HubApp) handleAgentInstances(connMgr *agentconn.Manager) http.HandlerFu
 			ID          string `json:"id"`
 			UserID      string `json:"user_id"`
 			AgentTypeID string `json:"agent_type_id"`
+			DisplayName string `json:"display_name"`
 			Status      string `json:"status"`
 			Connected   bool   `json:"connected"`
 			StartedAt   string `json:"started_at"`
@@ -63,10 +72,15 @@ func (a *HubApp) handleAgentInstances(connMgr *agentconn.Manager) http.HandlerFu
 
 		result := make([]instanceWithConn, len(instances))
 		for i, inst := range instances {
+			name := inst.DisplayName
+			if name == "" {
+				name = inst.AgentTypeID + " (" + inst.UserID + ")"
+			}
 			result[i] = instanceWithConn{
 				ID:          inst.ID,
 				UserID:      inst.UserID,
 				AgentTypeID: inst.AgentTypeID,
+				DisplayName: name,
 				Status:      inst.Status,
 				Connected:   connMgr.IsConnected(inst.ID),
 				StartedAt:   inst.StartedAt,
@@ -129,6 +143,41 @@ func (a *HubApp) handleAgentStop(mgr *agentmgr.Manager) http.HandlerFunc {
 
 		json.NewEncoder(w).Encode(map[string]string{"status": "stopped"})
 	}
+}
+
+func (a *HubApp) handleAgentRename(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		ID          string `json:"id"`
+		DisplayName string `json:"display_name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" || req.DisplayName == "" {
+		http.Error(w, "id and display_name required", http.StatusBadRequest)
+		return
+	}
+
+	res, err := a.client.Query(r.Context(),
+		`mutation($id: String!, $name: String!) { hub { db { update_agent_instances(
+			filter: { id: { eq: $id } }
+			data: { display_name: $name }
+		) { affected_rows } } } }`,
+		map[string]any{"id": req.ID, "name": req.DisplayName},
+	)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("rename: %v", err), http.StatusInternalServerError)
+		return
+	}
+	defer res.Close()
+	if res.Err() != nil {
+		http.Error(w, fmt.Sprintf("rename: %v", res.Err()), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"renamed": req.ID})
 }
 
 func (a *HubApp) handleAgentDelete(mgr *agentmgr.Manager) http.HandlerFunc {

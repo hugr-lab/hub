@@ -44,6 +44,7 @@ export interface AgentInstance {
   id: string;
   user_id: string;
   agent_type_id: string;
+  display_name: string;
   status: string;
   container_id: string;
   started_at: string;
@@ -278,7 +279,7 @@ export async function fetchModelSources(): Promise<ModelSource[]> {
 export async function fetchAgentInstances(): Promise<AgentInstance[]> {
   const data = await hugrQuery(`{
     hub { db { agent_instances(order_by: [{field: "started_at", direction: DESC}], limit: 50) {
-      id user_id agent_type_id status container_id started_at last_activity_at
+      id user_id agent_type_id display_name status container_id started_at last_activity_at
     } } }
   }`);
   return data?.hub?.db?.agent_instances ?? [];
@@ -346,6 +347,10 @@ export async function startAgent(userId?: string, agentTypeId?: string, role?: s
 
 export async function stopAgent(userId: string): Promise<{ status: string }> {
   return hubServiceAPI('api/agent/stop', 'POST', { user_id: userId });
+}
+
+export async function renameAgent(instanceId: string, displayName: string): Promise<{ renamed: string }> {
+  return hubServiceAPI('api/agent/rename', 'POST', { id: instanceId, display_name: displayName });
 }
 
 export async function deleteAgent(instanceId: string): Promise<{ deleted: string }> {
