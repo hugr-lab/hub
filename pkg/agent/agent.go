@@ -8,11 +8,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
+	"time"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
+	"nhooyr.io/websocket"
 )
 
 // Agent is the main runtime. Connects to Hub Service MCP and local MCP servers,
@@ -150,6 +153,110 @@ func (a *Agent) Run(ctx context.Context) error {
 				continue
 			}
 			encoder.Encode(map[string]string{"type": "response", "content": response})
+		}
+	}
+}
+
+// agentMessage is the wire format for Hub Service ↔ Agent WebSocket communication.
+type agentMessage struct {
+	RequestID      string `json:"request_id"`
+	ConversationID string `json:"conversation_id,omitempty"`
+	UserID         string `json:"user_id,omitempty"`
+	Type           string `json:"type"` // request, response, status, error, ping, pong
+	Content        string `json:"content,omitempty"`
+}
+
+// RunWebSocket connects to Hub Service via WebSocket and processes messages.
+// Reconnects with exponential backoff on disconnect.
+func (a *Agent) RunWebSocket(ctx context.Context, wsURL, instanceID string) error {
+	if err := a.Connect(ctx); err != nil {
+		return err
+	}
+	a.skills.Load()
+
+	endpoint := wsURL + "/agent/ws/" + instanceID
+	a.logger.Info("agent WebSocket mode", "endpoint", endpoint)
+
+	attempt := 0
+	for {
+		if ctx.Err() != nil {
+			return nil
+		}
+
+		err := a.wsSession(ctx, endpoint)
+		if ctx.Err() != nil {
+			return nil
+		}
+
+		// Exponential backoff: 1s, 2s, 4s, 8s, ... max 60s
+		delay := time.Duration(math.Min(float64(time.Second)*math.Pow(2, float64(attempt)), float64(60*time.Second)))
+		attempt++
+		a.logger.Warn("WebSocket disconnected, reconnecting", "attempt", attempt, "delay", delay, "error", err)
+
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(delay):
+		}
+	}
+}
+
+// wsSession runs a single WebSocket connection session.
+func (a *Agent) wsSession(ctx context.Context, endpoint string) error {
+	headers := make(map[string][]string)
+	if a.authToken != "" {
+		headers["Authorization"] = []string{"Bearer " + a.authToken}
+	}
+
+	conn, _, err := websocket.Dial(ctx, endpoint, &websocket.DialOptions{
+		HTTPHeader: headers,
+	})
+	if err != nil {
+		return fmt.Errorf("ws dial: %w", err)
+	}
+	defer conn.CloseNow()
+
+	a.logger.Info("WebSocket connected", "endpoint", endpoint)
+
+	for {
+		_, data, err := conn.Read(ctx)
+		if err != nil {
+			return fmt.Errorf("ws read: %w", err)
+		}
+
+		var msg agentMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			a.logger.Warn("invalid message from hub", "error", err)
+			continue
+		}
+
+		switch msg.Type {
+		case "ping":
+			pong := agentMessage{Type: "pong"}
+			d, _ := json.Marshal(pong)
+			conn.Write(ctx, websocket.MessageText, d)
+
+		case "request":
+			// Process in goroutine so we can keep reading (e.g. for cancellation)
+			go func(req agentMessage) {
+				// Send status
+				status := agentMessage{RequestID: req.RequestID, Type: "status", Content: "processing"}
+				d, _ := json.Marshal(status)
+				conn.Write(ctx, websocket.MessageText, d)
+
+				response, err := a.HandleMessage(ctx, req.Content)
+				var resp agentMessage
+				if err != nil {
+					resp = agentMessage{RequestID: req.RequestID, Type: "error", Content: err.Error()}
+				} else {
+					resp = agentMessage{RequestID: req.RequestID, Type: "response", Content: response}
+				}
+				d, _ = json.Marshal(resp)
+				conn.Write(ctx, websocket.MessageText, d)
+			}(msg)
+
+		default:
+			a.logger.Debug("ignoring message type", "type", msg.Type)
 		}
 	}
 }

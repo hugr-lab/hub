@@ -133,6 +133,37 @@ class ConversationAPIHandler(JupyterHandler):
         await self.post(action)
 
 
+class AgentInstancesAPIHandler(JupyterHandler):
+    """Proxy GET /hub-chat/api/agent/instances → Hub Service /api/agent/instances."""
+
+    @tornado.web.authenticated
+    async def get(self):
+        hub_service_url = os.environ.get("HUB_SERVICE_URL", "")
+        if not hub_service_url:
+            self.set_header("Content-Type", "application/json")
+            self.finish(json.dumps([]))
+            return
+
+        token = _get_access_token()
+        headers = {}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+
+        client = tornado.httpclient.AsyncHTTPClient()
+        try:
+            response = await client.fetch(
+                f"{hub_service_url}/api/agent/instances",
+                headers=headers,
+                request_timeout=10,
+            )
+            self.set_header("Content-Type", "application/json")
+            self.finish(response.body)
+        except Exception as e:
+            log.error("Agent instances API failed: %s", e)
+            self.set_header("Content-Type", "application/json")
+            self.finish(json.dumps([]))
+
+
 class ModelsAPIHandler(JupyterHandler):
     """Proxy GET /hub-chat/api/models → Hub Service /api/models."""
 
@@ -185,6 +216,7 @@ def setup_handlers(web_app):
         (url_path_join(base_url, "hub-chat", "ws", "(.*)"), ChatWebSocketHandler),
         (url_path_join(base_url, "hub-chat", "api", "config"), ChatConfigHandler),
         (url_path_join(base_url, "hub-chat", "api", "models"), ModelsAPIHandler),
+        (url_path_join(base_url, "hub-chat", "api", "agent", "instances"), AgentInstancesAPIHandler),
         (url_path_join(base_url, "hub-chat", "api", "conversations", "(.*)"), ConversationAPIHandler),
     ])
 

@@ -257,6 +257,7 @@
 
 .hub-admin-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 .hub-admin-dot--active { background: var(--jp-success-color1); }
+.hub-admin-dot--warning { background: var(--jp-warn-color1); }
 .hub-admin-dot--inactive { background: var(--jp-ui-font-color3); }
 .hub-admin-dot--error { background: var(--jp-error-color1); }
 

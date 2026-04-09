@@ -7,7 +7,7 @@ import { Widget } from '@lumino/widgets';
 import { MainAreaWidget } from '@jupyterlab/apputils';
 import {
   listConversations, createConversation, renameConversation, deleteConversation,
-  listModels, Conversation, ModelInfo,
+  listModels, listAgentInstances, Conversation,
 } from '../api.js';
 
 type OpenCallback = (conversationId: string, title: string) => void;
@@ -132,6 +132,9 @@ export class ChatSidebarWidget extends Widget {
       <div id="hc-model-row" style="display:none">
         <select id="hc-model"><option value="">Loading models...</option></select>
       </div>
+      <div id="hc-agent-row" style="display:none">
+        <select id="hc-agent"><option value="">Loading agents...</option></select>
+      </div>
       <input type="text" id="hc-title" placeholder="Title (optional)" />
       <div class="hub-chat-sidebar-dialog-actions">
         <button id="hc-create">Create</button>
@@ -144,9 +147,15 @@ export class ChatSidebarWidget extends Widget {
     const modeSelect = dialog.querySelector('#hc-mode') as HTMLSelectElement;
     const modelRow = dialog.querySelector('#hc-model-row') as HTMLDivElement;
     const modelSelect = dialog.querySelector('#hc-model') as HTMLSelectElement;
+    const agentRow = dialog.querySelector('#hc-agent-row') as HTMLDivElement;
+    const agentSelect = dialog.querySelector('#hc-agent') as HTMLSelectElement;
     let modelsLoaded = false;
+    let agentsLoaded = false;
 
-    const updateModelVisibility = async () => {
+    const updateModeUI = async () => {
+      modelRow.style.display = 'none';
+      agentRow.style.display = 'none';
+
       if (modeSelect.value === 'llm') {
         modelRow.style.display = '';
         if (!modelsLoaded) {
@@ -164,21 +173,38 @@ export class ChatSidebarWidget extends Widget {
             }
           }
         }
-      } else {
-        modelRow.style.display = 'none';
+      } else if (modeSelect.value === 'agent') {
+        agentRow.style.display = '';
+        if (!agentsLoaded) {
+          agentsLoaded = true;
+          const agents = await listAgentInstances();
+          agentSelect.innerHTML = '';
+          if (agents.length === 0) {
+            agentSelect.innerHTML = '<option value="">No running agents</option>';
+          } else {
+            for (const a of agents) {
+              const opt = document.createElement('option');
+              opt.value = a.id;
+              const status = a.connected ? 'connected' : 'disconnected';
+              opt.textContent = `${a.agent_type_id} (${status})`;
+              agentSelect.appendChild(opt);
+            }
+          }
+        }
       }
     };
-    modeSelect.addEventListener('change', updateModelVisibility);
+    modeSelect.addEventListener('change', updateModeUI);
 
     dialog.querySelector('#hc-cancel')!.addEventListener('click', () => dialog.remove());
     dialog.querySelector('#hc-create')!.addEventListener('click', async () => {
       const mode = modeSelect.value as 'llm' | 'tools' | 'agent';
       const title = (dialog.querySelector('#hc-title') as HTMLInputElement).value.trim();
       const model = mode === 'llm' ? modelSelect.value : undefined;
+      const agentInstanceId = mode === 'agent' ? agentSelect.value : undefined;
       dialog.remove();
 
       try {
-        const result = await createConversation(mode, title || undefined, undefined, undefined, model);
+        const result = await createConversation(mode, title || undefined, undefined, agentInstanceId, model);
         await this.refresh();
         const convId = result?.id;
         const convTitle = result?.title || title || 'New Chat';

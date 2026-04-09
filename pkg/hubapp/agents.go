@@ -4,8 +4,78 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/hugr-lab/hub/pkg/agentconn"
 	"github.com/hugr-lab/hub/pkg/agentmgr"
+	"github.com/hugr-lab/hub/pkg/auth"
 )
+
+// handleAgentInstances returns running agent instances with connected status.
+func (a *HubApp) handleAgentInstances(connMgr *agentconn.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		user, ok := auth.UserFromContext(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		// Query running instances from DB
+		res, err := a.client.Query(r.Context(),
+			`query($uid: String!) { hub { db { agent_instances(
+				filter: { user_id: { eq: $uid }, status: { eq: "running" } }
+			) { id user_id agent_type_id status started_at } } } }`,
+			map[string]any{"uid": user.ID},
+		)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode([]any{})
+			return
+		}
+		defer res.Close()
+		if res.Err() != nil {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode([]any{})
+			return
+		}
+
+		var instances []struct {
+			ID          string `json:"id"`
+			UserID      string `json:"user_id"`
+			AgentTypeID string `json:"agent_type_id"`
+			Status      string `json:"status"`
+			StartedAt   string `json:"started_at"`
+		}
+		if err := res.ScanData("hub.db.agent_instances", &instances); err != nil || instances == nil {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode([]any{})
+			return
+		}
+
+		// Enrich with connected status
+		type instanceWithConn struct {
+			ID          string `json:"id"`
+			UserID      string `json:"user_id"`
+			AgentTypeID string `json:"agent_type_id"`
+			Status      string `json:"status"`
+			Connected   bool   `json:"connected"`
+			StartedAt   string `json:"started_at"`
+		}
+
+		result := make([]instanceWithConn, len(instances))
+		for i, inst := range instances {
+			result[i] = instanceWithConn{
+				ID:          inst.ID,
+				UserID:      inst.UserID,
+				AgentTypeID: inst.AgentTypeID,
+				Status:      inst.Status,
+				Connected:   connMgr.IsConnected(inst.ID),
+				StartedAt:   inst.StartedAt,
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(result)
+	}
+}
 
 func (a *HubApp) handleAgentStart(mgr *agentmgr.Manager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

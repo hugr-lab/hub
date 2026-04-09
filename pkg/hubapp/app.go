@@ -118,6 +118,7 @@ func (a *HubApp) Init(ctx context.Context) error {
 	mux.Handle("/v1/", router.OpenAICompatHandler()) // OpenAI-compatible for third-party agents
 
 	mux.Handle("/agent/ws/", agentMgr.Handler())
+	mux.HandleFunc("/api/agent/instances", a.handleAgentInstances(agentMgr))
 	go agentMgr.StartHeartbeat(ctx)
 
 	// Agent management (Docker backend for now)
@@ -172,6 +173,9 @@ func (a *HubApp) Init(ctx context.Context) error {
 		},
 		Persist: func(ctx context.Context, conversationID, role, content string) {
 			a.persistMessage(ctx, conversationID, role, content)
+		},
+		PersistFull: func(ctx context.Context, conversationID, role, content string, toolCalls any, toolCallID string) {
+			a.persistMessageFull(ctx, conversationID, role, content, toolCalls, toolCallID)
 		},
 		GenTitle: func(ctx context.Context, userMessage string) string {
 			resp, err := router.Complete(ctx, llmrouter.CompletionRequest{
@@ -278,22 +282,39 @@ func toAnySlice(v any) []any {
 }
 
 func (a *HubApp) persistMessage(ctx context.Context, conversationID, role, content string) {
+	a.persistMessageFull(ctx, conversationID, role, content, nil, "")
+}
+
+func (a *HubApp) persistMessageFull(ctx context.Context, conversationID, role, content string, toolCalls any, toolCallID string) {
 	msgID := fmt.Sprintf("msg-%d", time.Now().UnixNano())
-	res, err := a.client.Query(ctx,
-		`mutation($id: String!, $cid: String!, $role: String!, $content: String!) {
-			hub { db { insert_agent_messages(data: {
-				id: $id, conversation_id: $cid, role: $role, content: $content
-			}) { id } } }
-		}`,
-		map[string]any{"id": msgID, "cid": conversationID, "role": role, "content": content},
-	)
+	vars := map[string]any{"id": msgID, "cid": conversationID, "role": role, "content": content}
+	dataFields := `id: $id, conversation_id: $cid, role: $role, content: $content`
+	varDefs := `$id: String!, $cid: String!, $role: String!, $content: String!`
+
+	if toolCallID != "" {
+		varDefs += `, $tcid: String`
+		dataFields += `, tool_call_id: $tcid`
+		vars["tcid"] = toolCallID
+	}
+	if toolCalls != nil {
+		tcJSON, _ := json.Marshal(toolCalls)
+		varDefs += `, $tc: JSON`
+		dataFields += `, tool_calls: $tc`
+		vars["tc"] = json.RawMessage(tcJSON)
+	}
+
+	gql := fmt.Sprintf(`mutation(%s) {
+		hub { db { insert_agent_messages(data: { %s }) { id } } }
+	}`, varDefs, dataFields)
+
+	res, err := a.client.Query(ctx, gql, vars)
 	if err != nil {
-		a.logger.Warn("failed to persist message", "conversation", conversationID, "error", err)
+		a.logger.Warn("failed to persist message", "conversation", conversationID, "role", role, "error", err)
 		return
 	}
 	defer res.Close()
 	if res.Err() != nil {
-		a.logger.Warn("persist message query error", "conversation", conversationID, "error", res.Err())
+		a.logger.Warn("persist message query error", "conversation", conversationID, "role", role, "error", res.Err())
 	}
 }
 

@@ -49,6 +49,9 @@ type AgentHandler func(ctx context.Context, instanceID, conversationID, userID, 
 // MessagePersister saves messages to DB.
 type MessagePersister func(ctx context.Context, conversationID, role, content string)
 
+// FullMessagePersister saves messages with tool_calls and tool_call_id to DB.
+type FullMessagePersister func(ctx context.Context, conversationID, role, content string, toolCalls any, toolCallID string)
+
 // TitleGenerator generates a short title from the first user message.
 type TitleGenerator func(ctx context.Context, userMessage string) string
 
@@ -61,10 +64,11 @@ type Gateway struct {
 	llm      LLMHandler
 	tools    ToolsHandler
 	agent    AgentHandler
-	persist  MessagePersister
-	genTitle TitleGenerator
-	setTitle TitleUpdater
-	logger   *slog.Logger
+	persist     MessagePersister
+	persistFull FullMessagePersister
+	genTitle    TitleGenerator
+	setTitle    TitleUpdater
+	logger      *slog.Logger
 
 	mu    sync.Mutex
 	conns map[string]*websocket.Conn // conversationID → active connection
@@ -76,10 +80,11 @@ type Config struct {
 	LLM      LLMHandler
 	Tools    ToolsHandler
 	Agent    AgentHandler
-	Persist  MessagePersister
-	GenTitle TitleGenerator
-	SetTitle TitleUpdater
-	Logger   *slog.Logger
+	Persist     MessagePersister
+	PersistFull FullMessagePersister
+	GenTitle    TitleGenerator
+	SetTitle    TitleUpdater
+	Logger      *slog.Logger
 }
 
 func New(cfg Config) *Gateway {
@@ -88,9 +93,10 @@ func New(cfg Config) *Gateway {
 		llm:      cfg.LLM,
 		tools:    cfg.Tools,
 		agent:    cfg.Agent,
-		persist:  cfg.Persist,
-		genTitle: cfg.GenTitle,
-		setTitle: cfg.SetTitle,
+		persist:     cfg.Persist,
+		persistFull: cfg.PersistFull,
+		genTitle:    cfg.GenTitle,
+		setTitle:    cfg.SetTitle,
 		logger:   cfg.Logger,
 		conns:    make(map[string]*websocket.Conn),
 	}
@@ -230,6 +236,15 @@ func (g *Gateway) handleMessage(ctx context.Context, conn *websocket.Conn, userI
 
 	stream := func(m ChatMessage) {
 		g.writeJSON(ctx, conn, m)
+		// Persist intermediate tool messages
+		if g.persistFull != nil {
+			switch m.Type {
+			case "tool_call":
+				go g.persistFull(context.WithoutCancel(ctx), conversationID, "assistant", m.Content, m.ToolCalls, "")
+			case "tool_result":
+				go g.persistFull(context.WithoutCancel(ctx), conversationID, "tool", m.Content, nil, m.ToolCallID)
+			}
+		}
 	}
 
 	var response string

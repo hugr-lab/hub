@@ -653,12 +653,35 @@ export class AdminPanelWidget extends Widget {
 
   // ── Agents ─────────────────────────────────────────────
 
+  /** Fetch connected agent instance IDs from hub-service via hub-chat proxy. */
+  private async fetchConnectedAgents(): Promise<Set<string>> {
+    try {
+      const baseUrl = (await import('@jupyterlab/coreutils')).PageConfig.getBaseUrl();
+      const settings = (await import('@jupyterlab/services')).ServerConnection.makeSettings();
+      const resp = await (await import('@jupyterlab/services')).ServerConnection.makeRequest(
+        baseUrl + 'hub-chat/api/agent/instances', {}, settings,
+      );
+      if (!resp.ok) return new Set();
+      const data = await resp.json();
+      const ids = new Set<string>();
+      if (Array.isArray(data)) {
+        for (const inst of data) {
+          if (inst.connected) ids.add(inst.id);
+        }
+      }
+      return ids;
+    } catch {
+      return new Set();
+    }
+  }
+
   private async renderAgents(el: HTMLElement): Promise<void> {
     el.innerHTML = '<div class="hub-admin-loading">Loading...</div>';
     try {
-      const [instances, agentTypes] = await Promise.all([
+      const [instances, agentTypes, connectedSet] = await Promise.all([
         fetchAgentInstances(),
         fetchAgentTypes(),
+        this.fetchConnectedAgents(),
       ]);
       el.innerHTML = '';
 
@@ -679,12 +702,16 @@ export class AdminPanelWidget extends Widget {
       for (const inst of instances) {
         const row = document.createElement('div');
         row.className = 'hub-admin-list-item';
-        const dot = inst.status === 'running' ? 'hub-admin-dot--active' : inst.status === 'error' ? 'hub-admin-dot--error' : 'hub-admin-dot--inactive';
+        const isConnected = connectedSet.has(inst.id);
+        const dot = isConnected ? 'hub-admin-dot--active' :
+          inst.status === 'running' ? 'hub-admin-dot--warning' :
+          inst.status === 'error' ? 'hub-admin-dot--error' : 'hub-admin-dot--inactive';
+        const connLabel = inst.status === 'running' ? (isConnected ? 'connected' : 'disconnected') : inst.status;
         row.innerHTML = `
           <div class="hub-admin-list-item-main">
-            <span class="hub-admin-dot ${dot}"></span>
+            <span class="hub-admin-dot ${dot}" title="${connLabel}"></span>
             <span class="hub-admin-list-item-title">${esc(inst.user_id)}</span>
-            <span class="hub-admin-list-item-meta">${esc(inst.agent_type_id)} — ${fmtDate(inst.started_at)}</span>
+            <span class="hub-admin-list-item-meta">${esc(inst.agent_type_id)} — ${connLabel} — ${fmtDate(inst.started_at)}</span>
           </div>
         `;
         const actions = document.createElement('div');

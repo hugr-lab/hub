@@ -155,6 +155,34 @@ export async function listModels(): Promise<ModelInfo[]> {
   }
 }
 
+// ── Agent Instances ───────────────────────────────────
+
+export interface AgentInstance {
+  id: string;
+  user_id: string;
+  agent_type_id: string;
+  status: string;
+  connected: boolean;
+  started_at: string;
+}
+
+export async function listAgentInstances(): Promise<AgentInstance[]> {
+  const baseUrl = PageConfig.getBaseUrl();
+  const settings = ServerConnection.makeSettings();
+  const resp = await ServerConnection.makeRequest(
+    baseUrl + 'hub-chat/api/agent/instances',
+    {},
+    settings,
+  );
+  if (!resp.ok) return [];
+  try {
+    const result = await resp.json();
+    return Array.isArray(result) ? result : [];
+  } catch {
+    return [];
+  }
+}
+
 // ── WebSocket ──────────────────────────────────────────
 
 export async function getWsBaseUrl(): Promise<string> {
