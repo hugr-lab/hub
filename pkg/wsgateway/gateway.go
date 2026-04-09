@@ -294,7 +294,11 @@ func (g *Gateway) handleMessage(ctx context.Context, conn *websocket.Conn, userI
 		if ctx.Err() != nil {
 			return // cancelled
 		}
-		g.writeJSON(ctx, conn, ChatMessage{Type: "error", Content: err.Error()})
+		errMsg := err.Error()
+		if isContextLengthError(errMsg) {
+			errMsg = "Conversation too long — context limit exceeded. Start a new chat or delete older messages."
+		}
+		g.writeJSON(ctx, conn, ChatMessage{Type: "error", Content: errMsg})
 		return
 	}
 
@@ -332,6 +336,18 @@ func (g *Gateway) writeJSON(ctx context.Context, conn *websocket.Conn, msg ChatM
 	if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
 		g.logger.Warn("websocket write error", "error", err)
 	}
+}
+
+// isContextLengthError checks if an error is about LLM context/token limits.
+func isContextLengthError(msg string) bool {
+	lower := strings.ToLower(msg)
+	return strings.Contains(lower, "context length") ||
+		strings.Contains(lower, "token limit") ||
+		strings.Contains(lower, "too many tokens") ||
+		strings.Contains(lower, "maximum context") ||
+		strings.Contains(lower, "context window") ||
+		strings.Contains(lower, "input too long") ||
+		strings.Contains(lower, "prompt is too long")
 }
 
 // SendToConversation sends a server-initiated message to a connected conversation.

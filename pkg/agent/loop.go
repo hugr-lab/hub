@@ -77,6 +77,7 @@ func (a *Agent) runAgenticLoop(ctx context.Context, history []llmrouter.Message)
 	for turn := 0; turn < a.config.MaxTurns; turn++ {
 		resp, err := a.callLLM(ctx, history, tools)
 		if err != nil {
+			a.logger.Error("LLM call failed", "turn", turn, "history_len", len(history), "error", err)
 			return "", fmt.Errorf("turn %d: %w", turn, err)
 		}
 
