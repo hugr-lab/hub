@@ -23,7 +23,8 @@ export class ChatSidebarWidget extends Widget {
     this.onOpen = onOpen;
     this.openWidgets = openWidgets;
     this.id = 'hub-chat-sidebar';
-    this.title.label = 'Chats';
+    this.title.label = '';
+    this.title.caption = 'Chats';
     this.addClass('hub-chat-sidebar');
 
     // Header with New Chat button
