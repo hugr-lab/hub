@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS conversations (
   title TEXT NOT NULL DEFAULT 'New Chat',
   folder TEXT,
   mode TEXT NOT NULL DEFAULT 'tools',
-  agent_instance_id TEXT REFERENCES agent_instances(id),
+  agent_instance_id TEXT REFERENCES agent_instances(id) ON DELETE SET NULL,
   model TEXT,
   deleted_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ DEFAULT now(),
