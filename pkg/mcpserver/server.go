@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/hugr-lab/hub/pkg/agentconn"
 	"github.com/hugr-lab/hub/pkg/auth"
 	"github.com/hugr-lab/hub/pkg/llmrouter"
 	"github.com/hugr-lab/query-engine/client"
@@ -22,6 +23,7 @@ import (
 type Server struct {
 	hugrClient *client.Client
 	llmRouter  *llmrouter.Router
+	agentConn  *agentconn.Manager
 	logger     *slog.Logger
 	debug      bool
 }
@@ -33,6 +35,11 @@ func New(hugrClient *client.Client, llmRouter *llmrouter.Router, logger *slog.Lo
 		logger:     logger,
 		debug:      debug,
 	}
+}
+
+// SetAgentConn sets the agent connection manager for inter-agent communication.
+func (s *Server) SetAgentConn(mgr *agentconn.Manager) {
+	s.agentConn = mgr
 }
 
 // Handler returns an http.Handler for /mcp/{user_id} endpoints.
@@ -70,6 +77,8 @@ func (s *Server) Handler() http.Handler {
 		s.registerMemoryTools(mcpSrv, userID)
 		s.registerRegistryTools(mcpSrv, userID)
 		s.registerLLMTools(mcpSrv, userID)
+		s.registerConversationTools(mcpSrv, userID)
+		s.registerAgentTools(mcpSrv, userID)
 
 		// Hugr tools added on top by query-engine mcp package
 		hugrMCP := qemcp.New(s.hugrClient, mcpSrv, s.debug)
@@ -77,56 +86,266 @@ func (s *Server) Handler() http.Handler {
 	})
 }
 
-// HandleUserMessage processes a chat message from the WebSocket gateway.
-// Searches memory for context, then calls LLM with the user message.
-func (s *Server) HandleUserMessage(ctx context.Context, userID, message string) (string, error) {
-	// Search relevant memories
-	var memoryCtx string
-	res, err := s.hugrClient.Query(ctx,
-		`query($uid: String!) { hub { db { agent_memory(filter: { user_id: { eq: $uid } }, limit: 5, order_by: [{field: "created_at", direction: DESC}]) { content category } } } }`,
-		map[string]any{"uid": userID},
-	)
-	if err == nil {
-		defer res.Close()
-		if res.Err() == nil {
-			data, _ := json.Marshal(res.Data)
-			memoryCtx = string(data)
+// StatusCallback sends intermediate messages to the client.
+type StatusCallback func(msgType, content string, toolCalls any, toolCallID string)
+
+// HandleUserMessage processes a chat via multi-turn agentic loop.
+// Client sends full message history. Hub streams tool_calls/tool_results back.
+func (s *Server) HandleUserMessage(ctx context.Context, userID string, clientMessages []llmrouter.Message, stream StatusCallback) (string, error) {
+	const maxTurns = 15
+
+	tools := s.getToolsForLLM()
+
+	// Use client history as-is — client owns the conversation state
+	history := make([]llmrouter.Message, len(clientMessages))
+	copy(history, clientMessages)
+
+	// Multi-turn loop
+	for turn := 0; turn < maxTurns; turn++ {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+
+		resp, err := s.llmRouter.Complete(ctx, llmrouter.CompletionRequest{
+			Messages: history,
+			Tools:    tools,
+			UserID:   userID,
+		})
+		if err != nil {
+			return "", fmt.Errorf("turn %d: %w", turn, err)
+		}
+
+		// No tool calls — final response
+		if resp.ToolCalls == "" || resp.FinishReason == "stop" {
+			return resp.Content, nil
+		}
+
+		// Parse tool calls
+		var toolCalls []struct {
+			ID        string         `json:"id"`
+			Name      string         `json:"name"`
+			Arguments map[string]any `json:"arguments"`
+		}
+		if err := json.Unmarshal([]byte(resp.ToolCalls), &toolCalls); err != nil {
+			return resp.Content, nil
+		}
+		if len(toolCalls) == 0 {
+			return resp.Content, nil
+		}
+
+		// Stream tool_calls to client
+		if stream != nil {
+			stream("tool_call", resp.Content, toolCalls, "")
+		}
+
+		// Add assistant message with tool calls
+		history = append(history, llmrouter.Message{
+			Role:      "assistant",
+			Content:   resp.Content,
+			ToolCalls: toAnySlice(toolCalls),
+		})
+
+		// Execute each tool call
+		for _, tc := range toolCalls {
+			if ctx.Err() != nil {
+				return "", ctx.Err()
+			}
+
+			if stream != nil {
+				stream("status", fmt.Sprintf("tool:%s", tc.Name), nil, "")
+			}
+
+			result, toolErr := s.executeTool(ctx, userID, tc.Name, tc.Arguments)
+			if toolErr != nil {
+				result = fmt.Sprintf("Error: %v", toolErr)
+			}
+
+			// Stream tool_result to client
+			if stream != nil {
+				stream("tool_result", result, nil, tc.ID)
+			}
+
+			history = append(history, llmrouter.Message{
+				Role:       "tool",
+				Content:    result,
+				ToolCallID: tc.ID,
+			})
 		}
 	}
 
-	// Call LLM
-	systemPrompt := "You are a helpful data assistant for Analytics Hub."
-	if memoryCtx != "" {
-		systemPrompt += "\n\nRelevant memories:\n" + memoryCtx
+	return "", fmt.Errorf("max turns (%d) reached", maxTurns)
+}
+
+// executeTool calls a tool handler directly for tools mode.
+func (s *Server) executeTool(ctx context.Context, userID, toolName string, args map[string]any) (string, error) {
+	authCtx := auth.ContextWithUser(ctx, auth.UserInfo{ID: userID})
+
+	// Build handler map — register all Hub tools + get their handlers
+	handlers := s.buildToolHandlers(userID)
+
+	handler, ok := handlers[toolName]
+	if !ok {
+		// Try Hugr tools via query-engine MCP (discovery, schema, data)
+		return s.executeHugrTool(authCtx, toolName, args)
 	}
 
-	resp, err := s.llmRouter.Complete(ctx, llmrouter.CompletionRequest{
-		Messages: []llmrouter.Message{
-			{Role: "system", Content: systemPrompt},
-			{Role: "user", Content: message},
-		},
-		UserID: userID,
-	})
+	req := mcp.CallToolRequest{}
+	req.Params.Name = toolName
+	req.Params.Arguments = args
+
+	result, err := handler(authCtx, req)
 	if err != nil {
-		return "", fmt.Errorf("llm complete: %w", err)
+		return "", fmt.Errorf("tool %s: %w", toolName, err)
+	}
+	return extractToolText(result), nil
+}
+
+// buildToolHandlers returns a map of tool name → handler for Hub-specific tools.
+func (s *Server) buildToolHandlers(userID string) map[string]server.ToolHandlerFunc {
+	handlers := make(map[string]server.ToolHandlerFunc)
+
+	// We can't extract handlers from MCPServer directly, so we maintain a parallel map.
+	// This is the same handlers as registered in registerXxxTools.
+	handlers["memory-store"] = s.handleMemoryStore(userID)
+	handlers["memory-search"] = s.handleMemorySearch(userID)
+	handlers["memory-list"] = s.handleMemoryList(userID)
+	handlers["registry-save"] = s.handleRegistrySave(userID)
+	handlers["registry-search"] = s.handleRegistrySearch(userID)
+	if s.agentConn != nil {
+		handlers["agent-message"] = s.handleAgentMessage(userID)
+	}
+	return handlers
+}
+
+// executeHugrTool calls a Hugr discovery/schema/data tool via query-engine MCP.
+func (s *Server) executeHugrTool(ctx context.Context, toolName string, args map[string]any) (string, error) {
+	// Create initialized MCP server with Hugr tools
+	mcpSrv := server.NewMCPServer("hugr-tool-exec", "0.1.0", server.WithToolCapabilities(true))
+	wrapped := qemcp.New(s.hugrClient, mcpSrv, s.debug)
+	_ = wrapped
+
+	// Initialize the MCP server (required before tool calls)
+	initMsg, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "initialize",
+		"params": map[string]any{
+			"protocolVersion": "2025-03-26",
+			"capabilities":    map[string]any{},
+			"clientInfo":      map[string]any{"name": "hub-internal", "version": "0.1.0"},
+		},
+	})
+	mcpSrv.HandleMessage(ctx, json.RawMessage(initMsg))
+
+	// Now call the tool
+	callMsg, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+		"params": map[string]any{"name": toolName, "arguments": args},
+	})
+	result := mcpSrv.HandleMessage(ctx, json.RawMessage(callMsg))
+
+	resultBytes, _ := json.Marshal(result)
+	var resp struct {
+		Result struct {
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+			IsError bool `json:"isError"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(resultBytes, &resp); err != nil {
+		return string(resultBytes), nil
 	}
 
-	// Store user pattern
-	storeCtx := auth.ContextWithUser(ctx, auth.UserInfo{ID: userID})
-	storeRes, err := s.hugrClient.Query(storeCtx,
-		`mutation($uid: String!, $content: String!) {
-			hub { db { insert_agent_memory(
-				data: { id: $uid, user_id: $uid, content: $content, category: "user_pattern" }
-				summary: $content
-			) { id } } }
-		}`,
-		map[string]any{"uid": userID, "content": fmt.Sprintf("User asked: %s", message)},
-	)
-	if err == nil {
-		defer storeRes.Close()
+	var text string
+	for _, c := range resp.Result.Content {
+		if c.Type == "text" {
+			text += c.Text
+		}
+	}
+	if resp.Result.IsError {
+		return text, fmt.Errorf("tool error: %s", text)
+	}
+	return text, nil
+}
+
+func extractToolText(result *mcp.CallToolResult) string {
+	if result == nil {
+		return ""
+	}
+	var text string
+	for _, c := range result.Content {
+		if tc, ok := c.(mcp.TextContent); ok {
+			text += tc.Text
+		}
+	}
+	return text
+}
+
+// getToolsForLLM returns tool definitions dynamically from query-engine MCP.
+func (s *Server) getToolsForLLM() []llmrouter.Tool {
+	// Create MCP server with all tools and list them
+	mcpSrv := server.NewMCPServer("hugr-tools-list", "0.1.0", server.WithToolCapabilities(true))
+	wrapped := qemcp.New(s.hugrClient, mcpSrv, s.debug)
+	_ = wrapped
+
+	// Initialize
+	initMsg, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "initialize",
+		"params": map[string]any{
+			"protocolVersion": "2025-03-26",
+			"capabilities":    map[string]any{},
+			"clientInfo":      map[string]any{"name": "hub-tools-list", "version": "0.1.0"},
+		},
+	})
+	mcpSrv.HandleMessage(context.Background(), json.RawMessage(initMsg))
+
+	// List tools
+	listMsg, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0", "id": 2, "method": "tools/list",
+	})
+	result := mcpSrv.HandleMessage(context.Background(), json.RawMessage(listMsg))
+
+	resultBytes, _ := json.Marshal(result)
+	var resp struct {
+		Result struct {
+			Tools []struct {
+				Name        string `json:"name"`
+				Description string `json:"description"`
+				InputSchema any    `json:"inputSchema"`
+			} `json:"tools"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(resultBytes, &resp); err != nil {
+		s.logger.Warn("failed to list MCP tools", "error", err)
+		return nil
 	}
 
-	return resp.Content, nil
+	tools := make([]llmrouter.Tool, 0, len(resp.Result.Tools))
+	for _, t := range resp.Result.Tools {
+		// Convert inputSchema to map
+		var params map[string]any
+		if schema, ok := t.InputSchema.(map[string]any); ok {
+			params = schema
+		} else {
+			schemaBytes, _ := json.Marshal(t.InputSchema)
+			json.Unmarshal(schemaBytes, &params)
+		}
+		tools = append(tools, llmrouter.Tool{
+			Name:        t.Name,
+			Description: t.Description,
+			Parameters:  params,
+		})
+	}
+
+	s.logger.Info("loaded LLM tools from MCP", "count", len(tools))
+	return tools
+}
+
+func toAnySlice(v any) []any {
+	data, _ := json.Marshal(v)
+	var result []any
+	json.Unmarshal(data, &result)
+	return result
 }
 
 func toolError(msg string) *mcp.CallToolResult {

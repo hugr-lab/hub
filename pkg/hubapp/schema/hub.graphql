@@ -16,6 +16,40 @@ type users @table(name: "users") {
   metadata: JSON
 }
 
+"""Persistent chat thread belonging to a user. Supports three modes: llm, tools, agent."""
+type conversations @table(name: "conversations", soft_delete: true, soft_delete_cond: "deleted_at IS NULL", soft_delete_set: "deleted_at = NOW()") {
+  """Conversation ID"""
+  id: String! @pk
+  """Owner user"""
+  user_id: String! @field_references(
+    name: "conv_user_ref"
+    references_name: "users"
+    field: "id"
+    query: "user"
+    description: "User who owns this conversation"
+    references_query: "conversations"
+    references_description: "Conversations owned by this user"
+  )
+  """Display title"""
+  title: String!
+  """Folder for grouping (nullable)"""
+  folder: String
+  """Chat mode: llm, tools, or agent"""
+  mode: String!
+  """Agent type (for mode=agent) — stable across instance restarts"""
+  agent_type_id: String
+  """Agent instance (cached, may change on restart)"""
+  agent_instance_id: String
+  """LLM model override (for mode=llm)"""
+  model: String
+  """Soft delete timestamp (null = active)"""
+  deleted_at: Timestamp
+  """Creation timestamp"""
+  created_at: Timestamp @default(insert_exp: "NOW()")
+  """Last activity timestamp"""
+  updated_at: Timestamp @default(insert_exp: "NOW()", update_exp: "NOW()")
+}
+
 """Predefined agent configurations — image, capabilities, skills, and policies."""
 type agent_types @table(name: "agent_types") {
   """Unique type identifier (e.g. data-analyst, openclaw)"""
@@ -43,7 +77,7 @@ type agent_types @table(name: "agent_types") {
 """Running agent container bound to a user and agent type."""
 type agent_instances @table(name: "agent_instances") {
   """Instance UUID"""
-  id: String! @pk @default(insert_exp: "gen_random_uuid()")
+  id: String! @pk
   """Owner user"""
   user_id: String! @field_references(
     name: "instances_user_ref"
@@ -54,6 +88,8 @@ type agent_instances @table(name: "agent_instances") {
     references_query: "agent_instances"
     references_description: "Agent instances owned by this user"
   )
+  """Human-readable name for this instance"""
+  display_name: String
   """Agent type configuration"""
   agent_type_id: String! @field_references(
     name: "instances_type_ref"
@@ -81,7 +117,7 @@ type agent_instances @table(name: "agent_instances") {
 """Conversation between a user and their agent."""
 type agent_sessions @table(name: "agent_sessions") {
   """Session UUID"""
-  id: String! @pk @default(insert_exp: "gen_random_uuid()")
+  id: String! @pk
   """User who owns this session"""
   user_id: String! @field_references(
     name: "sessions_user_ref"
@@ -113,9 +149,9 @@ type agent_sessions @table(name: "agent_sessions") {
 """Individual message in an agent conversation."""
 type agent_messages @table(name: "agent_messages") {
   """Message UUID"""
-  id: String! @pk @default(insert_exp: "gen_random_uuid()")
-  """Parent session"""
-  session_id: String! @field_references(
+  id: String! @pk
+  """Parent session (legacy, nullable)"""
+  session_id: String @field_references(
     name: "messages_session_ref"
     references_name: "agent_sessions"
     field: "id"
@@ -124,12 +160,24 @@ type agent_messages @table(name: "agent_messages") {
     references_query: "messages"
     references_description: "Messages in this session"
   )
+  """Conversation this message belongs to"""
+  conversation_id: String @field_references(
+    name: "messages_conv_ref"
+    references_name: "conversations"
+    field: "id"
+    query: "conversation"
+    description: "Conversation this message belongs to"
+    references_query: "messages"
+    references_description: "Messages in this conversation"
+  )
   """Sender role: user, assistant, system, or tool"""
   role: String!
   """Message text content"""
   content: String!
   """Tool calls made by assistant (JSON array)"""
   tool_calls: JSON
+  """Tool call ID for tool result messages"""
+  tool_call_id: String
   """LLM tokens consumed for this message"""
   tokens_used: Int
   """LLM model used to generate this message"""
@@ -145,7 +193,7 @@ type agent_memory @table(name: "agent_memory") @embeddings(
   distance: Cosine
 ) {
   """Memory entry UUID"""
-  id: String! @pk @default(insert_exp: "gen_random_uuid()")
+  id: String! @pk
   """Owner user"""
   user_id: String! @field_references(
     name: "memory_user_ref"
@@ -171,7 +219,7 @@ type agent_memory @table(name: "agent_memory") @embeddings(
 """Saved query patterns with tags and usage tracking."""
 type query_registry @table(name: "query_registry") {
   """Registry entry UUID"""
-  id: String! @pk @default(insert_exp: "gen_random_uuid()")
+  id: String! @pk
   """Owner user"""
   user_id: String! @field_references(
     name: "registry_user_ref"
@@ -201,7 +249,7 @@ type query_registry @table(name: "query_registry") {
 """Audit record of every tool invocation by an agent."""
 type tool_calls @table(name: "tool_calls") {
   """Tool call UUID"""
-  id: String! @pk @default(insert_exp: "gen_random_uuid()")
+  id: String! @pk
   """Agent session that triggered this call"""
   session_id: String @field_references(
     name: "toolcalls_session_ref"
@@ -235,7 +283,7 @@ LLM providers are now Hugr data sources (llm-openai, llm-anthropic, llm-gemini).
 provider_id references the data source name (e.g. claude, gpt4)."""
 type llm_budgets @table(name: "llm_budgets") {
   """Budget rule UUID"""
-  id: String! @pk @default(insert_exp: "gen_random_uuid()")
+  id: String! @pk
   """Target scope: user:alice, role:analyst, or global"""
   scope: String!
   """LLM data source name (null applies to all providers)"""
@@ -256,7 +304,7 @@ type llm_budgets @table(name: "llm_budgets") {
 provider_id references the LLM data source name."""
 type llm_usage @table(name: "llm_usage") {
   """Usage record UUID"""
-  id: String! @pk @default(insert_exp: "gen_random_uuid()")
+  id: String! @pk
   """User who made the request"""
   user_id: String!
   """LLM data source name (e.g. claude, gpt4)"""

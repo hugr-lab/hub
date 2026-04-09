@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/hugr-lab/query-engine/client"
 )
@@ -58,16 +59,21 @@ func (m *Manager) StartAgent(ctx context.Context, userID, agentTypeID, role stri
 		return "", fmt.Errorf("ensure user: %w", err)
 	}
 
-	// 6. Create container
+	// 6. Generate instance ID and create container
+	instanceID, _ := generateToken(16)
 	mcpURL := fmt.Sprintf("%s/mcp/%s", m.baseURL, agentID)
+	agentWSURL := strings.Replace(m.baseURL, "https://", "wss://", 1)
+	agentWSURL = strings.Replace(agentWSURL, "http://", "ws://", 1)
 	containerID, err := m.backend.Create(ctx, AgentConfig{
 		UserID:      agentID,
 		AgentTypeID: agentTypeID,
 		Image:       agentType.Image,
 		MCPURL:      mcpURL,
 		Env: map[string]string{
-			"AGENT_TOKEN": authToken,
-			"AGENT_ROLE":  role,
+			"AGENT_TOKEN":          authToken,
+			"AGENT_ROLE":           role,
+			"AGENT_INSTANCE_ID":    instanceID,
+			"HUB_SERVICE_AGENT_WS": agentWSURL,
 		},
 		Mounts: []Mount{
 			{Source: fmt.Sprintf("hub-agent-%s-shared", agentID), Target: "/shared"},
@@ -79,7 +85,6 @@ func (m *Manager) StartAgent(ctx context.Context, userID, agentTypeID, role stri
 	}
 
 	// 7. Record instance in hub DB
-	instanceID, _ := generateToken(16) // UUID-like hex ID
 	res, err := m.hugrClient.Query(ctx,
 		`mutation($id: String!, $uid: String!, $tid: String!, $cid: String!, $token: String!) {
 			hub { db { insert_agent_instances(data: {
@@ -212,9 +217,11 @@ func (m *Manager) ensureUser(ctx context.Context, userID, role string) error {
 	)
 	if err == nil {
 		defer res.Close()
-		var users []struct{ ID string `json:"id"` }
-		if err := res.ScanData("hub.db.users", &users); err == nil && len(users) > 0 {
-			return nil // already exists
+		if res.Err() == nil {
+			var users []struct{ ID string `json:"id"` }
+			if err := res.ScanData("hub.db.users", &users); err == nil && len(users) > 0 {
+				return nil // already exists
+			}
 		}
 	}
 

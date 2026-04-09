@@ -8,11 +8,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
+	"sync"
+	"time"
 
+	"github.com/hugr-lab/hub/pkg/llmrouter"
 	mcpclient "github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
+	"nhooyr.io/websocket"
 )
 
 // Agent is the main runtime. Connects to Hub Service MCP and local MCP servers,
@@ -116,6 +121,29 @@ func (a *Agent) HandleMessage(ctx context.Context, userMessage string) (string, 
 	return a.RunLoop(ctx, userMessage)
 }
 
+// HandleMessages processes a full conversation history through the agentic loop.
+func (a *Agent) HandleMessages(ctx context.Context, messages []historyMessage) (string, error) {
+	a.logger.Info("handling messages", "count", len(messages))
+
+	// Convert to llmrouter.Message
+	history := make([]llmrouter.Message, 0, len(messages))
+	for _, m := range messages {
+		msg := llmrouter.Message{
+			Role: m.Role, Content: m.Content,
+			ToolCallID: m.ToolCallID,
+		}
+		if m.ToolCalls != nil {
+			data, _ := json.Marshal(m.ToolCalls)
+			var tcs []any
+			json.Unmarshal(data, &tcs)
+			msg.ToolCalls = tcs
+		}
+		history = append(history, msg)
+	}
+
+	return a.RunLoopWithHistory(ctx, history)
+}
+
 // Run starts the agent in stdin/stdout mode.
 func (a *Agent) Run(ctx context.Context) error {
 	if err := a.Connect(ctx); err != nil {
@@ -150,6 +178,130 @@ func (a *Agent) Run(ctx context.Context) error {
 				continue
 			}
 			encoder.Encode(map[string]string{"type": "response", "content": response})
+		}
+	}
+}
+
+// agentMessage is the wire format for Hub Service ↔ Agent WebSocket communication.
+type agentMessage struct {
+	RequestID      string           `json:"request_id"`
+	ConversationID string           `json:"conversation_id,omitempty"`
+	UserID         string           `json:"user_id,omitempty"`
+	Type           string           `json:"type"` // request, response, status, error, ping, pong
+	Content        string           `json:"content,omitempty"`
+	Messages       []historyMessage `json:"messages,omitempty"` // full conversation history
+}
+
+// historyMessage is a single message in conversation history.
+type historyMessage struct {
+	Role       string `json:"role"`
+	Content    string `json:"content"`
+	ToolCalls  any    `json:"tool_calls,omitempty"`
+	ToolCallID string `json:"tool_call_id,omitempty"`
+}
+
+// RunWebSocket connects to Hub Service via WebSocket and processes messages.
+// Reconnects with exponential backoff on disconnect.
+func (a *Agent) RunWebSocket(ctx context.Context, wsURL, instanceID string) error {
+	if err := a.Connect(ctx); err != nil {
+		return err
+	}
+	a.skills.Load()
+
+	endpoint := wsURL + "/agent/ws/" + instanceID
+	a.logger.Info("agent WebSocket mode", "endpoint", endpoint)
+
+	attempt := 0
+	for {
+		if ctx.Err() != nil {
+			return nil
+		}
+
+		connected, err := a.wsSession(ctx, endpoint)
+		if ctx.Err() != nil {
+			return nil
+		}
+		// Reset backoff if we were connected (session ran, not just dial failure)
+		if connected {
+			attempt = 0
+		}
+
+		// Exponential backoff: 1s, 2s, 4s, 8s, ... max 60s
+		delay := time.Duration(math.Min(float64(time.Second)*math.Pow(2, float64(attempt)), float64(60*time.Second)))
+		attempt++
+		a.logger.Warn("WebSocket disconnected, reconnecting", "attempt", attempt, "delay", delay, "error", err)
+
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(delay):
+		}
+	}
+}
+
+// wsSession runs a single WebSocket connection session. Returns true if connection was established.
+func (a *Agent) wsSession(ctx context.Context, endpoint string) (bool, error) {
+	headers := make(map[string][]string)
+	if a.authToken != "" {
+		headers["Authorization"] = []string{"Bearer " + a.authToken}
+	}
+
+	conn, _, err := websocket.Dial(ctx, endpoint, &websocket.DialOptions{
+		HTTPHeader: headers,
+	})
+	if err != nil {
+		return false, fmt.Errorf("ws dial: %w", err)
+	}
+	defer conn.CloseNow()
+
+	a.logger.Info("WebSocket connected", "endpoint", endpoint)
+
+	// Serialize all writes — nhooyr.io/websocket does not allow concurrent writes
+	var writeMu sync.Mutex
+	writeMsg := func(msg agentMessage) {
+		d, _ := json.Marshal(msg)
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		conn.Write(ctx, websocket.MessageText, d)
+	}
+
+	for {
+		_, data, err := conn.Read(ctx)
+		if err != nil {
+			return true, fmt.Errorf("ws read: %w", err)
+		}
+
+		var msg agentMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			a.logger.Warn("invalid message from hub", "error", err)
+			continue
+		}
+
+		switch msg.Type {
+		case "ping":
+			writeMsg(agentMessage{Type: "pong"})
+
+		case "request":
+			go func(req agentMessage) {
+				writeMsg(agentMessage{RequestID: req.RequestID, Type: "status", Content: "processing"})
+
+				var response string
+				var err error
+				if len(req.Messages) > 0 {
+					response, err = a.HandleMessages(ctx, req.Messages)
+				} else {
+					response, err = a.HandleMessage(ctx, req.Content)
+				}
+
+				if err != nil {
+					writeMsg(agentMessage{RequestID: req.RequestID, Type: "error", Content: err.Error()})
+				} else {
+					writeMsg(agentMessage{RequestID: req.RequestID, Type: "response", Content: response})
+				}
+			}(msg)
+
+		default:
+			a.logger.Debug("ignoring message type", "type", msg.Type)
 		}
 	}
 }

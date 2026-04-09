@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -37,13 +38,14 @@ func (s *Server) handleRegistrySave(userID string) server.ToolHandlerFunc {
 		query, _ := args["query"].(string)
 		desc, _ := args["description"].(string)
 
+		id := fmt.Sprintf("reg-%d", time.Now().UnixNano())
 		res, err := s.hugrClient.Query(ctx,
-			`mutation($uid: String!, $name: String!, $query: String!, $desc: String) {
+			`mutation($id: String!, $uid: String!, $name: String!, $query: String!, $desc: String) {
 				hub { db { insert_query_registry(
-					data: { user_id: $uid, name: $name, query: $query, description: $desc }
+					data: { id: $id, user_id: $uid, name: $name, query: $query, description: $desc }
 				) { id name } } }
 			}`,
-			map[string]any{"uid": userID, "name": name, "query": query, "desc": desc},
+			map[string]any{"id": id, "uid": userID, "name": name, "query": query, "desc": desc},
 		)
 		if err != nil {
 			return toolError(fmt.Sprintf("failed to save query: %v", err)), nil

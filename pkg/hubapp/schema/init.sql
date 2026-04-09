@@ -32,9 +32,10 @@ CREATE TABLE IF NOT EXISTS agent_types (
 
 -- Agent instances (running containers)
 CREATE TABLE IF NOT EXISTS agent_instances (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id),
   agent_type_id TEXT NOT NULL REFERENCES agent_types(id),
+  display_name TEXT,
   container_id TEXT,
   auth_token TEXT,
   status TEXT DEFAULT 'creating',
@@ -43,11 +44,26 @@ CREATE TABLE IF NOT EXISTS agent_instances (
   metadata JSONB DEFAULT '{}'
 );
 
+-- Conversations (persistent chat threads)
+CREATE TABLE IF NOT EXISTS conversations (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  title TEXT NOT NULL DEFAULT 'New Chat',
+  folder TEXT,
+  mode TEXT NOT NULL DEFAULT 'tools',
+  agent_type_id TEXT REFERENCES agent_types(id),
+  agent_instance_id TEXT REFERENCES agent_instances(id) ON DELETE SET NULL,
+  model TEXT,
+  deleted_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
 -- Agent sessions
 CREATE TABLE IF NOT EXISTS agent_sessions (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id),
-  instance_id UUID REFERENCES agent_instances(id),
+  instance_id TEXT REFERENCES agent_instances(id),
   started_at TIMESTAMPTZ DEFAULT now(),
   ended_at TIMESTAMPTZ,
   metadata JSONB DEFAULT '{}'
@@ -55,11 +71,13 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
 
 -- Agent messages
 CREATE TABLE IF NOT EXISTS agent_messages (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  session_id UUID NOT NULL REFERENCES agent_sessions(id),
+  id TEXT PRIMARY KEY,
+  session_id TEXT REFERENCES agent_sessions(id),
+  conversation_id TEXT REFERENCES conversations(id),
   role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system', 'tool')),
   content TEXT NOT NULL,
   tool_calls JSONB,
+  tool_call_id TEXT,
   tokens_used INT,
   model TEXT,
   created_at TIMESTAMPTZ DEFAULT now()
@@ -67,7 +85,7 @@ CREATE TABLE IF NOT EXISTS agent_messages (
 
 -- Agent memory (with vector search)
 CREATE TABLE IF NOT EXISTS agent_memory (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id TEXT NOT NULL REFERENCES users(id),
   content TEXT NOT NULL,
   embedding VECTOR({{.VectorSize}}),
@@ -78,7 +96,7 @@ CREATE TABLE IF NOT EXISTS agent_memory (
 
 -- Query registry
 CREATE TABLE IF NOT EXISTS query_registry (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id TEXT NOT NULL REFERENCES users(id),
   name TEXT NOT NULL,
   query TEXT NOT NULL,
@@ -91,8 +109,8 @@ CREATE TABLE IF NOT EXISTS query_registry (
 
 -- Tool calls (audit)
 CREATE TABLE IF NOT EXISTS tool_calls (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  session_id UUID REFERENCES agent_sessions(id),
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid(),
+  session_id TEXT REFERENCES agent_sessions(id),
   user_id TEXT NOT NULL,
   tool_name TEXT NOT NULL,
   arguments JSONB,
@@ -105,7 +123,7 @@ CREATE TABLE IF NOT EXISTS tool_calls (
 
 -- LLM budgets (provider_id references Hugr data source name, no FK)
 CREATE TABLE IF NOT EXISTS llm_budgets (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid(),
   scope TEXT NOT NULL,
   provider_id TEXT,
   period TEXT NOT NULL CHECK (period IN ('hour', 'day', 'month')),
@@ -117,10 +135,10 @@ CREATE TABLE IF NOT EXISTS llm_budgets (
 
 -- LLM usage tracking (provider_id references Hugr data source name, no FK)
 CREATE TABLE IF NOT EXISTS llm_usage (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id TEXT NOT NULL,
   provider_id TEXT NOT NULL,
-  session_id UUID REFERENCES agent_sessions(id),
+  session_id TEXT REFERENCES agent_sessions(id),
   tokens_in INT NOT NULL,
   tokens_out INT NOT NULL,
   duration_ms INT,
@@ -129,6 +147,8 @@ CREATE TABLE IF NOT EXISTS llm_usage (
 );
 
 -- Indexes
+CREATE INDEX IF NOT EXISTS idx_conversations_user ON conversations(user_id, deleted_at);
+CREATE INDEX IF NOT EXISTS idx_agent_messages_conv ON agent_messages(conversation_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_agent_instances_user ON agent_instances(user_id);
 CREATE INDEX IF NOT EXISTS idx_agent_sessions_user ON agent_sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_agent_memory_user ON agent_memory(user_id);

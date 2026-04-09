@@ -39,6 +39,14 @@ func (a *HubApp) handleGraphQLProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer res.Close()
+	if res.Err() != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		json.NewEncoder(w).Encode(map[string]any{
+			"errors": []map[string]string{{"message": res.Err().Error()}},
+		})
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{

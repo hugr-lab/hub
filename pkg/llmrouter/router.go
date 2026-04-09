@@ -215,6 +215,20 @@ func (r *Router) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	return models, nil
 }
 
+// CompleteDirect does a simple LLM chat completion without tools (for mode=llm).
+func (r *Router) CompleteDirect(ctx context.Context, model, message string) (string, error) {
+	resp, err := r.Complete(ctx, CompletionRequest{
+		Model: model,
+		Messages: []Message{
+			{Role: "user", Content: message},
+		},
+	})
+	if err != nil {
+		return "", err
+	}
+	return resp.Content, nil
+}
+
 // ModelInfo describes a registered AI model data source.
 type ModelInfo struct {
 	Name     string `json:"name"`

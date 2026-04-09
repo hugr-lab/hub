@@ -7,8 +7,8 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/hugr-lab/airport-go v0.2.1
-	github.com/hugr-lab/query-engine v0.3.19
-	github.com/hugr-lab/query-engine/client v0.3.19
+	github.com/hugr-lab/query-engine v0.3.20
+	github.com/hugr-lab/query-engine/client v0.3.20
 	github.com/mark3labs/mcp-go v0.47.0
 	nhooyr.io/websocket v1.8.17
 )
@@ -29,7 +29,8 @@ require (
 	github.com/goccy/go-json v0.10.6 // indirect
 	github.com/google/flatbuffers v25.12.19+incompatible // indirect
 	github.com/google/jsonschema-go v0.4.2 // indirect
-	github.com/hugr-lab/query-engine/types v0.3.19 // indirect
+	github.com/gorilla/websocket v1.5.3 // indirect
+	github.com/hugr-lab/query-engine/types v0.3.20 // indirect
 	github.com/itchyny/gojq v0.12.19 // indirect
 	github.com/itchyny/timefmt-go v0.1.8 // indirect
 	github.com/klauspost/compress v1.18.5 // indirect

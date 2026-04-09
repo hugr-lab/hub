@@ -24,8 +24,7 @@ type LLMResponse struct {
 	TokensOut    int        `json:"tokens_out"`
 }
 
-// RunLoop executes the multi-turn agentic loop.
-// Sends messages + tools to LLM, executes tool calls, feeds results back.
+// RunLoop executes the multi-turn agentic loop with a single user message.
 func (a *Agent) RunLoop(ctx context.Context, userMessage string) (string, error) {
 	// 1. Retrieve learned context
 	learnedContext := a.learner.RetrieveContext(ctx, userMessage)
@@ -42,13 +41,43 @@ func (a *Agent) RunLoop(ctx context.Context, userMessage string) (string, error)
 		{Role: "user", Content: userMessage},
 	}
 
-	// 4. Get tools for LLM
+	return a.runAgenticLoop(ctx, history)
+}
+
+// RunLoopWithHistory executes the multi-turn agentic loop with full conversation history.
+// The history is used as-is (client owns it), with learned context prepended if missing system prompt.
+func (a *Agent) RunLoopWithHistory(ctx context.Context, history []llmrouter.Message) (string, error) {
+	// If no system prompt in history, prepend one
+	if len(history) == 0 || history[0].Role != "system" {
+		// Retrieve context from last user message
+		var lastUserMsg string
+		for i := len(history) - 1; i >= 0; i-- {
+			if history[i].Role == "user" {
+				lastUserMsg = history[i].Content
+				break
+			}
+		}
+		learnedContext := a.learner.RetrieveContext(ctx, lastUserMsg)
+		systemPrompt := a.skills.SystemPrompt()
+		if learnedContext != "" {
+			systemPrompt += "\n\n" + learnedContext
+		}
+		history = append([]llmrouter.Message{{Role: "system", Content: systemPrompt}}, history...)
+	}
+
+	return a.runAgenticLoop(ctx, history)
+}
+
+// runAgenticLoop is the core multi-turn loop shared by RunLoop and RunLoopWithHistory.
+func (a *Agent) runAgenticLoop(ctx context.Context, history []llmrouter.Message) (string, error) {
+	// Get tools for LLM
 	tools := a.registry.ToLLMTools()
 
-	// 5. Agentic loop
+	// Agentic loop
 	for turn := 0; turn < a.config.MaxTurns; turn++ {
 		resp, err := a.callLLM(ctx, history, tools)
 		if err != nil {
+			a.logger.Error("LLM call failed", "turn", turn, "history_len", len(history), "error", err)
 			return "", fmt.Errorf("turn %d: %w", turn, err)
 		}
 

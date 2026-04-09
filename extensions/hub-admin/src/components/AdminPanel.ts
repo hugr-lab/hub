@@ -12,7 +12,7 @@ import {
   deleteCatalogSource, linkCatalog, unlinkCatalog,
   fetchModelSources,
   fetchAgentInstances, fetchAgentSessions, fetchAgentTypes,
-  startAgent, stopAgent, stopAgentDB, clearAgentMemory,
+  startAgent, stopAgent, stopAgentDB, renameAgent, deleteAgent, clearAgentMemory,
   fetchLLMBudgets, fetchLLMUsage, insertLLMBudget, deleteLLMBudget,
 } from '../api.js';
 import type { DataSource, CatalogSource, CatalogLink, ModelSource, AgentType } from '../api.js';
@@ -653,12 +653,35 @@ export class AdminPanelWidget extends Widget {
 
   // ── Agents ─────────────────────────────────────────────
 
+  /** Fetch connected agent instance IDs from hub-service via hub-chat proxy. */
+  private async fetchConnectedAgents(): Promise<Set<string>> {
+    try {
+      const baseUrl = (await import('@jupyterlab/coreutils')).PageConfig.getBaseUrl();
+      const settings = (await import('@jupyterlab/services')).ServerConnection.makeSettings();
+      const resp = await (await import('@jupyterlab/services')).ServerConnection.makeRequest(
+        baseUrl + 'hub-chat/api/agent/instances', {}, settings,
+      );
+      if (!resp.ok) return new Set();
+      const data = await resp.json();
+      const ids = new Set<string>();
+      if (Array.isArray(data)) {
+        for (const inst of data) {
+          if (inst.connected) ids.add(inst.id);
+        }
+      }
+      return ids;
+    } catch {
+      return new Set();
+    }
+  }
+
   private async renderAgents(el: HTMLElement): Promise<void> {
     el.innerHTML = '<div class="hub-admin-loading">Loading...</div>';
     try {
-      const [instances, agentTypes] = await Promise.all([
+      const [instances, agentTypes, connectedSet] = await Promise.all([
         fetchAgentInstances(),
         fetchAgentTypes(),
+        this.fetchConnectedAgents(),
       ]);
       el.innerHTML = '';
 
@@ -679,12 +702,17 @@ export class AdminPanelWidget extends Widget {
       for (const inst of instances) {
         const row = document.createElement('div');
         row.className = 'hub-admin-list-item';
-        const dot = inst.status === 'running' ? 'hub-admin-dot--active' : inst.status === 'error' ? 'hub-admin-dot--error' : 'hub-admin-dot--inactive';
+        const isConnected = connectedSet.has(inst.id);
+        const dot = isConnected ? 'hub-admin-dot--active' :
+          inst.status === 'running' ? 'hub-admin-dot--warning' :
+          inst.status === 'error' ? 'hub-admin-dot--error' : 'hub-admin-dot--inactive';
+        const connLabel = inst.status === 'running' ? (isConnected ? 'connected' : 'disconnected') : inst.status;
+        const displayName = inst.display_name || `${inst.agent_type_id} (${inst.user_id})`;
         row.innerHTML = `
           <div class="hub-admin-list-item-main">
-            <span class="hub-admin-dot ${dot}"></span>
-            <span class="hub-admin-list-item-title">${esc(inst.user_id)}</span>
-            <span class="hub-admin-list-item-meta">${esc(inst.agent_type_id)} — ${fmtDate(inst.started_at)}</span>
+            <span class="hub-admin-dot ${dot}" title="${connLabel}"></span>
+            <span class="hub-admin-list-item-title">${esc(displayName)}</span>
+            <span class="hub-admin-list-item-meta">${connLabel} — ${fmtDate(inst.started_at)}</span>
           </div>
         `;
         const actions = document.createElement('div');
@@ -701,6 +729,16 @@ export class AdminPanelWidget extends Widget {
           });
           actions.appendChild(stopBtn);
         }
+        const renBtn = iconBtn(ICON.edit, 'Rename');
+        renBtn.addEventListener('click', async () => {
+          const newName = prompt('Agent display name:', inst.display_name || '');
+          if (newName !== null && newName !== inst.display_name) {
+            await renameAgent(inst.id, newName);
+            this.loadSection('agents');
+          }
+        });
+        actions.appendChild(renBtn);
+
         const clearBtn = iconBtn(ICON.eraser, 'Clear Memory');
         clearBtn.addEventListener('click', async () => {
           if (!confirm(`Clear all memory for "${inst.user_id}"?`)) return;
@@ -708,6 +746,17 @@ export class AdminPanelWidget extends Widget {
           this.loadSection('agents');
         });
         actions.appendChild(clearBtn);
+
+        const delBtn = iconBtn(ICON.trash, 'Delete', 'hub-admin-icon-btn hub-admin-icon-btn--danger');
+        delBtn.addEventListener('click', async () => {
+          if (!confirm(`Delete agent "${inst.user_id}"? This will stop the container and remove the record.`)) return;
+          await this.runBusy('Deleting agent...', async () => {
+            try { await deleteAgent(inst.id); }
+            catch (err: any) { alert(err.message); }
+          });
+          this.loadSection('agents');
+        });
+        actions.appendChild(delBtn);
         row.appendChild(actions);
         el.appendChild(row);
       }

@@ -43,17 +43,31 @@ func main() {
 
 	a := agent.New(mcpURL, authToken, skillsDir, cfg, logger)
 
+	// WebSocket mode: connect to Hub Service for message routing
+	wsURL := os.Getenv("HUB_SERVICE_AGENT_WS")
+	instanceID := os.Getenv("AGENT_INSTANCE_ID")
+
 	logger.Info("hub-agent starting",
 		"mcp_url", mcpURL,
 		"skills_dir", skillsDir,
 		"config", configPath,
 		"mcp_servers", len(cfg.MCPServers),
 		"max_turns", cfg.MaxTurns,
+		"ws_mode", wsURL != "",
 	)
 
-	if err := a.Run(ctx); err != nil {
-		logger.Error("agent failed", "error", err)
-		os.Exit(1)
+	if wsURL != "" && instanceID != "" {
+		// WebSocket mode — receive messages from Hub Service
+		if err := a.RunWebSocket(ctx, wsURL, instanceID); err != nil {
+			logger.Error("agent WebSocket failed", "error", err)
+			os.Exit(1)
+		}
+	} else {
+		// Stdin mode — for development and testing
+		if err := a.Run(ctx); err != nil {
+			logger.Error("agent failed", "error", err)
+			os.Exit(1)
+		}
 	}
 
 	a.Close()
