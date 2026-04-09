@@ -205,12 +205,11 @@ func (g *Gateway) readLoop(ctx context.Context, conn *websocket.Conn, userID, co
 func (g *Gateway) handleMessage(ctx context.Context, conn *websocket.Conn, userID, conversationID string, msg ChatMessage) {
 	g.logger.Info("chat message", "user", userID, "conversation", conversationID, "history_len", len(msg.Messages))
 
-	// Persist user message (last in history)
+	// Persist user message (goroutine — independent of request lifecycle)
 	if g.persist != nil && msg.Content != "" {
-		g.persist(ctx, conversationID, "user", msg.Content)
+		go g.persist(context.WithoutCancel(ctx), conversationID, "user", msg.Content)
 	}
 
-	// Lookup conversation to determine mode
 	conv, err := g.lookup(ctx, conversationID)
 	if err != nil {
 		g.writeJSON(ctx, conn, ChatMessage{Type: "error", Content: fmt.Sprintf("conversation not found: %v", err)})
@@ -219,7 +218,6 @@ func (g *Gateway) handleMessage(ctx context.Context, conn *websocket.Conn, userI
 
 	g.writeJSON(ctx, conn, ChatMessage{Type: "status", Content: "thinking"})
 
-	// Stream callback — sends intermediate messages to client
 	stream := func(m ChatMessage) {
 		g.writeJSON(ctx, conn, m)
 	}
@@ -263,15 +261,15 @@ func (g *Gateway) handleMessage(ctx context.Context, conn *websocket.Conn, userI
 
 	if err != nil {
 		if ctx.Err() != nil {
-			return // cancelled, don't send error
+			return // cancelled
 		}
 		g.writeJSON(ctx, conn, ChatMessage{Type: "error", Content: err.Error()})
 		return
 	}
 
-	// Persist assistant response
+	// Persist assistant response (goroutine — independent of request lifecycle)
 	if g.persist != nil {
-		g.persist(ctx, conversationID, "assistant", response)
+		go g.persist(context.WithoutCancel(ctx), conversationID, "assistant", response)
 	}
 
 	g.writeJSON(ctx, conn, ChatMessage{Type: "response", Content: response})
@@ -285,11 +283,12 @@ func (g *Gateway) handleMessage(ctx context.Context, conn *websocket.Conn, userI
 			}
 		}
 		if userMsgCount <= 1 {
+			bgCtx := context.WithoutCancel(ctx)
 			go func() {
-				title := g.genTitle(context.Background(), msg.Content)
+				title := g.genTitle(bgCtx, msg.Content)
 				if title != "" {
-					g.setTitle(context.Background(), conversationID, title)
-					g.writeJSON(context.Background(), conn, ChatMessage{Type: "title_update", Content: title})
+					g.setTitle(bgCtx, conversationID, title)
+					g.writeJSON(bgCtx, conn, ChatMessage{Type: "title_update", Content: title})
 				}
 			}()
 		}

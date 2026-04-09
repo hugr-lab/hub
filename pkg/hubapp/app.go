@@ -266,10 +266,8 @@ func toAnySlice(v any) []any {
 }
 
 func (a *HubApp) persistMessage(ctx context.Context, conversationID, role, content string) {
-	// Use background context — persist must not be cancelled when WebSocket closes
-	bgCtx := context.Background()
 	msgID := fmt.Sprintf("msg-%d", time.Now().UnixNano())
-	res, err := a.client.Query(bgCtx,
+	res, err := a.client.Query(ctx,
 		`mutation($id: String!, $cid: String!, $role: String!, $content: String!) {
 			hub { db { insert_agent_messages(data: {
 				id: $id, conversation_id: $cid, role: $role, content: $content
