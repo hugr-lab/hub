@@ -285,35 +285,8 @@ func (a *HubApp) lookupConversation(ctx context.Context, conversationID string) 
 		AgentInstanceID: c.AgentInstanceID, Model: c.Model,
 	}
 
-	// Agent mode: resolve running instance by agent_type_id (stable) instead of instance_id (ephemeral)
-	if c.Mode == "agent" && c.AgentTypeID != "" {
-		findRes, err := a.client.Query(ctx,
-			`query($tid: String!, $status: String!) { hub { db { agent_instances(
-				filter: { agent_type_id: { eq: $tid }, status: { eq: $status } }
-				limit: 1
-			) { id display_name } } } }`,
-			map[string]any{"tid": c.AgentTypeID, "status": "running"},
-		)
-		if err == nil {
-			defer findRes.Close()
-			if findRes.Err() == nil {
-				var found []struct {
-					ID          string `json:"id"`
-					DisplayName string `json:"display_name"`
-				}
-				if findRes.ScanData("hub.db.agent_instances", &found) == nil && len(found) > 0 {
-					info.AgentInstanceID = found[0].ID
-					info.AgentName = found[0].DisplayName
-					if info.AgentName == "" {
-						info.AgentName = c.AgentTypeID
-					}
-				}
-			}
-		}
-	}
-
-	// Fetch agent display name if not yet resolved
-	if info.AgentName == "" && info.AgentInstanceID != "" {
+	// Fetch agent display name if agent mode
+	if info.AgentInstanceID != "" {
 		agentRes, err := a.client.Query(ctx,
 			`query($id: String!) { hub { db { agent_instances(
 				filter: { id: { eq: $id } } limit: 1
