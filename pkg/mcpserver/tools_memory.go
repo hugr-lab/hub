@@ -4,8 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-
-	"github.com/google/uuid"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -54,7 +53,7 @@ func (s *Server) handleMemoryStore(userID string) server.ToolHandlerFunc {
 		}
 		source, _ := request.GetArguments()["source"].(string)
 
-		id := uuid.New().String()
+		id := fmt.Sprintf("mem-%d", time.Now().UnixNano())
 		res, err := s.hugrClient.Query(ctx,
 			`mutation($id: String!, $uid: String!, $content: String!, $category: String!, $source: String) {
 				hub { db { insert_agent_memory(

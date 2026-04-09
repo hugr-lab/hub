@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS agent_types (
 
 -- Agent instances (running containers)
 CREATE TABLE IF NOT EXISTS agent_instances (
-  id UUID PRIMARY KEY,
+  id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id),
   agent_type_id TEXT NOT NULL REFERENCES agent_types(id),
   container_id TEXT,
@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS conversations (
   title TEXT NOT NULL DEFAULT 'New Chat',
   folder TEXT,
   mode TEXT NOT NULL DEFAULT 'tools',
-  agent_instance_id UUID REFERENCES agent_instances(id),
+  agent_instance_id TEXT REFERENCES agent_instances(id),
   model TEXT,
   deleted_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ DEFAULT now(),
@@ -59,9 +59,9 @@ CREATE TABLE IF NOT EXISTS conversations (
 
 -- Agent sessions
 CREATE TABLE IF NOT EXISTS agent_sessions (
-  id UUID PRIMARY KEY,
+  id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id),
-  instance_id UUID REFERENCES agent_instances(id),
+  instance_id TEXT REFERENCES agent_instances(id),
   started_at TIMESTAMPTZ DEFAULT now(),
   ended_at TIMESTAMPTZ,
   metadata JSONB DEFAULT '{}'
@@ -69,8 +69,8 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
 
 -- Agent messages
 CREATE TABLE IF NOT EXISTS agent_messages (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  session_id UUID REFERENCES agent_sessions(id),
+  id TEXT PRIMARY KEY,
+  session_id TEXT REFERENCES agent_sessions(id),
   conversation_id TEXT REFERENCES conversations(id),
   role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system', 'tool')),
   content TEXT NOT NULL,
@@ -83,7 +83,7 @@ CREATE TABLE IF NOT EXISTS agent_messages (
 
 -- Agent memory (with vector search)
 CREATE TABLE IF NOT EXISTS agent_memory (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id TEXT NOT NULL REFERENCES users(id),
   content TEXT NOT NULL,
   embedding VECTOR({{.VectorSize}}),
@@ -94,7 +94,7 @@ CREATE TABLE IF NOT EXISTS agent_memory (
 
 -- Query registry
 CREATE TABLE IF NOT EXISTS query_registry (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id TEXT NOT NULL REFERENCES users(id),
   name TEXT NOT NULL,
   query TEXT NOT NULL,
@@ -107,8 +107,8 @@ CREATE TABLE IF NOT EXISTS query_registry (
 
 -- Tool calls (audit)
 CREATE TABLE IF NOT EXISTS tool_calls (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  session_id UUID REFERENCES agent_sessions(id),
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid(),
+  session_id TEXT REFERENCES agent_sessions(id),
   user_id TEXT NOT NULL,
   tool_name TEXT NOT NULL,
   arguments JSONB,
@@ -121,7 +121,7 @@ CREATE TABLE IF NOT EXISTS tool_calls (
 
 -- LLM budgets (provider_id references Hugr data source name, no FK)
 CREATE TABLE IF NOT EXISTS llm_budgets (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid(),
   scope TEXT NOT NULL,
   provider_id TEXT,
   period TEXT NOT NULL CHECK (period IN ('hour', 'day', 'month')),
@@ -133,10 +133,10 @@ CREATE TABLE IF NOT EXISTS llm_budgets (
 
 -- LLM usage tracking (provider_id references Hugr data source name, no FK)
 CREATE TABLE IF NOT EXISTS llm_usage (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id TEXT NOT NULL,
   provider_id TEXT NOT NULL,
-  session_id UUID REFERENCES agent_sessions(id),
+  session_id TEXT REFERENCES agent_sessions(id),
   tokens_in INT NOT NULL,
   tokens_out INT NOT NULL,
   duration_ms INT,
