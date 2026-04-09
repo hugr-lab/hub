@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/hugr-lab/airport-go/catalog"
+	"github.com/hugr-lab/hub/pkg/agentconn"
 	"github.com/hugr-lab/hub/pkg/agentmgr"
 	"github.com/hugr-lab/hub/pkg/auth"
 	"github.com/hugr-lab/hub/pkg/llmrouter"
@@ -101,6 +102,10 @@ func (a *HubApp) Init(ctx context.Context) error {
 	// Start HTTP server
 	router := llmrouter.New(a.client, a.logger)
 	mcpSrv := mcpserver.New(a.client, router, a.logger, a.config.LogLevel == slog.LevelDebug)
+
+	// Agent connection manager (WebSocket for agent containers)
+	agentMgr := agentconn.NewManager(a.logger)
+	mcpSrv.SetAgentConn(agentMgr)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/user/login", a.handleUserLogin)
 	mux.HandleFunc("/api/conversations/create", a.handleConversationCreate)
@@ -111,6 +116,9 @@ func (a *HubApp) Init(ctx context.Context) error {
 	mux.HandleFunc("/api/models", a.handleModelList(router))
 	mux.Handle("/mcp/", mcpSrv.Handler())
 	mux.Handle("/v1/", router.OpenAICompatHandler()) // OpenAI-compatible for third-party agents
+
+	mux.Handle("/agent/ws/", agentMgr.Handler())
+	go agentMgr.StartHeartbeat(ctx)
 
 	// Agent management (Docker backend for now)
 	agentNetwork := envOrDefault("HUB_AGENT_NETWORK", "hub-dev-network")
@@ -125,6 +133,9 @@ func (a *HubApp) Init(ctx context.Context) error {
 	}
 	// WebSocket gateway for chat UI — conversation-based routing
 	ws := wsgateway.New(wsgateway.Config{
+		Agent: func(ctx context.Context, instanceID, conversationID, userID, message string) (string, error) {
+			return agentMgr.SendMessage(ctx, instanceID, conversationID, userID, message)
+		},
 		Lookup: func(ctx context.Context, conversationID string) (*wsgateway.ConversationInfo, error) {
 			return a.lookupConversation(ctx, conversationID)
 		},

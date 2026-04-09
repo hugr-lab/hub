@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/hugr-lab/hub/pkg/agentconn"
 	"github.com/hugr-lab/hub/pkg/auth"
 	"github.com/hugr-lab/hub/pkg/llmrouter"
 	"github.com/hugr-lab/query-engine/client"
@@ -22,6 +23,7 @@ import (
 type Server struct {
 	hugrClient *client.Client
 	llmRouter  *llmrouter.Router
+	agentConn  *agentconn.Manager
 	logger     *slog.Logger
 	debug      bool
 }
@@ -33,6 +35,11 @@ func New(hugrClient *client.Client, llmRouter *llmrouter.Router, logger *slog.Lo
 		logger:     logger,
 		debug:      debug,
 	}
+}
+
+// SetAgentConn sets the agent connection manager for inter-agent communication.
+func (s *Server) SetAgentConn(mgr *agentconn.Manager) {
+	s.agentConn = mgr
 }
 
 // Handler returns an http.Handler for /mcp/{user_id} endpoints.
@@ -71,6 +78,7 @@ func (s *Server) Handler() http.Handler {
 		s.registerRegistryTools(mcpSrv, userID)
 		s.registerLLMTools(mcpSrv, userID)
 		s.registerConversationTools(mcpSrv, userID)
+		s.registerAgentTools(mcpSrv, userID)
 
 		// Hugr tools added on top by query-engine mcp package
 		hugrMCP := qemcp.New(s.hugrClient, mcpSrv, s.debug)
@@ -203,6 +211,9 @@ func (s *Server) buildToolHandlers(userID string) map[string]server.ToolHandlerF
 	handlers["memory-list"] = s.handleMemoryList(userID)
 	handlers["registry-save"] = s.handleRegistrySave(userID)
 	handlers["registry-search"] = s.handleRegistrySearch(userID)
+	if s.agentConn != nil {
+		handlers["agent-message"] = s.handleAgentMessage(userID)
+	}
 	return handlers
 }
 

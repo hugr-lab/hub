@@ -158,12 +158,22 @@ type ChatMessage struct {
 
 func (g *Gateway) readLoop(ctx context.Context, conn *websocket.Conn, userID, conversationID string) {
 	var cancelCurrent context.CancelFunc
+	var doneCurrent chan struct{} // signals current handler finished
 
-	defer func() {
+	// cancelAndWait cancels the in-flight handler and waits for it to finish
+	// so we don't have concurrent writes to the WebSocket.
+	cancelAndWait := func() {
 		if cancelCurrent != nil {
 			cancelCurrent()
+			cancelCurrent = nil
 		}
-	}()
+		if doneCurrent != nil {
+			<-doneCurrent
+			doneCurrent = nil
+		}
+	}
+
+	defer cancelAndWait()
 
 	for {
 		_, data, err := conn.Read(ctx)
@@ -184,18 +194,18 @@ func (g *Gateway) readLoop(ctx context.Context, conn *websocket.Conn, userID, co
 
 		switch msg.Type {
 		case "message":
-			if cancelCurrent != nil {
-				cancelCurrent()
-			}
+			cancelAndWait()
 			msgCtx, cancel := context.WithCancel(ctx)
 			cancelCurrent = cancel
-			g.handleMessage(msgCtx, conn, userID, conversationID, msg)
+			done := make(chan struct{})
+			doneCurrent = done
+			go func() {
+				defer close(done)
+				g.handleMessage(msgCtx, conn, userID, conversationID, msg)
+			}()
 		case "cancel":
-			if cancelCurrent != nil {
-				cancelCurrent()
-				cancelCurrent = nil
-				g.writeJSON(ctx, conn, ChatMessage{Type: "status", Content: "cancelled"})
-			}
+			cancelAndWait()
+			g.writeJSON(ctx, conn, ChatMessage{Type: "status", Content: "cancelled"})
 		default:
 			g.writeJSON(ctx, conn, ChatMessage{Type: "error", Content: fmt.Sprintf("unknown type: %s", msg.Type)})
 		}
