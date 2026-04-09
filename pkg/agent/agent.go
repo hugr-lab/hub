@@ -12,6 +12,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/hugr-lab/hub/pkg/llmrouter"
 	mcpclient "github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -119,6 +120,29 @@ func (a *Agent) HandleMessage(ctx context.Context, userMessage string) (string, 
 	return a.RunLoop(ctx, userMessage)
 }
 
+// HandleMessages processes a full conversation history through the agentic loop.
+func (a *Agent) HandleMessages(ctx context.Context, messages []historyMessage) (string, error) {
+	a.logger.Info("handling messages", "count", len(messages))
+
+	// Convert to llmrouter.Message
+	history := make([]llmrouter.Message, 0, len(messages))
+	for _, m := range messages {
+		msg := llmrouter.Message{
+			Role: m.Role, Content: m.Content,
+			ToolCallID: m.ToolCallID,
+		}
+		if m.ToolCalls != nil {
+			data, _ := json.Marshal(m.ToolCalls)
+			var tcs []any
+			json.Unmarshal(data, &tcs)
+			msg.ToolCalls = tcs
+		}
+		history = append(history, msg)
+	}
+
+	return a.RunLoopWithHistory(ctx, history)
+}
+
 // Run starts the agent in stdin/stdout mode.
 func (a *Agent) Run(ctx context.Context) error {
 	if err := a.Connect(ctx); err != nil {
@@ -159,11 +183,20 @@ func (a *Agent) Run(ctx context.Context) error {
 
 // agentMessage is the wire format for Hub Service ↔ Agent WebSocket communication.
 type agentMessage struct {
-	RequestID      string `json:"request_id"`
-	ConversationID string `json:"conversation_id,omitempty"`
-	UserID         string `json:"user_id,omitempty"`
-	Type           string `json:"type"` // request, response, status, error, ping, pong
-	Content        string `json:"content,omitempty"`
+	RequestID      string           `json:"request_id"`
+	ConversationID string           `json:"conversation_id,omitempty"`
+	UserID         string           `json:"user_id,omitempty"`
+	Type           string           `json:"type"` // request, response, status, error, ping, pong
+	Content        string           `json:"content,omitempty"`
+	Messages       []historyMessage `json:"messages,omitempty"` // full conversation history
+}
+
+// historyMessage is a single message in conversation history.
+type historyMessage struct {
+	Role       string `json:"role"`
+	Content    string `json:"content"`
+	ToolCalls  any    `json:"tool_calls,omitempty"`
+	ToolCallID string `json:"tool_call_id,omitempty"`
 }
 
 // RunWebSocket connects to Hub Service via WebSocket and processes messages.
@@ -244,7 +277,13 @@ func (a *Agent) wsSession(ctx context.Context, endpoint string) error {
 				d, _ := json.Marshal(status)
 				conn.Write(ctx, websocket.MessageText, d)
 
-				response, err := a.HandleMessage(ctx, req.Content)
+				var response string
+				var err error
+				if len(req.Messages) > 0 {
+					response, err = a.HandleMessages(ctx, req.Messages)
+				} else {
+					response, err = a.HandleMessage(ctx, req.Content)
+				}
 				var resp agentMessage
 				if err != nil {
 					resp = agentMessage{RequestID: req.RequestID, Type: "error", Content: err.Error()}

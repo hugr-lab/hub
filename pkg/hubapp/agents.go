@@ -2,6 +2,7 @@ package hubapp
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"github.com/hugr-lab/hub/pkg/agentconn"
@@ -127,6 +128,68 @@ func (a *HubApp) handleAgentStop(mgr *agentmgr.Manager) http.HandlerFunc {
 		}
 
 		json.NewEncoder(w).Encode(map[string]string{"status": "stopped"})
+	}
+}
+
+func (a *HubApp) handleAgentDelete(mgr *agentmgr.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			ID string `json:"id"` // agent_instances.id
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" {
+			http.Error(w, "id required", http.StatusBadRequest)
+			return
+		}
+
+		// Get instance info
+		res, err := a.client.Query(r.Context(),
+			`query($id: String!) { hub { db { agent_instances(
+				filter: { id: { eq: $id } }
+			) { id user_id container_id status } } } }`,
+			map[string]any{"id": req.ID},
+		)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer res.Close()
+
+		var instances []struct {
+			ID          string `json:"id"`
+			UserID      string `json:"user_id"`
+			ContainerID string `json:"container_id"`
+			Status      string `json:"status"`
+		}
+		if err := res.ScanData("hub.db.agent_instances", &instances); err != nil || len(instances) == 0 {
+			http.Error(w, "instance not found", http.StatusNotFound)
+			return
+		}
+		inst := instances[0]
+
+		// Try to stop and remove container (ignore errors — container may already be gone)
+		if inst.ContainerID != "" && inst.Status == "running" {
+			_ = mgr.StopAgent(r.Context(), inst.UserID)
+		}
+
+		// Delete from DB
+		delRes, err := a.client.Query(r.Context(),
+			`mutation($id: String!) { hub { db { delete_agent_instances(
+				filter: { id: { eq: $id } }
+			) { affected_rows } } } }`,
+			map[string]any{"id": req.ID},
+		)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("delete: %v", err), http.StatusInternalServerError)
+			return
+		}
+		defer delRes.Close()
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"deleted": req.ID})
 	}
 }
 

@@ -43,8 +43,8 @@ type ToolsHandler func(ctx context.Context, userID string, messages []LLMMessage
 // LLMHandler handles pure LLM chat (no tools). Receives full history.
 type LLMHandler func(ctx context.Context, model string, messages []LLMMessage) (string, error)
 
-// AgentHandler sends a message to an agent container.
-type AgentHandler func(ctx context.Context, instanceID, conversationID, userID, message string) (string, error)
+// AgentHandler sends messages to an agent container with full conversation history.
+type AgentHandler func(ctx context.Context, instanceID, conversationID, userID string, messages []LLMMessage) (string, error)
 
 // MessagePersister saves messages to DB.
 type MessagePersister func(ctx context.Context, conversationID, role, content string)
@@ -266,7 +266,7 @@ func (g *Gateway) handleMessage(ctx context.Context, conn *websocket.Conn, userI
 
 	case "agent":
 		if g.agent != nil {
-			response, err = g.agent(ctx, conv.AgentInstanceID, conversationID, userID, msg.Content)
+			response, err = g.agent(ctx, conv.AgentInstanceID, conversationID, userID, msg.Messages)
 		}
 		if g.agent == nil || err != nil {
 			if err != nil {

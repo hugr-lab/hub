@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/hugr-lab/hub/pkg/agentconn"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -42,7 +43,9 @@ func (s *Server) handleAgentMessage(userID string) server.ToolHandlerFunc {
 			return toolError(fmt.Sprintf("agent %s is not connected", targetID)), nil
 		}
 
-		response, err := s.agentConn.SendMessage(ctx, targetID, "", userID, message)
+		// For inter-agent communication, wrap the message as a single user message
+		msgs := []agentconn.ChatMessage{{Role: "user", Content: message}}
+		response, err := s.agentConn.SendMessage(ctx, targetID, "", userID, msgs)
 		if err != nil {
 			return toolError(fmt.Sprintf("agent-message failed: %v", err)), nil
 		}

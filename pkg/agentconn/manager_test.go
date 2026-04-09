@@ -90,7 +90,7 @@ func TestManager_SendMessage(t *testing.T) {
 		conn.Write(context.Background(), websocket.MessageText, respData)
 	}()
 
-	result, err := mgr.SendMessage(context.Background(), "inst-send", "conv-1", "user-1", "hello agent")
+	result, err := mgr.SendMessage(context.Background(), "inst-send", "conv-1", "user-1", []ChatMessage{{Role: "user", Content: "hello agent"}})
 	if err != nil {
 		t.Fatalf("send message: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestManager_SendMessageStream(t *testing.T) {
 	}()
 
 	var statuses []string
-	result, err := mgr.SendMessageStream(context.Background(), "inst-stream", "conv-1", "user-1", "work",
+	result, err := mgr.SendMessageStream(context.Background(), "inst-stream", "conv-1", "user-1", []ChatMessage{{Role: "user", Content: "work"}},
 		func(s string) { statuses = append(statuses, s) })
 	if err != nil {
 		t.Fatalf("send stream: %v", err)
@@ -141,7 +141,7 @@ func TestManager_SendMessageStream(t *testing.T) {
 func TestManager_NotConnected(t *testing.T) {
 	mgr := NewManager(slog.Default())
 
-	_, err := mgr.SendMessage(context.Background(), "nonexistent", "", "", "hello")
+	_, err := mgr.SendMessage(context.Background(), "nonexistent", "", "", []ChatMessage{{Role: "user", Content: "hello"}})
 	if err == nil {
 		t.Fatal("expected error for non-connected agent")
 	}
@@ -168,7 +168,7 @@ func TestManager_AgentError(t *testing.T) {
 		conn.Write(context.Background(), websocket.MessageText, d)
 	}()
 
-	_, err := mgr.SendMessage(context.Background(), "inst-err", "", "", "break")
+	_, err := mgr.SendMessage(context.Background(), "inst-err", "", "", []ChatMessage{{Role: "user", Content: "break"}})
 	if err == nil {
 		t.Fatal("expected error from agent")
 	}
@@ -186,7 +186,7 @@ func TestManager_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
-	_, err := mgr.SendMessage(ctx, "inst-ctx", "", "", "no reply")
+	_, err := mgr.SendMessage(ctx, "inst-ctx", "", "", []ChatMessage{{Role: "user", Content: "no reply"}})
 	if err == nil {
 		t.Fatal("expected context cancellation error")
 	}
@@ -225,7 +225,7 @@ func TestManager_ConnectionReplacement(t *testing.T) {
 		conn2.Write(context.Background(), websocket.MessageText, d)
 	}()
 
-	result, err := mgr.SendMessage(context.Background(), "inst-repl", "", "", "test")
+	result, err := mgr.SendMessage(context.Background(), "inst-repl", "", "", []ChatMessage{{Role: "user", Content: "test"}})
 	if err != nil {
 		t.Fatalf("send via new conn: %v", err)
 	}

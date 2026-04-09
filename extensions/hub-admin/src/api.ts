@@ -348,6 +348,10 @@ export async function stopAgent(userId: string): Promise<{ status: string }> {
   return hubServiceAPI('api/agent/stop', 'POST', { user_id: userId });
 }
 
+export async function deleteAgent(instanceId: string): Promise<{ deleted: string }> {
+  return hubServiceAPI('api/agent/delete', 'POST', { id: instanceId });
+}
+
 export async function clearAgentMemory(userId: string): Promise<void> {
   await hugrQuery(
     `mutation($filter: hub_db_agent_memory_filter!) {

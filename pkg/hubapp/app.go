@@ -132,11 +132,20 @@ func (a *HubApp) Init(ctx context.Context) error {
 		mux.HandleFunc("/api/agent/start", a.handleAgentStart(mgr))
 		mux.HandleFunc("/api/agent/stop", a.handleAgentStop(mgr))
 		mux.HandleFunc("/api/agent/status", a.handleAgentStatus(mgr))
+		mux.HandleFunc("/api/agent/delete", a.handleAgentDelete(mgr))
 	}
 	// WebSocket gateway for chat UI — conversation-based routing
 	ws := wsgateway.New(wsgateway.Config{
-		Agent: func(ctx context.Context, instanceID, conversationID, userID, message string) (string, error) {
-			return agentMgr.SendMessage(ctx, instanceID, conversationID, userID, message)
+		Agent: func(ctx context.Context, instanceID, conversationID, userID string, messages []wsgateway.LLMMessage) (string, error) {
+			// Convert wsgateway.LLMMessage to agentconn.ChatMessage
+			agentMsgs := make([]agentconn.ChatMessage, len(messages))
+			for i, m := range messages {
+				agentMsgs[i] = agentconn.ChatMessage{
+					Role: m.Role, Content: m.Content,
+					ToolCalls: m.ToolCalls, ToolCallID: m.ToolCallID,
+				}
+			}
+			return agentMgr.SendMessage(ctx, instanceID, conversationID, userID, agentMsgs)
 		},
 		Lookup: func(ctx context.Context, conversationID string) (*wsgateway.ConversationInfo, error) {
 			return a.lookupConversation(ctx, conversationID)

@@ -179,7 +179,7 @@ func TestGateway_AgentFallback(t *testing.T) {
 		cfg.Lookup = func(ctx context.Context, id string) (*ConversationInfo, error) {
 			return &ConversationInfo{ID: id, UserID: "test-user", Mode: "agent", AgentInstanceID: "inst-1"}, nil
 		}
-		cfg.Agent = func(ctx context.Context, instanceID, convID, userID, msg string) (string, error) {
+		cfg.Agent = func(ctx context.Context, instanceID, convID, userID string, msgs []LLMMessage) (string, error) {
 			return "", fmt.Errorf("agent offline")
 		}
 		cfg.Tools = func(ctx context.Context, userID string, msgs []LLMMessage, stream StreamCallback) (string, error) {

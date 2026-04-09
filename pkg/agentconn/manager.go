@@ -19,11 +19,20 @@ import (
 
 // AgentMessage is the wire format between Hub Service and agent containers.
 type AgentMessage struct {
-	RequestID      string `json:"request_id"`
-	ConversationID string `json:"conversation_id,omitempty"`
-	UserID         string `json:"user_id,omitempty"`
-	Type           string `json:"type"` // "request", "response", "status", "error", "ping", "pong"
-	Content        string `json:"content,omitempty"`
+	RequestID      string        `json:"request_id"`
+	ConversationID string        `json:"conversation_id,omitempty"`
+	UserID         string        `json:"user_id,omitempty"`
+	Type           string        `json:"type"` // "request", "response", "status", "error", "ping", "pong"
+	Content        string        `json:"content,omitempty"`
+	Messages       []ChatMessage `json:"messages,omitempty"` // full conversation history for request type
+}
+
+// ChatMessage is a single message in conversation history (matches wsgateway.LLMMessage).
+type ChatMessage struct {
+	Role       string `json:"role"`
+	Content    string `json:"content"`
+	ToolCalls  any    `json:"tool_calls,omitempty"`
+	ToolCallID string `json:"tool_call_id,omitempty"`
 }
 
 // agentConn tracks a single agent WebSocket connection.
@@ -150,7 +159,8 @@ func (m *Manager) readLoop(ctx context.Context, ac *agentConn) {
 }
 
 // SendMessage sends a message to an agent and waits for a response.
-func (m *Manager) SendMessage(ctx context.Context, instanceID, conversationID, userID, content string) (string, error) {
+// messages contains the full conversation history.
+func (m *Manager) SendMessage(ctx context.Context, instanceID, conversationID, userID string, messages []ChatMessage) (string, error) {
 	m.mu.RLock()
 	ac, ok := m.agents[instanceID]
 	m.mu.RUnlock()
@@ -171,13 +181,20 @@ func (m *Manager) SendMessage(ctx context.Context, instanceID, conversationID, u
 		ac.mu.Unlock()
 	}()
 
-	// Send request to agent
+	// Extract last user message as content
+	var content string
+	if len(messages) > 0 {
+		content = messages[len(messages)-1].Content
+	}
+
+	// Send request to agent with full history
 	msg := AgentMessage{
 		RequestID:      requestID,
 		ConversationID: conversationID,
 		UserID:         userID,
 		Type:           "request",
 		Content:        content,
+		Messages:       messages,
 	}
 	data, _ := json.Marshal(msg)
 	if err := ac.conn.Write(ctx, websocket.MessageText, data); err != nil {
@@ -207,7 +224,7 @@ func (m *Manager) SendMessage(ctx context.Context, instanceID, conversationID, u
 }
 
 // SendMessageStream sends a message and streams intermediate results via callback.
-func (m *Manager) SendMessageStream(ctx context.Context, instanceID, conversationID, userID, content string, onStatus func(string)) (string, error) {
+func (m *Manager) SendMessageStream(ctx context.Context, instanceID, conversationID, userID string, messages []ChatMessage, onStatus func(string)) (string, error) {
 	m.mu.RLock()
 	ac, ok := m.agents[instanceID]
 	m.mu.RUnlock()
@@ -228,12 +245,18 @@ func (m *Manager) SendMessageStream(ctx context.Context, instanceID, conversatio
 		ac.mu.Unlock()
 	}()
 
+	var content string
+	if len(messages) > 0 {
+		content = messages[len(messages)-1].Content
+	}
+
 	msg := AgentMessage{
 		RequestID:      requestID,
 		ConversationID: conversationID,
 		UserID:         userID,
 		Type:           "request",
 		Content:        content,
+		Messages:       messages,
 	}
 	data, _ := json.Marshal(msg)
 	if err := ac.conn.Write(ctx, websocket.MessageText, data); err != nil {

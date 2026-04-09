@@ -12,7 +12,7 @@ import {
   deleteCatalogSource, linkCatalog, unlinkCatalog,
   fetchModelSources,
   fetchAgentInstances, fetchAgentSessions, fetchAgentTypes,
-  startAgent, stopAgent, stopAgentDB, clearAgentMemory,
+  startAgent, stopAgent, stopAgentDB, deleteAgent, clearAgentMemory,
   fetchLLMBudgets, fetchLLMUsage, insertLLMBudget, deleteLLMBudget,
 } from '../api.js';
 import type { DataSource, CatalogSource, CatalogLink, ModelSource, AgentType } from '../api.js';
@@ -735,6 +735,17 @@ export class AdminPanelWidget extends Widget {
           this.loadSection('agents');
         });
         actions.appendChild(clearBtn);
+
+        const delBtn = iconBtn(ICON.trash, 'Delete', 'hub-admin-icon-btn hub-admin-icon-btn--danger');
+        delBtn.addEventListener('click', async () => {
+          if (!confirm(`Delete agent "${inst.user_id}"? This will stop the container and remove the record.`)) return;
+          await this.runBusy('Deleting agent...', async () => {
+            try { await deleteAgent(inst.id); }
+            catch (err: any) { alert(err.message); }
+          });
+          this.loadSection('agents');
+        });
+        actions.appendChild(delBtn);
         row.appendChild(actions);
         el.appendChild(row);
       }
