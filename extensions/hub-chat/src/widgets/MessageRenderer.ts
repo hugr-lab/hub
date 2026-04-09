@@ -13,14 +13,15 @@ export class MessageRenderer {
    */
   async render(role: string, content: string, timestamp?: string): Promise<HTMLElement> {
     const wrapper = document.createElement('div');
-    wrapper.className = `hub-chat-message hub-chat-message--${role}`;
+    const cssRole = role === 'user' ? 'user' : 'assistant';
+    wrapper.className = `hub-chat-message hub-chat-message--${cssRole}`;
 
     // Role label
     const header = document.createElement('div');
     header.className = 'hub-chat-message-header';
     const roleLabel = document.createElement('span');
     roleLabel.className = 'hub-chat-message-role';
-    roleLabel.textContent = role === 'user' ? 'You' : role === 'assistant' ? 'Assistant' : role;
+    roleLabel.textContent = role === 'user' ? 'You' : role.charAt(0).toUpperCase() + role.slice(1);
     header.appendChild(roleLabel);
 
     if (timestamp) {
@@ -35,7 +36,7 @@ export class MessageRenderer {
     const body = document.createElement('div');
     body.className = 'hub-chat-message-body';
 
-    if (role === 'assistant' || role === 'system') {
+    if (role !== 'user') {
       await this.renderMarkdown(body, content);
     } else {
       body.textContent = content;
