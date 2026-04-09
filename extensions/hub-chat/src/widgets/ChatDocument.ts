@@ -29,6 +29,7 @@ export class ChatDocumentWidget extends Widget {
   private wsBase: string | null = null;
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private _scrollHandler: (() => void) | null = null;
   private loading = false;
   private oldestTimestamp: string | null = null;
   private hasMore = true;
@@ -52,7 +53,8 @@ export class ChatDocumentWidget extends Widget {
 
     this.messagesEl = document.createElement('div');
     this.messagesEl.className = 'hub-chat-messages';
-    this.messagesEl.addEventListener('scroll', () => this.onScroll());
+    this._scrollHandler = () => this.onScroll();
+    this.messagesEl.addEventListener('scroll', this._scrollHandler);
     this.node.appendChild(this.messagesEl);
 
     const inputArea = document.createElement('div');
@@ -100,6 +102,9 @@ export class ChatDocumentWidget extends Widget {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
+    }
+    if (this._scrollHandler && this.messagesEl) {
+      this.messagesEl.removeEventListener('scroll', this._scrollHandler);
     }
     if (this.ws) {
       this.ws.close();
@@ -177,7 +182,11 @@ export class ChatDocumentWidget extends Widget {
       this.hasMore = messages.length === 50;
       this.scrollToBottom();
     } catch (err: any) {
-      this.messagesEl.innerHTML = `<div class="hub-chat-error">Failed to load messages: ${err.message}</div>`;
+      const errEl = document.createElement('div');
+      errEl.className = 'hub-chat-error';
+      errEl.textContent = `Failed to load messages: ${err.message}`;
+      this.messagesEl.innerHTML = '';
+      this.messagesEl.appendChild(errEl);
     }
   }
 

@@ -98,6 +98,16 @@ func (a *HubApp) handleAgentStart(mgr *agentmgr.Manager) http.HandlerFunc {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		user, ok := auth.UserFromContext(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		// Only admin/management can start agents
+		if user.Role != "admin" && user.AuthType != "management" {
+			http.Error(w, "forbidden: admin required", http.StatusForbidden)
+			return
+		}
 		var req struct {
 			UserID      string `json:"user_id"`
 			AgentTypeID string `json:"agent_type_id"`
@@ -128,6 +138,15 @@ func (a *HubApp) handleAgentStop(mgr *agentmgr.Manager) http.HandlerFunc {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		user, ok := auth.UserFromContext(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if user.Role != "admin" && user.AuthType != "management" {
+			http.Error(w, "forbidden: admin required", http.StatusForbidden)
+			return
+		}
 		var req struct {
 			UserID string `json:"user_id"`
 		}
@@ -148,6 +167,15 @@ func (a *HubApp) handleAgentStop(mgr *agentmgr.Manager) http.HandlerFunc {
 func (a *HubApp) handleAgentRename(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if user.Role != "admin" && user.AuthType != "management" {
+		http.Error(w, "forbidden: admin required", http.StatusForbidden)
 		return
 	}
 	var req struct {
@@ -184,6 +212,15 @@ func (a *HubApp) handleAgentDelete(mgr *agentmgr.Manager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		user, ok := auth.UserFromContext(r.Context())
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if user.Role != "admin" && user.AuthType != "management" {
+			http.Error(w, "forbidden: admin required", http.StatusForbidden)
 			return
 		}
 		var req struct {

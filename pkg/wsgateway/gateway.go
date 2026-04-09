@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/hugr-lab/hub/pkg/auth"
 
@@ -223,14 +224,24 @@ func (g *Gateway) readLoop(ctx context.Context, conn *websocket.Conn, userID, co
 func (g *Gateway) handleMessage(ctx context.Context, conn *websocket.Conn, userID, conversationID string, msg ChatMessage) {
 	g.logger.Info("chat message", "user", userID, "conversation", conversationID, "history_len", len(msg.Messages))
 
-	// Persist user message (goroutine — independent of request lifecycle)
+	// Persist user message (goroutine — independent of request lifecycle, 30s timeout)
 	if g.persist != nil && msg.Content != "" {
-		go g.persist(context.WithoutCancel(ctx), conversationID, "user", msg.Content)
+		go func() {
+			pCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+			defer cancel()
+			g.persist(pCtx, conversationID, "user", msg.Content)
+		}()
 	}
 
 	conv, err := g.lookup(ctx, conversationID)
 	if err != nil {
 		g.writeJSON(ctx, conn, ChatMessage{Type: "error", Content: fmt.Sprintf("conversation not found: %v", err)})
+		return
+	}
+
+	// Verify conversation belongs to this user
+	if conv.UserID != userID {
+		g.writeJSON(ctx, conn, ChatMessage{Type: "error", Content: "forbidden: conversation belongs to another user"})
 		return
 	}
 
@@ -302,15 +313,19 @@ func (g *Gateway) handleMessage(ctx context.Context, conn *websocket.Conn, userI
 		return
 	}
 
-	// Persist assistant response (goroutine — independent of request lifecycle)
+	// Persist assistant response (goroutine — 30s timeout)
 	if g.persist != nil {
-		go g.persist(context.WithoutCancel(ctx), conversationID, "assistant", response)
+		go func() {
+			pCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+			defer cancel()
+			g.persist(pCtx, conversationID, "assistant", response)
+		}()
 	}
 
 	respMsg := ChatMessage{Type: "response", Content: response, AgentName: conv.AgentName}
 	g.writeJSON(ctx, conn, respMsg)
 
-	// Auto-generate title after first user message
+	// Auto-generate title after first user message (synchronous — handleMessage is already in goroutine)
 	if g.genTitle != nil && g.setTitle != nil && msg.Content != "" {
 		userMsgCount := 0
 		for _, m := range msg.Messages {
@@ -319,14 +334,11 @@ func (g *Gateway) handleMessage(ctx context.Context, conn *websocket.Conn, userI
 			}
 		}
 		if userMsgCount <= 1 {
-			bgCtx := context.WithoutCancel(ctx)
-			go func() {
-				title := g.genTitle(bgCtx, msg.Content)
-				if title != "" {
-					g.setTitle(bgCtx, conversationID, title)
-					g.writeJSON(bgCtx, conn, ChatMessage{Type: "title_update", Content: title})
-				}
-			}()
+			title := g.genTitle(context.WithoutCancel(ctx), msg.Content)
+			if title != "" {
+				go g.setTitle(context.WithoutCancel(ctx), conversationID, title)
+				g.writeJSON(ctx, conn, ChatMessage{Type: "title_update", Content: title})
+			}
 		}
 	}
 }

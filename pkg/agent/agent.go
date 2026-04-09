@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"math"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/hugr-lab/hub/pkg/llmrouter"
@@ -216,9 +217,13 @@ func (a *Agent) RunWebSocket(ctx context.Context, wsURL, instanceID string) erro
 			return nil
 		}
 
-		err := a.wsSession(ctx, endpoint)
+		connected, err := a.wsSession(ctx, endpoint)
 		if ctx.Err() != nil {
 			return nil
+		}
+		// Reset backoff if we were connected (session ran, not just dial failure)
+		if connected {
+			attempt = 0
 		}
 
 		// Exponential backoff: 1s, 2s, 4s, 8s, ... max 60s
@@ -234,8 +239,8 @@ func (a *Agent) RunWebSocket(ctx context.Context, wsURL, instanceID string) erro
 	}
 }
 
-// wsSession runs a single WebSocket connection session.
-func (a *Agent) wsSession(ctx context.Context, endpoint string) error {
+// wsSession runs a single WebSocket connection session. Returns true if connection was established.
+func (a *Agent) wsSession(ctx context.Context, endpoint string) (bool, error) {
 	headers := make(map[string][]string)
 	if a.authToken != "" {
 		headers["Authorization"] = []string{"Bearer " + a.authToken}
@@ -245,16 +250,25 @@ func (a *Agent) wsSession(ctx context.Context, endpoint string) error {
 		HTTPHeader: headers,
 	})
 	if err != nil {
-		return fmt.Errorf("ws dial: %w", err)
+		return false, fmt.Errorf("ws dial: %w", err)
 	}
 	defer conn.CloseNow()
 
 	a.logger.Info("WebSocket connected", "endpoint", endpoint)
 
+	// Serialize all writes — nhooyr.io/websocket does not allow concurrent writes
+	var writeMu sync.Mutex
+	writeMsg := func(msg agentMessage) {
+		d, _ := json.Marshal(msg)
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		conn.Write(ctx, websocket.MessageText, d)
+	}
+
 	for {
 		_, data, err := conn.Read(ctx)
 		if err != nil {
-			return fmt.Errorf("ws read: %w", err)
+			return true, fmt.Errorf("ws read: %w", err)
 		}
 
 		var msg agentMessage
@@ -265,17 +279,11 @@ func (a *Agent) wsSession(ctx context.Context, endpoint string) error {
 
 		switch msg.Type {
 		case "ping":
-			pong := agentMessage{Type: "pong"}
-			d, _ := json.Marshal(pong)
-			conn.Write(ctx, websocket.MessageText, d)
+			writeMsg(agentMessage{Type: "pong"})
 
 		case "request":
-			// Process in goroutine so we can keep reading (e.g. for cancellation)
 			go func(req agentMessage) {
-				// Send status
-				status := agentMessage{RequestID: req.RequestID, Type: "status", Content: "processing"}
-				d, _ := json.Marshal(status)
-				conn.Write(ctx, websocket.MessageText, d)
+				writeMsg(agentMessage{RequestID: req.RequestID, Type: "status", Content: "processing"})
 
 				var response string
 				var err error
@@ -284,14 +292,12 @@ func (a *Agent) wsSession(ctx context.Context, endpoint string) error {
 				} else {
 					response, err = a.HandleMessage(ctx, req.Content)
 				}
-				var resp agentMessage
+
 				if err != nil {
-					resp = agentMessage{RequestID: req.RequestID, Type: "error", Content: err.Error()}
+					writeMsg(agentMessage{RequestID: req.RequestID, Type: "error", Content: err.Error()})
 				} else {
-					resp = agentMessage{RequestID: req.RequestID, Type: "response", Content: response}
+					writeMsg(agentMessage{RequestID: req.RequestID, Type: "response", Content: response})
 				}
-				d, _ = json.Marshal(resp)
-				conn.Write(ctx, websocket.MessageText, d)
 			}(msg)
 
 		default:

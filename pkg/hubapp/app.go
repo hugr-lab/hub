@@ -199,8 +199,9 @@ func (a *HubApp) Init(ctx context.Context) error {
 				return ""
 			}
 			title := strings.TrimSpace(resp.Content)
-			if len(title) > 60 {
-				title = title[:60]
+			runes := []rune(title)
+			if len(runes) > 60 {
+				title = string(runes[:60])
 			}
 			return title
 		},

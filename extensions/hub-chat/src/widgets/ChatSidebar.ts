@@ -58,7 +58,11 @@ export class ChatSidebarWidget extends Widget {
       this.conversations = await listConversations();
       this.renderList();
     } catch (err: any) {
-      this.listEl.innerHTML = `<div class="hub-chat-sidebar-error">${err.message}</div>`;
+      const errEl = document.createElement('div');
+      errEl.className = 'hub-chat-sidebar-error';
+      errEl.textContent = err.message;
+      this.listEl.innerHTML = '';
+      this.listEl.appendChild(errEl);
     }
   }
 
@@ -234,13 +238,14 @@ export class ChatSidebarWidget extends Widget {
       menu.remove();
       const newTitle = prompt('New title:', conv.title);
       if (newTitle && newTitle !== conv.title) {
-        await renameConversation(conv.id, newTitle);
-        // Update open tab title if exists
-        const openTab = this.openWidgets.get(conv.id);
-        if (openTab && !openTab.isDisposed) {
-          openTab.title.label = newTitle;
-        }
-        this.refresh();
+        try {
+          await renameConversation(conv.id, newTitle);
+          const openTab = this.openWidgets.get(conv.id);
+          if (openTab && !openTab.isDisposed) {
+            openTab.title.label = newTitle;
+          }
+          this.refresh();
+        } catch (err: any) { console.error('rename failed:', err); }
       }
     });
     menu.appendChild(rename);
@@ -252,8 +257,10 @@ export class ChatSidebarWidget extends Widget {
       menu.remove();
       const folder = prompt('Folder name (empty to remove from folder):', conv.folder || '');
       if (folder !== null) {
-        await moveConversation(conv.id, folder || null);
-        this.refresh();
+        try {
+          await moveConversation(conv.id, folder || null);
+          this.refresh();
+        } catch (err: any) { console.error('move failed:', err); }
       }
     });
     menu.appendChild(move);
@@ -264,13 +271,14 @@ export class ChatSidebarWidget extends Widget {
     del.addEventListener('click', async () => {
       menu.remove();
       if (confirm(`Delete "${conv.title}"?`)) {
-        // Close open tab first
-        const openTab = this.openWidgets.get(conv.id);
-        if (openTab && !openTab.isDisposed) {
-          openTab.dispose();
-        }
-        await deleteConversation(conv.id);
-        this.refresh();
+        try {
+          const openTab = this.openWidgets.get(conv.id);
+          if (openTab && !openTab.isDisposed) {
+            openTab.dispose();
+          }
+          await deleteConversation(conv.id);
+          this.refresh();
+        } catch (err: any) { console.error('delete failed:', err); }
       }
     });
     menu.appendChild(del);

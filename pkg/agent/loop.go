@@ -57,7 +57,7 @@ func (a *Agent) RunLoopWithHistory(ctx context.Context, history []llmrouter.Mess
 				break
 			}
 		}
-		learnedContext := a.learner.RetrieveContext(context.Background(), lastUserMsg)
+		learnedContext := a.learner.RetrieveContext(ctx, lastUserMsg)
 		systemPrompt := a.skills.SystemPrompt()
 		if learnedContext != "" {
 			systemPrompt += "\n\n" + learnedContext

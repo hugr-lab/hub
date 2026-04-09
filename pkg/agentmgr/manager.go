@@ -217,9 +217,11 @@ func (m *Manager) ensureUser(ctx context.Context, userID, role string) error {
 	)
 	if err == nil {
 		defer res.Close()
-		var users []struct{ ID string `json:"id"` }
-		if err := res.ScanData("hub.db.users", &users); err == nil && len(users) > 0 {
-			return nil // already exists
+		if res.Err() == nil {
+			var users []struct{ ID string `json:"id"` }
+			if err := res.ScanData("hub.db.users", &users); err == nil && len(users) > 0 {
+				return nil // already exists
+			}
 		}
 	}
 
