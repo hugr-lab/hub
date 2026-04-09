@@ -134,7 +134,8 @@ func TestIntegration_ConversationCRUD(t *testing.T) {
 	res, err = app.client.Query(ctx,
 		`query($uid: String!) { hub { db { conversations(
 			filter: { user_id: { eq: $uid } }
-		) { id title mode } } } }`,
+			order_by: [{field: "updated_at", direction: DESC}]
+		) { id title mode updated_at } } } }`,
 		map[string]any{"uid": userID},
 	)
 	if err != nil {
@@ -252,7 +253,8 @@ func TestIntegration_MessagePersistence(t *testing.T) {
 	res2, err := app.client.Query(ctx,
 		`query($cid: String!) { hub { db { agent_messages(
 			filter: { conversation_id: { eq: $cid } }
-		) { role content } } } }`,
+			order_by: [{field: "created_at", direction: ASC}]
+		) { role content created_at } } } }`,
 		map[string]any{"cid": convID},
 	)
 	if err != nil {
