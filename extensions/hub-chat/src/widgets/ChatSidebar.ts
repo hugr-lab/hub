@@ -7,7 +7,7 @@ import { Widget } from '@lumino/widgets';
 import { MainAreaWidget } from '@jupyterlab/apputils';
 import {
   listConversations, createConversation, renameConversation, deleteConversation,
-  listModels, listAgentInstances, Conversation,
+  moveConversation, listModels, listAgentInstances, Conversation,
 } from '../api.js';
 
 type OpenCallback = (conversationId: string, title: string) => void;
@@ -244,6 +244,19 @@ export class ChatSidebarWidget extends Widget {
       }
     });
     menu.appendChild(rename);
+
+    const move = document.createElement('div');
+    move.className = 'hub-chat-ctx-menu-item';
+    move.textContent = 'Move to folder';
+    move.addEventListener('click', async () => {
+      menu.remove();
+      const folder = prompt('Folder name (empty to remove from folder):', conv.folder || '');
+      if (folder !== null) {
+        await moveConversation(conv.id, folder || null);
+        this.refresh();
+      }
+    });
+    menu.appendChild(move);
 
     const del = document.createElement('div');
     del.className = 'hub-chat-ctx-menu-item hub-chat-ctx-menu-item--danger';

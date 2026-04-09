@@ -113,6 +113,7 @@ func (a *HubApp) Init(ctx context.Context) error {
 	mux.HandleFunc("/api/conversations/messages", a.handleConversationMessages)
 	mux.HandleFunc("/api/conversations/delete", a.handleConversationDelete)
 	mux.HandleFunc("/api/conversations/rename", a.handleConversationRename)
+	mux.HandleFunc("/api/conversations/move", a.handleConversationMove)
 	mux.HandleFunc("/api/models", a.handleModelList(router))
 	mux.Handle("/mcp/", mcpSrv.Handler())
 	mux.Handle("/v1/", router.OpenAICompatHandler()) // OpenAI-compatible for third-party agents

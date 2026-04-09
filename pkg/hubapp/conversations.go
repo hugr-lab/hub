@@ -239,6 +239,52 @@ func (a *HubApp) handleConversationDelete(w http.ResponseWriter, r *http.Request
 	json.NewEncoder(w).Encode(map[string]string{"deleted": req.ID})
 }
 
+func (a *HubApp) handleConversationMove(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var req struct {
+		ID     string  `json:"id"`
+		Folder *string `json:"folder"` // null to remove from folder
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" {
+		http.Error(w, "id required", http.StatusBadRequest)
+		return
+	}
+
+	folder := ""
+	if req.Folder != nil {
+		folder = *req.Folder
+	}
+
+	res, err := a.client.Query(r.Context(),
+		`mutation($id: String!, $uid: String!, $folder: String) { hub { db { update_conversations(
+			filter: { id: { eq: $id }, user_id: { eq: $uid } }
+			data: { folder: $folder }
+		) { affected_rows } } } }`,
+		map[string]any{"id": req.ID, "uid": user.ID, "folder": folder},
+	)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("move: %v", err), http.StatusInternalServerError)
+		return
+	}
+	defer res.Close()
+	if res.Err() != nil {
+		http.Error(w, fmt.Sprintf("move: %v", res.Err()), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"moved": req.ID})
+}
+
 func (a *HubApp) handleConversationRename(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

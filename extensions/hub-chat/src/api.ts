@@ -117,6 +117,10 @@ export async function deleteConversation(id: string): Promise<void> {
   await convAPI('delete', { id });
 }
 
+export async function moveConversation(id: string, folder: string | null): Promise<void> {
+  await convAPI('move', { id, folder });
+}
+
 export async function loadMessages(
   conversationId: string,
   limit = 50,
