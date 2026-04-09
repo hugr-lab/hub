@@ -31,7 +31,7 @@ export interface ChatMessage {
 }
 
 export interface WsMessage {
-  type: 'message' | 'response' | 'error' | 'status' | 'tool_call' | 'tool_result';
+  type: 'message' | 'response' | 'error' | 'status' | 'tool_call' | 'tool_result' | 'title_update';
   content: string;
   tool_calls?: any[];
   tool_call_id?: string;

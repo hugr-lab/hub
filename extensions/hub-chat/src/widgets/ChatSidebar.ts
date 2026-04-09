@@ -4,6 +4,7 @@
  * Clicking opens conversation as main area tab.
  */
 import { Widget } from '@lumino/widgets';
+import { MainAreaWidget } from '@jupyterlab/apputils';
 import {
   listConversations, createConversation, renameConversation, deleteConversation,
   Conversation,
@@ -13,12 +14,14 @@ type OpenCallback = (conversationId: string, title: string) => void;
 
 export class ChatSidebarWidget extends Widget {
   private onOpen: OpenCallback;
+  private openWidgets: Map<string, MainAreaWidget>;
   private conversations: Conversation[] = [];
   private listEl: HTMLDivElement;
 
-  constructor(onOpen: OpenCallback) {
+  constructor(onOpen: OpenCallback, openWidgets: Map<string, MainAreaWidget>) {
     super();
     this.onOpen = onOpen;
+    this.openWidgets = openWidgets;
     this.id = 'hub-chat-sidebar';
     this.title.label = 'Chats';
     this.addClass('hub-chat-sidebar');
@@ -174,6 +177,11 @@ export class ChatSidebarWidget extends Widget {
       const newTitle = prompt('New title:', conv.title);
       if (newTitle && newTitle !== conv.title) {
         await renameConversation(conv.id, newTitle);
+        // Update open tab title if exists
+        const openTab = this.openWidgets.get(conv.id);
+        if (openTab && !openTab.isDisposed) {
+          openTab.title.label = newTitle;
+        }
         this.refresh();
       }
     });
@@ -185,6 +193,11 @@ export class ChatSidebarWidget extends Widget {
     del.addEventListener('click', async () => {
       menu.remove();
       if (confirm(`Delete "${conv.title}"?`)) {
+        // Close open tab first
+        const openTab = this.openWidgets.get(conv.id);
+        if (openTab && !openTab.isDisposed) {
+          openTab.dispose();
+        }
         await deleteConversation(conv.id);
         this.refresh();
       }

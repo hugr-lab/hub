@@ -161,6 +161,35 @@ func (a *HubApp) Init(ctx context.Context) error {
 		Persist: func(ctx context.Context, conversationID, role, content string) {
 			a.persistMessage(ctx, conversationID, role, content)
 		},
+		GenTitle: func(ctx context.Context, userMessage string) string {
+			resp, err := router.Complete(ctx, llmrouter.CompletionRequest{
+				Messages: []llmrouter.Message{
+					{Role: "system", Content: "Generate a very short title (3-6 words, no quotes) for a chat that starts with this message. Reply with ONLY the title, nothing else."},
+					{Role: "user", Content: userMessage},
+				},
+			})
+			if err != nil {
+				return ""
+			}
+			title := strings.TrimSpace(resp.Content)
+			if len(title) > 60 {
+				title = title[:60]
+			}
+			return title
+		},
+		SetTitle: func(ctx context.Context, conversationID, title string) {
+			res, err := a.client.Query(ctx,
+				`mutation($id: String!, $title: String!) { hub { db { update_conversations(
+					filter: { id: { eq: $id } }, data: { title: $title }
+				) { affected_rows } } } }`,
+				map[string]any{"id": conversationID, "title": title},
+			)
+			if err != nil {
+				a.logger.Warn("failed to update title", "conversation", conversationID, "error", err)
+				return
+			}
+			defer res.Close()
+		},
 		Logger: a.logger,
 	})
 	mux.Handle("/ws/", ws.Handler())

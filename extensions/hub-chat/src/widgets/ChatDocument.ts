@@ -16,8 +16,10 @@ interface HistoryMessage {
 }
 
 export class ChatDocumentWidget extends Widget {
-  private conversationId: string;
+  readonly conversationId: string;
   private renderer: MessageRenderer;
+  /** Called when title changes (auto-generated or renamed). */
+  onTitleChange: ((newTitle: string) => void) | null = null;
   private messagesEl: HTMLDivElement;
   private inputEl: HTMLTextAreaElement;
   private stopBtn: HTMLButtonElement;
@@ -248,6 +250,13 @@ export class ChatDocumentWidget extends Widget {
           this.scrollToBottom();
         } else {
           this.showStatus(msg.content);
+        }
+        break;
+
+      case 'title_update':
+        this.title.label = msg.content;
+        if (this.onTitleChange) {
+          this.onTitleChange(msg.content);
         }
         break;
 

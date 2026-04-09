@@ -49,14 +49,22 @@ type AgentHandler func(ctx context.Context, instanceID, conversationID, userID, 
 // MessagePersister saves messages to DB.
 type MessagePersister func(ctx context.Context, conversationID, role, content string)
 
+// TitleGenerator generates a short title from the first user message.
+type TitleGenerator func(ctx context.Context, userMessage string) string
+
+// TitleUpdater updates conversation title in DB.
+type TitleUpdater func(ctx context.Context, conversationID, title string)
+
 // Gateway is a WebSocket relay between browser clients and backend.
 type Gateway struct {
-	lookup  ConversationLookup
-	llm     LLMHandler
-	tools   ToolsHandler
-	agent   AgentHandler
-	persist MessagePersister
-	logger  *slog.Logger
+	lookup   ConversationLookup
+	llm      LLMHandler
+	tools    ToolsHandler
+	agent    AgentHandler
+	persist  MessagePersister
+	genTitle TitleGenerator
+	setTitle TitleUpdater
+	logger   *slog.Logger
 
 	mu    sync.Mutex
 	conns map[string]*websocket.Conn // conversationID → active connection
@@ -64,23 +72,27 @@ type Gateway struct {
 
 // Config holds all handlers for the gateway.
 type Config struct {
-	Lookup  ConversationLookup
-	LLM     LLMHandler
-	Tools   ToolsHandler
-	Agent   AgentHandler
-	Persist MessagePersister
-	Logger  *slog.Logger
+	Lookup   ConversationLookup
+	LLM      LLMHandler
+	Tools    ToolsHandler
+	Agent    AgentHandler
+	Persist  MessagePersister
+	GenTitle TitleGenerator
+	SetTitle TitleUpdater
+	Logger   *slog.Logger
 }
 
 func New(cfg Config) *Gateway {
 	return &Gateway{
-		lookup:  cfg.Lookup,
-		llm:     cfg.LLM,
-		tools:   cfg.Tools,
-		agent:   cfg.Agent,
-		persist: cfg.Persist,
-		logger:  cfg.Logger,
-		conns:   make(map[string]*websocket.Conn),
+		lookup:   cfg.Lookup,
+		llm:      cfg.LLM,
+		tools:    cfg.Tools,
+		agent:    cfg.Agent,
+		persist:  cfg.Persist,
+		genTitle: cfg.GenTitle,
+		setTitle: cfg.SetTitle,
+		logger:   cfg.Logger,
+		conns:    make(map[string]*websocket.Conn),
 	}
 }
 
@@ -263,6 +275,25 @@ func (g *Gateway) handleMessage(ctx context.Context, conn *websocket.Conn, userI
 	}
 
 	g.writeJSON(ctx, conn, ChatMessage{Type: "response", Content: response})
+
+	// Auto-generate title after first user message
+	if g.genTitle != nil && g.setTitle != nil && msg.Content != "" {
+		userMsgCount := 0
+		for _, m := range msg.Messages {
+			if m.Role == "user" {
+				userMsgCount++
+			}
+		}
+		if userMsgCount <= 1 {
+			go func() {
+				title := g.genTitle(context.Background(), msg.Content)
+				if title != "" {
+					g.setTitle(context.Background(), conversationID, title)
+					g.writeJSON(context.Background(), conn, ChatMessage{Type: "title_update", Content: title})
+				}
+			}()
+		}
+	}
 }
 
 func (g *Gateway) writeJSON(ctx context.Context, conn *websocket.Conn, msg ChatMessage) {

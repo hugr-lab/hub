@@ -43,6 +43,11 @@ function openConversation(
   main.title.closable = true;
   main.title.icon = chatIcon;
 
+  // Auto-update tab title when chat generates/changes title
+  chatWidget.onTitleChange = (newTitle: string) => {
+    main.title.label = newTitle;
+  };
+
   main.disposed.connect(() => {
     openWidgets.delete(conversationId);
   });
@@ -62,9 +67,12 @@ const chatPlugin: JupyterFrontEndPlugin<void> = {
     const openWidgets = new Map<string, MainAreaWidget>();
 
     // Sidebar with conversation tree
-    const sidebar = new ChatSidebarWidget((conversationId, title) => {
-      openConversation(app, conversationId, title, rendermime, openWidgets);
-    });
+    const sidebar = new ChatSidebarWidget(
+      (conversationId, title) => {
+        openConversation(app, conversationId, title, rendermime, openWidgets);
+      },
+      openWidgets,
+    );
     sidebar.title.icon = chatIcon;
     sidebar.title.caption = 'Hub Chat';
     app.shell.add(sidebar, 'left', { rank: 200 });
