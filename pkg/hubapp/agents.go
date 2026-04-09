@@ -175,6 +175,18 @@ func (a *HubApp) handleAgentDelete(mgr *agentmgr.Manager) http.HandlerFunc {
 			_ = mgr.StopAgent(r.Context(), inst.UserID)
 		}
 
+		// Unlink conversations referencing this instance
+		unlinkRes, err := a.client.Query(r.Context(),
+			`mutation($id: String!) { hub { db { update_conversations(
+				filter: { agent_instance_id: { eq: $id } }
+				data: { agent_instance_id: null }
+			) { affected_rows } } } }`,
+			map[string]any{"id": req.ID},
+		)
+		if err == nil {
+			unlinkRes.Close()
+		}
+
 		// Delete from DB
 		delRes, err := a.client.Query(r.Context(),
 			`mutation($id: String!) { hub { db { delete_agent_instances(
