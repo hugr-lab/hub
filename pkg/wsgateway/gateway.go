@@ -23,22 +23,33 @@ type ConversationInfo struct {
 	Model           string
 }
 
+// LLMMessage is a single message in conversation history (OpenAI-compatible).
+type LLMMessage struct {
+	Role       string `json:"role"`
+	Content    string `json:"content"`
+	ToolCalls  any    `json:"tool_calls,omitempty"`
+	ToolCallID string `json:"tool_call_id,omitempty"`
+}
+
+// StreamCallback sends intermediate messages back to the client.
+type StreamCallback func(msg ChatMessage)
+
 // ConversationLookup resolves conversation info by ID.
 type ConversationLookup func(ctx context.Context, conversationID string) (*ConversationInfo, error)
 
-// LLMHandler handles pure LLM chat (no tools).
-type LLMHandler func(ctx context.Context, model string, conversationID string, message string) (string, error)
+// ToolsHandler handles LLM + Hugr tools chat. Receives full history, streams intermediate results.
+type ToolsHandler func(ctx context.Context, userID string, messages []LLMMessage, stream StreamCallback) (string, error)
 
-// ToolsHandler handles LLM + Hugr tools chat.
-type ToolsHandler func(ctx context.Context, userID string, conversationID string, message string) (string, error)
+// LLMHandler handles pure LLM chat (no tools). Receives full history.
+type LLMHandler func(ctx context.Context, model string, messages []LLMMessage) (string, error)
 
-// AgentHandler sends a message to an agent container. Returns response.
+// AgentHandler sends a message to an agent container.
 type AgentHandler func(ctx context.Context, instanceID, conversationID, userID, message string) (string, error)
 
 // MessagePersister saves messages to DB.
 type MessagePersister func(ctx context.Context, conversationID, role, content string)
 
-// Gateway is a WebSocket relay between browser clients and backend (LLM/tools/agent).
+// Gateway is a WebSocket relay between browser clients and backend.
 type Gateway struct {
 	lookup  ConversationLookup
 	llm     LLMHandler
@@ -76,7 +87,6 @@ func New(cfg Config) *Gateway {
 // Handler returns an http.Handler for /ws/{conversation_id}.
 func (g *Gateway) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Extract conversation_id from path: /ws/{conversation_id}
 		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/ws/"), "/")
 		if len(parts) == 0 || parts[0] == "" {
 			http.Error(w, "conversation_id required in path", http.StatusBadRequest)
@@ -84,7 +94,6 @@ func (g *Gateway) Handler() http.Handler {
 		}
 		conversationID := parts[0]
 
-		// Get user from auth context
 		authUser, ok := auth.UserFromContext(r.Context())
 		if !ok {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -100,7 +109,6 @@ func (g *Gateway) Handler() http.Handler {
 		}
 		defer conn.CloseNow()
 
-		// Track connection by conversation
 		var prev *websocket.Conn
 		g.mu.Lock()
 		if old, ok := g.conns[conversationID]; ok {
@@ -129,8 +137,11 @@ func (g *Gateway) Handler() http.Handler {
 
 // ChatMessage is the wire format for WebSocket messages.
 type ChatMessage struct {
-	Type    string `json:"type"`    // "message", "response", "error", "status"
-	Content string `json:"content"` // message text or status info
+	Type       string `json:"type"`                  // "message", "response", "error", "status", "tool_call", "tool_result"
+	Content    string `json:"content,omitempty"`      // text content
+	Messages   []LLMMessage `json:"messages,omitempty"` // full history (client → server)
+	ToolCalls  any    `json:"tool_calls,omitempty"`  // tool calls from LLM
+	ToolCallID string `json:"tool_call_id,omitempty"` // for tool_result
 }
 
 func (g *Gateway) readLoop(ctx context.Context, conn *websocket.Conn, userID, conversationID string) {
@@ -138,7 +149,7 @@ func (g *Gateway) readLoop(ctx context.Context, conn *websocket.Conn, userID, co
 
 	defer func() {
 		if cancelCurrent != nil {
-			cancelCurrent() // cancel any running handleMessage on disconnect
+			cancelCurrent()
 		}
 	}()
 
@@ -161,15 +172,13 @@ func (g *Gateway) readLoop(ctx context.Context, conn *websocket.Conn, userID, co
 
 		switch msg.Type {
 		case "message":
-			// Cancel previous request if still running
 			if cancelCurrent != nil {
 				cancelCurrent()
 			}
 			msgCtx, cancel := context.WithCancel(ctx)
 			cancelCurrent = cancel
-			g.handleMessage(msgCtx, conn, userID, conversationID, msg.Content)
+			g.handleMessage(msgCtx, conn, userID, conversationID, msg)
 		case "cancel":
-			// Explicit cancel from UI
 			if cancelCurrent != nil {
 				cancelCurrent()
 				cancelCurrent = nil
@@ -181,12 +190,12 @@ func (g *Gateway) readLoop(ctx context.Context, conn *websocket.Conn, userID, co
 	}
 }
 
-func (g *Gateway) handleMessage(ctx context.Context, conn *websocket.Conn, userID, conversationID, content string) {
-	g.logger.Info("chat message", "user", userID, "conversation", conversationID, "length", len(content))
+func (g *Gateway) handleMessage(ctx context.Context, conn *websocket.Conn, userID, conversationID string, msg ChatMessage) {
+	g.logger.Info("chat message", "user", userID, "conversation", conversationID, "history_len", len(msg.Messages))
 
-	// Persist user message
-	if g.persist != nil {
-		g.persist(ctx, conversationID, "user", content)
+	// Persist user message (last in history)
+	if g.persist != nil && msg.Content != "" {
+		g.persist(ctx, conversationID, "user", msg.Content)
 	}
 
 	// Lookup conversation to determine mode
@@ -198,35 +207,39 @@ func (g *Gateway) handleMessage(ctx context.Context, conn *websocket.Conn, userI
 
 	g.writeJSON(ctx, conn, ChatMessage{Type: "status", Content: "thinking"})
 
+	// Stream callback — sends intermediate messages to client
+	stream := func(m ChatMessage) {
+		g.writeJSON(ctx, conn, m)
+	}
+
 	var response string
 
 	switch conv.Mode {
 	case "llm":
 		if g.llm != nil {
-			response, err = g.llm(ctx, conv.Model, conversationID, content)
+			response, err = g.llm(ctx, conv.Model, msg.Messages)
 		} else {
 			err = fmt.Errorf("LLM mode not configured")
 		}
 
 	case "tools":
 		if g.tools != nil {
-			response, err = g.tools(ctx, userID, conversationID, content)
+			response, err = g.tools(ctx, userID, msg.Messages, stream)
 		} else {
 			err = fmt.Errorf("tools mode not configured")
 		}
 
 	case "agent":
 		if g.agent != nil {
-			response, err = g.agent(ctx, conv.AgentInstanceID, conversationID, userID, content)
+			response, err = g.agent(ctx, conv.AgentInstanceID, conversationID, userID, msg.Content)
 		}
-		// Fallback to tools if agent handler fails or not connected
 		if g.agent == nil || err != nil {
 			if err != nil {
 				g.logger.Warn("agent unavailable, falling back to tools", "instance", conv.AgentInstanceID, "error", err)
-				g.writeJSON(ctx, conn, ChatMessage{Type: "status", Content: "agent offline, using tools mode"})
+				stream(ChatMessage{Type: "status", Content: "agent offline, using tools mode"})
 			}
 			if g.tools != nil {
-				response, err = g.tools(ctx, userID, conversationID, content)
+				response, err = g.tools(ctx, userID, msg.Messages, stream)
 			} else {
 				err = fmt.Errorf("no handler available")
 			}
@@ -237,6 +250,9 @@ func (g *Gateway) handleMessage(ctx context.Context, conn *websocket.Conn, userI
 	}
 
 	if err != nil {
+		if ctx.Err() != nil {
+			return // cancelled, don't send error
+		}
 		g.writeJSON(ctx, conn, ChatMessage{Type: "error", Content: err.Error()})
 		return
 	}

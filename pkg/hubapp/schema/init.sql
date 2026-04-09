@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS conversations (
 
 -- Agent sessions
 CREATE TABLE IF NOT EXISTS agent_sessions (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  id UUID PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id),
   instance_id UUID REFERENCES agent_instances(id),
   started_at TIMESTAMPTZ DEFAULT now(),

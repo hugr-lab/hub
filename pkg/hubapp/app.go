@@ -2,6 +2,7 @@ package hubapp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
@@ -126,13 +127,37 @@ func (a *HubApp) Init(ctx context.Context) error {
 		Lookup: func(ctx context.Context, conversationID string) (*wsgateway.ConversationInfo, error) {
 			return a.lookupConversation(ctx, conversationID)
 		},
-		LLM: func(ctx context.Context, model, conversationID, message string) (string, error) {
-			return router.CompleteDirect(ctx, model, message)
+		LLM: func(ctx context.Context, model string, messages []wsgateway.LLMMessage) (string, error) {
+			// Convert to llmrouter.Message
+			msgs := make([]llmrouter.Message, len(messages))
+			for i, m := range messages {
+				msgs[i] = llmrouter.Message{Role: m.Role, Content: m.Content}
+			}
+			resp, err := router.Complete(ctx, llmrouter.CompletionRequest{Messages: msgs})
+			if err != nil {
+				return "", err
+			}
+			return resp.Content, nil
 		},
-		Tools: func(ctx context.Context, userID, conversationID, message string) (string, error) {
-			return mcpSrv.HandleUserMessage(ctx, userID, message)
+		Tools: func(ctx context.Context, userID string, messages []wsgateway.LLMMessage, stream wsgateway.StreamCallback) (string, error) {
+			// Convert to llmrouter.Message
+			msgs := make([]llmrouter.Message, len(messages))
+			for i, m := range messages {
+				msgs[i] = llmrouter.Message{
+					Role: m.Role, Content: m.Content,
+					ToolCallID: m.ToolCallID,
+				}
+				if m.ToolCalls != nil {
+					msgs[i].ToolCalls = toAnySlice(m.ToolCalls)
+				}
+			}
+			return mcpSrv.HandleUserMessage(ctx, userID, msgs, func(msgType, content string, toolCalls any, toolCallID string) {
+				stream(wsgateway.ChatMessage{
+					Type: msgType, Content: content,
+					ToolCalls: toolCalls, ToolCallID: toolCallID,
+				})
+			})
 		},
-		// Agent handler wired when agentconn manager is implemented (T025)
 		Persist: func(ctx context.Context, conversationID, role, content string) {
 			a.persistMessage(ctx, conversationID, role, content)
 		},
@@ -199,6 +224,13 @@ func (a *HubApp) lookupConversation(ctx context.Context, conversationID string) 
 		ID: c.ID, UserID: c.UserID, Mode: c.Mode,
 		AgentInstanceID: c.AgentInstanceID, Model: c.Model,
 	}, nil
+}
+
+func toAnySlice(v any) []any {
+	data, _ := json.Marshal(v)
+	var result []any
+	json.Unmarshal(data, &result)
+	return result
 }
 
 func (a *HubApp) persistMessage(ctx context.Context, conversationID, role, content string) {

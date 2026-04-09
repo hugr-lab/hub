@@ -31,8 +31,10 @@ export interface ChatMessage {
 }
 
 export interface WsMessage {
-  type: 'message' | 'response' | 'error' | 'status';
+  type: 'message' | 'response' | 'error' | 'status' | 'tool_call' | 'tool_result';
   content: string;
+  tool_calls?: any[];
+  tool_call_id?: string;
 }
 
 // ── Conversation API ───────────────────────────────────

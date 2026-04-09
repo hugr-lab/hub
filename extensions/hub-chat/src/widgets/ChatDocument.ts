@@ -1,15 +1,19 @@
 /**
  * ChatDocument — main area widget for a single conversation.
- * Displays message history, input area, status bar.
- * Connects to Hub Service via WebSocket for real-time messaging.
+ * Client owns the full message history (including tool_calls/tool_results).
+ * Hub Service is a stateless proxy to LLM.
  */
 import { Widget } from '@lumino/widgets';
 import { IRenderMimeRegistry } from '@jupyterlab/rendermime';
-import {
-  loadMessages, getWsBaseUrl, connectWebSocket, sendMessage as wsSend,
-  ChatMessage, WsMessage,
-} from '../api.js';
+import { loadMessages, getWsBaseUrl, connectWebSocket, WsMessage } from '../api.js';
 import { MessageRenderer } from './MessageRenderer.js';
+
+interface HistoryMessage {
+  role: string;
+  content: string;
+  tool_calls?: any;
+  tool_call_id?: string;
+}
 
 export class ChatDocumentWidget extends Widget {
   private conversationId: string;
@@ -24,6 +28,9 @@ export class ChatDocumentWidget extends Widget {
   private oldestTimestamp: string | null = null;
   private hasMore = true;
 
+  // Full conversation history — sent to Hub Service with each message
+  private chatHistory: HistoryMessage[] = [];
+
   constructor(conversationId: string, title: string, rendermime: IRenderMimeRegistry) {
     super();
     this.conversationId = conversationId;
@@ -32,13 +39,17 @@ export class ChatDocumentWidget extends Widget {
     this.title.label = title;
     this.title.closable = true;
 
-    // Messages area
+    // System prompt
+    this.chatHistory.push({
+      role: 'system',
+      content: 'You are a helpful data assistant for Analytics Hub. You have access to Hugr Data Mesh tools for data discovery, schema exploration, and query execution. Use tools to find and analyze data.',
+    });
+
     this.messagesEl = document.createElement('div');
     this.messagesEl.className = 'hub-chat-messages';
     this.messagesEl.addEventListener('scroll', () => this.onScroll());
     this.node.appendChild(this.messagesEl);
 
-    // Input area
     const inputArea = document.createElement('div');
     inputArea.className = 'hub-chat-input-area';
 
@@ -70,16 +81,13 @@ export class ChatDocumentWidget extends Widget {
     this.stopBtn.addEventListener('click', () => this.handleStop());
     inputArea.appendChild(sendBtn);
     inputArea.appendChild(this.stopBtn);
-
     this.node.appendChild(inputArea);
 
-    // Status bar
     this.statusEl = document.createElement('div');
     this.statusEl.className = 'hub-chat-status-bar';
     this.statusEl.textContent = 'connecting...';
     this.node.appendChild(this.statusEl);
 
-    // Load messages and connect
     this.initialize();
   }
 
@@ -92,10 +100,7 @@ export class ChatDocumentWidget extends Widget {
   }
 
   private async initialize(): Promise<void> {
-    // Load recent messages
     await this.loadInitialMessages();
-
-    // Connect WebSocket
     try {
       const wsBase = await getWsBaseUrl();
       this.ws = connectWebSocket(
@@ -106,7 +111,7 @@ export class ChatDocumentWidget extends Widget {
         () => this.updateStatus('error'),
       );
       this.ws.onopen = () => this.updateStatus('connected');
-    } catch (err: any) {
+    } catch {
       this.updateStatus('connection failed');
     }
   }
@@ -114,10 +119,18 @@ export class ChatDocumentWidget extends Widget {
   private async loadInitialMessages(): Promise<void> {
     try {
       const messages = await loadMessages(this.conversationId, 50);
-      // Messages come newest-first, reverse for display
       messages.reverse();
       for (const msg of messages) {
-        await this.appendMessage(msg.role, msg.content, msg.created_at);
+        // Rebuild chatHistory from DB
+        const histMsg: HistoryMessage = { role: msg.role, content: msg.content };
+        if (msg.tool_calls) histMsg.tool_calls = msg.tool_calls;
+        if (msg.tool_call_id) histMsg.tool_call_id = msg.tool_call_id;
+        this.chatHistory.push(histMsg);
+
+        // Only show user/assistant messages in UI (not tool messages)
+        if (msg.role === 'user' || msg.role === 'assistant') {
+          await this.appendMessage(msg.role, msg.content, msg.created_at);
+        }
       }
       if (messages.length > 0) {
         this.oldestTimestamp = messages[0].created_at;
@@ -132,16 +145,16 @@ export class ChatDocumentWidget extends Widget {
   private async loadOlderMessages(): Promise<void> {
     if (this.loading || !this.hasMore || !this.oldestTimestamp) return;
     this.loading = true;
-
     try {
       const messages = await loadMessages(this.conversationId, 50, this.oldestTimestamp);
       messages.reverse();
       const scrollHeight = this.messagesEl.scrollHeight;
       for (const msg of messages) {
-        const el = await this.renderer.render(msg.role, msg.content, msg.created_at);
-        this.messagesEl.insertBefore(el, this.messagesEl.firstChild);
+        if (msg.role === 'user' || msg.role === 'assistant') {
+          const el = await this.renderer.render(msg.role, msg.content, msg.created_at);
+          this.messagesEl.insertBefore(el, this.messagesEl.firstChild);
+        }
       }
-      // Maintain scroll position
       this.messagesEl.scrollTop = this.messagesEl.scrollHeight - scrollHeight;
       if (messages.length > 0) {
         this.oldestTimestamp = messages[0].created_at;
@@ -176,12 +189,17 @@ export class ChatDocumentWidget extends Widget {
     this.processing = true;
     this.stopBtn.style.display = '';
 
-    // Show user message immediately
+    // Add to history and show
+    this.chatHistory.push({ role: 'user', content: text });
     await this.appendMessage('user', text);
     this.scrollToBottom();
 
-    // Send via WebSocket
-    wsSend(this.ws, text);
+    // Send full history to Hub Service
+    this.ws.send(JSON.stringify({
+      type: 'message',
+      content: text,
+      messages: this.chatHistory,
+    }));
   }
 
   private statusElement: HTMLElement | null = null;
@@ -192,9 +210,35 @@ export class ChatDocumentWidget extends Widget {
         this.removeStatus();
         this.processing = false;
         this.stopBtn.style.display = 'none';
+        // Add to history
+        this.chatHistory.push({ role: 'assistant', content: msg.content });
         await this.appendMessage('assistant', msg.content);
         this.scrollToBottom();
         break;
+
+      case 'tool_call':
+        // LLM wants to call tools — add assistant message with tool_calls to history
+        this.chatHistory.push({
+          role: 'assistant',
+          content: msg.content || '',
+          tool_calls: msg.tool_calls,
+        });
+        // Show tool calls in UI as status
+        if (Array.isArray(msg.tool_calls)) {
+          const names = msg.tool_calls.map((tc: any) => tc.name).join(', ');
+          this.showStatus(`calling: ${names}`);
+        }
+        break;
+
+      case 'tool_result':
+        // Tool result — add to history
+        this.chatHistory.push({
+          role: 'tool',
+          content: msg.content,
+          tool_call_id: msg.tool_call_id,
+        });
+        break;
+
       case 'status':
         if (msg.content === 'cancelled') {
           this.removeStatus();
@@ -206,6 +250,7 @@ export class ChatDocumentWidget extends Widget {
           this.showStatus(msg.content);
         }
         break;
+
       case 'error':
         this.removeStatus();
         this.processing = false;

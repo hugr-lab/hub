@@ -78,45 +78,26 @@ func (s *Server) Handler() http.Handler {
 	})
 }
 
-// HandleUserMessage processes a chat message via multi-turn agentic loop.
-// Uses LLM with Hugr tools (discovery, schema, data, memory, registry).
-// This is the "tools" mode handler — no agent container needed.
-func (s *Server) HandleUserMessage(ctx context.Context, userID, message string) (string, error) {
+// StatusCallback sends intermediate messages to the client.
+type StatusCallback func(msgType, content string, toolCalls any, toolCallID string)
+
+// HandleUserMessage processes a chat via multi-turn agentic loop.
+// Client sends full message history. Hub streams tool_calls/tool_results back.
+func (s *Server) HandleUserMessage(ctx context.Context, userID string, clientMessages []llmrouter.Message, stream StatusCallback) (string, error) {
 	const maxTurns = 15
 
-	// Build system prompt with memory context
-	systemPrompt := "You are a helpful data assistant for Analytics Hub. You have access to Hugr Data Mesh tools for data discovery, schema exploration, and query execution. Use tools to find and analyze data."
-
-	var memoryCtx string
-	memRes, err := s.hugrClient.Query(ctx,
-		`query($uid: String!) { hub { db { agent_memory(filter: { user_id: { eq: $uid } }, limit: 5, order_by: [{field: "created_at", direction: DESC}]) { content category } } } }`,
-		map[string]any{"uid": userID},
-	)
-	if err == nil {
-		defer memRes.Close()
-		if memRes.Err() == nil {
-			var memories []map[string]any
-			if scanErr := memRes.ScanData("hub.db.agent_memory", &memories); scanErr == nil && len(memories) > 0 {
-				data, _ := json.Marshal(memories)
-				memoryCtx = string(data)
-			}
-		}
-	}
-	if memoryCtx != "" {
-		systemPrompt += "\n\nRelevant memories:\n" + memoryCtx
-	}
-
-	// Build available tools from Hugr MCP (discovery, schema, data tools)
-	// For tools mode we use a predefined set, not the full agent toolset
 	tools := s.getToolsForLLM()
 
-	history := []llmrouter.Message{
-		{Role: "system", Content: systemPrompt},
-		{Role: "user", Content: message},
-	}
+	// Use client history as-is — client owns the conversation state
+	history := make([]llmrouter.Message, len(clientMessages))
+	copy(history, clientMessages)
 
 	// Multi-turn loop
 	for turn := 0; turn < maxTurns; turn++ {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+
 		resp, err := s.llmRouter.Complete(ctx, llmrouter.CompletionRequest{
 			Messages: history,
 			Tools:    tools,
@@ -138,10 +119,15 @@ func (s *Server) HandleUserMessage(ctx context.Context, userID, message string) 
 			Arguments map[string]any `json:"arguments"`
 		}
 		if err := json.Unmarshal([]byte(resp.ToolCalls), &toolCalls); err != nil {
-			return resp.Content, nil // can't parse, treat as final
+			return resp.Content, nil
 		}
 		if len(toolCalls) == 0 {
 			return resp.Content, nil
+		}
+
+		// Stream tool_calls to client
+		if stream != nil {
+			stream("tool_call", resp.Content, toolCalls, "")
 		}
 
 		// Add assistant message with tool calls
@@ -151,12 +137,26 @@ func (s *Server) HandleUserMessage(ctx context.Context, userID, message string) 
 			ToolCalls: toAnySlice(toolCalls),
 		})
 
-		// Execute each tool call via MCP
+		// Execute each tool call
 		for _, tc := range toolCalls {
+			if ctx.Err() != nil {
+				return "", ctx.Err()
+			}
+
+			if stream != nil {
+				stream("status", fmt.Sprintf("tool:%s", tc.Name), nil, "")
+			}
+
 			result, toolErr := s.executeTool(ctx, userID, tc.Name, tc.Arguments)
 			if toolErr != nil {
 				result = fmt.Sprintf("Error: %v", toolErr)
 			}
+
+			// Stream tool_result to client
+			if stream != nil {
+				stream("tool_result", result, nil, tc.ID)
+			}
+
 			history = append(history, llmrouter.Message{
 				Role:       "tool",
 				Content:    result,
