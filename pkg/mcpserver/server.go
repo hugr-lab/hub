@@ -270,32 +270,64 @@ func extractToolText(result *mcp.CallToolResult) string {
 	return text
 }
 
-// getToolsForLLM returns tool definitions for the LLM in tools mode.
+// getToolsForLLM returns tool definitions dynamically from query-engine MCP.
 func (s *Server) getToolsForLLM() []llmrouter.Tool {
-	// These are the Hugr discovery/schema/data tools that the LLM can call
-	return []llmrouter.Tool{
-		{Name: "discovery-search_modules", Description: "Search for data modules by keyword", Parameters: map[string]any{
-			"type": "object", "properties": map[string]any{"query": map[string]any{"type": "string", "description": "Search query"}}, "required": []string{"query"},
-		}},
-		{Name: "discovery-search_module_data_objects", Description: "Search tables/views in a module", Parameters: map[string]any{
-			"type": "object", "properties": map[string]any{"module": map[string]any{"type": "string"}, "query": map[string]any{"type": "string"}}, "required": []string{"module"},
-		}},
-		{Name: "schema-type_fields", Description: "List fields of a type with descriptions", Parameters: map[string]any{
-			"type": "object", "properties": map[string]any{"type_name": map[string]any{"type": "string", "description": "GraphQL type name"}}, "required": []string{"type_name"},
-		}},
-		{Name: "data-inline_graphql_result", Description: "Execute a GraphQL query and return results", Parameters: map[string]any{
-			"type": "object", "properties": map[string]any{"query": map[string]any{"type": "string", "description": "GraphQL query"}, "jq": map[string]any{"type": "string", "description": "Optional jq filter"}}, "required": []string{"query"},
-		}},
-		{Name: "data-validate_graphql_query", Description: "Validate a GraphQL query without executing", Parameters: map[string]any{
-			"type": "object", "properties": map[string]any{"query": map[string]any{"type": "string"}}, "required": []string{"query"},
-		}},
-		{Name: "memory-store", Description: "Store information in agent memory", Parameters: map[string]any{
-			"type": "object", "properties": map[string]any{"content": map[string]any{"type": "string"}, "category": map[string]any{"type": "string"}}, "required": []string{"content"},
-		}},
-		{Name: "memory-search", Description: "Search agent memory for relevant information", Parameters: map[string]any{
-			"type": "object", "properties": map[string]any{"query": map[string]any{"type": "string"}, "limit": map[string]any{"type": "number"}}, "required": []string{"query"},
-		}},
+	// Create MCP server with all tools and list them
+	mcpSrv := server.NewMCPServer("hugr-tools-list", "0.1.0", server.WithToolCapabilities(true))
+	wrapped := qemcp.New(s.hugrClient, mcpSrv, s.debug)
+	_ = wrapped
+
+	// Initialize
+	initMsg, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "initialize",
+		"params": map[string]any{
+			"protocolVersion": "2025-03-26",
+			"capabilities":    map[string]any{},
+			"clientInfo":      map[string]any{"name": "hub-tools-list", "version": "0.1.0"},
+		},
+	})
+	mcpSrv.HandleMessage(context.Background(), json.RawMessage(initMsg))
+
+	// List tools
+	listMsg, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0", "id": 2, "method": "tools/list",
+	})
+	result := mcpSrv.HandleMessage(context.Background(), json.RawMessage(listMsg))
+
+	resultBytes, _ := json.Marshal(result)
+	var resp struct {
+		Result struct {
+			Tools []struct {
+				Name        string `json:"name"`
+				Description string `json:"description"`
+				InputSchema any    `json:"inputSchema"`
+			} `json:"tools"`
+		} `json:"result"`
 	}
+	if err := json.Unmarshal(resultBytes, &resp); err != nil {
+		s.logger.Warn("failed to list MCP tools", "error", err)
+		return nil
+	}
+
+	tools := make([]llmrouter.Tool, 0, len(resp.Result.Tools))
+	for _, t := range resp.Result.Tools {
+		// Convert inputSchema to map
+		var params map[string]any
+		if schema, ok := t.InputSchema.(map[string]any); ok {
+			params = schema
+		} else {
+			schemaBytes, _ := json.Marshal(t.InputSchema)
+			json.Unmarshal(schemaBytes, &params)
+		}
+		tools = append(tools, llmrouter.Tool{
+			Name:        t.Name,
+			Description: t.Description,
+			Parameters:  params,
+		})
+	}
+
+	s.logger.Info("loaded LLM tools from MCP", "count", len(tools))
+	return tools
 }
 
 func toAnySlice(v any) []any {
