@@ -157,6 +157,10 @@ func (a *HubApp) handleAgentDelete(mgr *agentmgr.Manager) http.HandlerFunc {
 			return
 		}
 		defer res.Close()
+		if res.Err() != nil {
+			http.Error(w, fmt.Sprintf("query: %v", res.Err()), http.StatusInternalServerError)
+			return
+		}
 
 		var instances []struct {
 			ID          string `json:"id"`
@@ -184,6 +188,9 @@ func (a *HubApp) handleAgentDelete(mgr *agentmgr.Manager) http.HandlerFunc {
 			map[string]any{"id": req.ID},
 		)
 		if err == nil {
+			if unlinkRes.Err() != nil {
+				a.logger.Warn("unlink conversations error", "instance", req.ID, "error", unlinkRes.Err())
+			}
 			unlinkRes.Close()
 		}
 
@@ -199,6 +206,10 @@ func (a *HubApp) handleAgentDelete(mgr *agentmgr.Manager) http.HandlerFunc {
 			return
 		}
 		defer delRes.Close()
+		if delRes.Err() != nil {
+			http.Error(w, fmt.Sprintf("delete: %v", delRes.Err()), http.StatusInternalServerError)
+			return
+		}
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"deleted": req.ID})
