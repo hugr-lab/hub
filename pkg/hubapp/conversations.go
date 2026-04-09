@@ -45,8 +45,10 @@ func (a *HubApp) handleConversationCreate(w http.ResponseWriter, r *http.Request
 	}
 
 	var req struct {
-		Title string `json:"title"`
-		Mode  string `json:"mode"`
+		Title           string `json:"title"`
+		Mode            string `json:"mode"`
+		Model           string `json:"model"`
+		AgentInstanceID string `json:"agent_instance_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid body", http.StatusBadRequest)
@@ -64,14 +66,28 @@ func (a *HubApp) handleConversationCreate(w http.ResponseWriter, r *http.Request
 
 	convID := fmt.Sprintf("conv-%d", time.Now().UnixNano())
 
-	res, err := a.client.Query(r.Context(),
-		`mutation($id: String!, $uid: String!, $title: String!, $mode: String!) {
-			hub { db { insert_conversations(data: {
-				id: $id, user_id: $uid, title: $title, mode: $mode
-			}) { id title mode } } }
-		}`,
-		map[string]any{"id": convID, "uid": user.ID, "title": req.Title, "mode": req.Mode},
-	)
+	vars := map[string]any{"id": convID, "uid": user.ID, "title": req.Title, "mode": req.Mode}
+	dataFields := `id: $id, user_id: $uid, title: $title, mode: $mode`
+	varDefs := `$id: String!, $uid: String!, $title: String!, $mode: String!`
+
+	if req.Model != "" {
+		varDefs += `, $model: String`
+		dataFields += `, model: $model`
+		vars["model"] = req.Model
+	}
+	if req.AgentInstanceID != "" {
+		varDefs += `, $aid: String`
+		dataFields += `, agent_instance_id: $aid`
+		vars["aid"] = req.AgentInstanceID
+	}
+
+	gql := fmt.Sprintf(`mutation(%s) {
+		hub { db { insert_conversations(data: {
+			%s
+		}) { id title mode model } } }
+	}`, varDefs, dataFields)
+
+	res, err := a.client.Query(r.Context(), gql, vars)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("create: %v", err), http.StatusInternalServerError)
 		return

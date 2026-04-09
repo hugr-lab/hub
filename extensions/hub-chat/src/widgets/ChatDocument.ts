@@ -26,6 +26,9 @@ export class ChatDocumentWidget extends Widget {
   private statusEl: HTMLDivElement;
   private processing = false;
   private ws: WebSocket | null = null;
+  private wsBase: string | null = null;
+  private reconnectAttempt = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private loading = false;
   private oldestTimestamp: string | null = null;
   private hasMore = true;
@@ -94,6 +97,10 @@ export class ChatDocumentWidget extends Widget {
   }
 
   dispose(): void {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     if (this.ws) {
       this.ws.close();
       this.ws = null;
@@ -104,18 +111,48 @@ export class ChatDocumentWidget extends Widget {
   private async initialize(): Promise<void> {
     await this.loadInitialMessages();
     try {
-      const wsBase = await getWsBaseUrl();
-      this.ws = connectWebSocket(
-        wsBase,
-        this.conversationId,
-        (msg) => this.onWsMessage(msg),
-        () => this.updateStatus('disconnected'),
-        () => this.updateStatus('error'),
-      );
-      this.ws.onopen = () => this.updateStatus('connected');
+      this.wsBase = await getWsBaseUrl();
+      this.connectWs();
     } catch {
       this.updateStatus('connection failed');
     }
+  }
+
+  private connectWs(): void {
+    if (!this.wsBase || this.isDisposed) return;
+
+    this.ws = connectWebSocket(
+      this.wsBase,
+      this.conversationId,
+      (msg) => this.onWsMessage(msg),
+      () => this.onWsClose(),
+      () => this.onWsClose(),
+    );
+    this.ws.onopen = () => {
+      this.reconnectAttempt = 0;
+      this.updateStatus('connected');
+    };
+  }
+
+  private onWsClose(): void {
+    if (this.isDisposed) return;
+    this.ws = null;
+    this.processing = false;
+    this.stopBtn.style.display = 'none';
+    this.removeStatus();
+
+    // Exponential backoff: 1s, 2s, 4s, 8s, ... max 30s
+    const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempt), 30000);
+    this.reconnectAttempt++;
+    this.updateStatus(`reconnecting in ${Math.round(delay / 1000)}s...`);
+
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      if (!this.isDisposed) {
+        this.updateStatus('reconnecting...');
+        this.connectWs();
+      }
+    }, delay);
   }
 
   private async loadInitialMessages(): Promise<void> {
@@ -296,6 +333,9 @@ export class ChatDocumentWidget extends Widget {
 
   private updateStatus(status: string): void {
     this.statusEl.textContent = status;
-    this.statusEl.className = `hub-chat-status-bar hub-chat-status-bar--${status}`;
+    // Map status text to CSS class
+    let cssStatus = status;
+    if (status.startsWith('reconnecting')) cssStatus = 'reconnecting';
+    this.statusEl.className = `hub-chat-status-bar hub-chat-status-bar--${cssStatus}`;
   }
 }

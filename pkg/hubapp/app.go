@@ -108,6 +108,7 @@ func (a *HubApp) Init(ctx context.Context) error {
 	mux.HandleFunc("/api/conversations/messages", a.handleConversationMessages)
 	mux.HandleFunc("/api/conversations/delete", a.handleConversationDelete)
 	mux.HandleFunc("/api/conversations/rename", a.handleConversationRename)
+	mux.HandleFunc("/api/models", a.handleModelList(router))
 	mux.Handle("/mcp/", mcpSrv.Handler())
 	mux.Handle("/v1/", router.OpenAICompatHandler()) // OpenAI-compatible for third-party agents
 
@@ -282,6 +283,19 @@ func (a *HubApp) persistMessage(ctx context.Context, conversationID, role, conte
 	defer res.Close()
 	if res.Err() != nil {
 		a.logger.Warn("persist message query error", "conversation", conversationID, "error", res.Err())
+	}
+}
+
+func (a *HubApp) handleModelList(router *llmrouter.Router) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		models, err := router.ListModels(r.Context())
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode([]any{})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(models)
 	}
 }
 

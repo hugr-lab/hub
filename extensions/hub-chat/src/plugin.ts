@@ -2,15 +2,18 @@
  * Hub Chat JupyterLab Extension — conversation sidebar + main area chat widgets.
  */
 import {
+  ILayoutRestorer,
   JupyterFrontEnd,
   JupyterFrontEndPlugin,
 } from '@jupyterlab/application';
-import { MainAreaWidget } from '@jupyterlab/apputils';
+import { MainAreaWidget, WidgetTracker } from '@jupyterlab/apputils';
 import { IRenderMimeRegistry } from '@jupyterlab/rendermime';
 import { LabIcon } from '@jupyterlab/ui-components';
 
 import { ChatDocumentWidget } from './widgets/ChatDocument.js';
 import { ChatSidebarWidget } from './widgets/ChatSidebar.js';
+
+const NAMESPACE = 'hub-chat';
 
 const chatIcon = new LabIcon({
   name: '@hugr-lab/jupyterlab-hub-chat:icon',
@@ -28,7 +31,8 @@ function openConversation(
   conversationId: string,
   title: string,
   rendermime: IRenderMimeRegistry,
-  openWidgets: Map<string, MainAreaWidget>,
+  openWidgets: Map<string, MainAreaWidget<ChatDocumentWidget>>,
+  tracker: WidgetTracker<MainAreaWidget<ChatDocumentWidget>>,
   onSidebarRefresh?: () => void,
 ): void {
   const existing = openWidgets.get(conversationId);
@@ -47,7 +51,6 @@ function openConversation(
   // Auto-update tab title when chat generates/changes title
   chatWidget.onTitleChange = (newTitle: string) => {
     main.title.label = newTitle;
-    // Refresh sidebar to show updated title
     if (onSidebarRefresh) onSidebarRefresh();
   };
 
@@ -56,23 +59,57 @@ function openConversation(
   });
 
   openWidgets.set(conversationId, main);
+  tracker.add(main);
   app.shell.add(main, 'main');
   app.shell.activateById(main.id);
 }
+
+const OPEN_COMMAND = 'hub-chat:open';
 
 const chatPlugin: JupyterFrontEndPlugin<void> = {
   id: '@hugr-lab/jupyterlab-hub-chat:plugin',
   autoStart: true,
   requires: [IRenderMimeRegistry],
-  activate: (app: JupyterFrontEnd, rendermime: IRenderMimeRegistry) => {
+  optional: [ILayoutRestorer],
+  activate: (
+    app: JupyterFrontEnd,
+    rendermime: IRenderMimeRegistry,
+    restorer: ILayoutRestorer | null,
+  ) => {
     console.log('Hub Chat extension activated');
 
-    const openWidgets = new Map<string, MainAreaWidget>();
+    const openWidgets = new Map<string, MainAreaWidget<ChatDocumentWidget>>();
+    const tracker = new WidgetTracker<MainAreaWidget<ChatDocumentWidget>>({ namespace: NAMESPACE });
+
+    let sidebar: ChatSidebarWidget;
+
+    // Command to open a conversation (used by restorer and sidebar)
+    app.commands.addCommand(OPEN_COMMAND, {
+      execute: (args) => {
+        const id = args['id'] as string;
+        const title = (args['title'] as string) || 'Chat';
+        if (id) {
+          openConversation(app, id, title, rendermime, openWidgets, tracker, () => sidebar?.refresh());
+        }
+      },
+    });
+
+    // Restore open chat tabs after page reload
+    if (restorer) {
+      restorer.restore(tracker, {
+        command: OPEN_COMMAND,
+        args: (widget) => ({
+          id: widget.content.conversationId,
+          title: widget.title.label,
+        }),
+        name: (widget) => widget.content.conversationId,
+      });
+    }
 
     // Sidebar with conversation tree
-    const sidebar = new ChatSidebarWidget(
+    sidebar = new ChatSidebarWidget(
       (conversationId, title) => {
-        openConversation(app, conversationId, title, rendermime, openWidgets, () => sidebar.refresh());
+        app.commands.execute(OPEN_COMMAND, { id: conversationId, title });
       },
       openWidgets,
     );

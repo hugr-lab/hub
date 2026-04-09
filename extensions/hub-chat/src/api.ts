@@ -129,6 +129,32 @@ export async function loadMessages(
   return [];
 }
 
+// ── Models ────────────────────────────────────────────
+
+export interface ModelInfo {
+  name: string;
+  type: string;
+  provider: string;
+  model: string;
+}
+
+export async function listModels(): Promise<ModelInfo[]> {
+  const baseUrl = PageConfig.getBaseUrl();
+  const settings = ServerConnection.makeSettings();
+  const resp = await ServerConnection.makeRequest(
+    baseUrl + 'hub-chat/api/models',
+    {},
+    settings,
+  );
+  if (!resp.ok) return [];
+  try {
+    const result = await resp.json();
+    return Array.isArray(result) ? result.filter((m: ModelInfo) => m.type === 'llm') : [];
+  } catch {
+    return [];
+  }
+}
+
 // ── WebSocket ──────────────────────────────────────────
 
 export async function getWsBaseUrl(): Promise<string> {

@@ -182,6 +182,7 @@
 .hub-chat-status-bar--connected { color: var(--jp-success-color1); }
 .hub-chat-status-bar--disconnected { color: var(--jp-ui-font-color3); }
 .hub-chat-status-bar--error { color: var(--jp-error-color1); }
+.hub-chat-status-bar--reconnecting { color: var(--jp-warn-color1); }
 
 /* ── Sidebar ─────────────────────────────────────────── */
 

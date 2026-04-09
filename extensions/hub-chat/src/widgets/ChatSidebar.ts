@@ -7,18 +7,18 @@ import { Widget } from '@lumino/widgets';
 import { MainAreaWidget } from '@jupyterlab/apputils';
 import {
   listConversations, createConversation, renameConversation, deleteConversation,
-  Conversation,
+  listModels, Conversation, ModelInfo,
 } from '../api.js';
 
 type OpenCallback = (conversationId: string, title: string) => void;
 
 export class ChatSidebarWidget extends Widget {
   private onOpen: OpenCallback;
-  private openWidgets: Map<string, MainAreaWidget>;
+  private openWidgets: Map<string, MainAreaWidget<any>>;
   private conversations: Conversation[] = [];
   private listEl: HTMLDivElement;
 
-  constructor(onOpen: OpenCallback, openWidgets: Map<string, MainAreaWidget>) {
+  constructor(onOpen: OpenCallback, openWidgets: Map<string, MainAreaWidget<any>>) {
     super();
     this.onOpen = onOpen;
     this.openWidgets = openWidgets;
@@ -119,7 +119,7 @@ export class ChatSidebarWidget extends Widget {
     return el;
   }
 
-  private showNewChatDialog(): void {
+  private async showNewChatDialog(): Promise<void> {
     const dialog = document.createElement('div');
     dialog.className = 'hub-chat-sidebar-dialog';
     dialog.innerHTML = `
@@ -129,6 +129,9 @@ export class ChatSidebarWidget extends Widget {
         <option value="llm">LLM only</option>
         <option value="agent">Agent</option>
       </select>
+      <div id="hc-model-row" style="display:none">
+        <select id="hc-model"><option value="">Loading models...</option></select>
+      </div>
       <input type="text" id="hc-title" placeholder="Title (optional)" />
       <div class="hub-chat-sidebar-dialog-actions">
         <button id="hc-create">Create</button>
@@ -138,17 +141,45 @@ export class ChatSidebarWidget extends Widget {
 
     this.listEl.prepend(dialog);
 
+    const modeSelect = dialog.querySelector('#hc-mode') as HTMLSelectElement;
+    const modelRow = dialog.querySelector('#hc-model-row') as HTMLDivElement;
+    const modelSelect = dialog.querySelector('#hc-model') as HTMLSelectElement;
+    let modelsLoaded = false;
+
+    const updateModelVisibility = async () => {
+      if (modeSelect.value === 'llm') {
+        modelRow.style.display = '';
+        if (!modelsLoaded) {
+          modelsLoaded = true;
+          const models = await listModels();
+          modelSelect.innerHTML = '';
+          if (models.length === 0) {
+            modelSelect.innerHTML = '<option value="">No models available</option>';
+          } else {
+            for (const m of models) {
+              const opt = document.createElement('option');
+              opt.value = m.name;
+              opt.textContent = `${m.name} (${m.provider})`;
+              modelSelect.appendChild(opt);
+            }
+          }
+        }
+      } else {
+        modelRow.style.display = 'none';
+      }
+    };
+    modeSelect.addEventListener('change', updateModelVisibility);
+
     dialog.querySelector('#hc-cancel')!.addEventListener('click', () => dialog.remove());
     dialog.querySelector('#hc-create')!.addEventListener('click', async () => {
-      const mode = (dialog.querySelector('#hc-mode') as HTMLSelectElement).value as 'llm' | 'tools' | 'agent';
+      const mode = modeSelect.value as 'llm' | 'tools' | 'agent';
       const title = (dialog.querySelector('#hc-title') as HTMLInputElement).value.trim();
+      const model = mode === 'llm' ? modelSelect.value : undefined;
       dialog.remove();
 
       try {
-        const result = await createConversation(mode, title || undefined);
-        console.log('createConversation result:', result);
+        const result = await createConversation(mode, title || undefined, undefined, undefined, model);
         await this.refresh();
-        // Result might be {id, title, mode} or nested
         const convId = result?.id;
         const convTitle = result?.title || title || 'New Chat';
         if (convId) {
