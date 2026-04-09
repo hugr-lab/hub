@@ -258,6 +258,7 @@ export class ChatDocumentWidget extends Widget {
         if (this.onTitleChange) {
           this.onTitleChange(msg.content);
         }
+        this.scrollToBottom();
         break;
 
       case 'error':

@@ -29,6 +29,7 @@ function openConversation(
   title: string,
   rendermime: IRenderMimeRegistry,
   openWidgets: Map<string, MainAreaWidget>,
+  onSidebarRefresh?: () => void,
 ): void {
   const existing = openWidgets.get(conversationId);
   if (existing && !existing.isDisposed) {
@@ -46,6 +47,8 @@ function openConversation(
   // Auto-update tab title when chat generates/changes title
   chatWidget.onTitleChange = (newTitle: string) => {
     main.title.label = newTitle;
+    // Refresh sidebar to show updated title
+    if (onSidebarRefresh) onSidebarRefresh();
   };
 
   main.disposed.connect(() => {
@@ -69,7 +72,7 @@ const chatPlugin: JupyterFrontEndPlugin<void> = {
     // Sidebar with conversation tree
     const sidebar = new ChatSidebarWidget(
       (conversationId, title) => {
-        openConversation(app, conversationId, title, rendermime, openWidgets);
+        openConversation(app, conversationId, title, rendermime, openWidgets, () => sidebar.refresh());
       },
       openWidgets,
     );

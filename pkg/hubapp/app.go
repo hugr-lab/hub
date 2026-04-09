@@ -189,6 +189,9 @@ func (a *HubApp) Init(ctx context.Context) error {
 				return
 			}
 			defer res.Close()
+			if res.Err() != nil {
+				a.logger.Warn("update title query error", "conversation", conversationID, "error", res.Err())
+			}
 		},
 		Logger: a.logger,
 	})
@@ -263,8 +266,10 @@ func toAnySlice(v any) []any {
 }
 
 func (a *HubApp) persistMessage(ctx context.Context, conversationID, role, content string) {
+	// Use background context — persist must not be cancelled when WebSocket closes
+	bgCtx := context.Background()
 	msgID := fmt.Sprintf("msg-%d", time.Now().UnixNano())
-	res, err := a.client.Query(ctx,
+	res, err := a.client.Query(bgCtx,
 		`mutation($id: String!, $cid: String!, $role: String!, $content: String!) {
 			hub { db { insert_agent_messages(data: {
 				id: $id, conversation_id: $cid, role: $role, content: $content
@@ -277,6 +282,9 @@ func (a *HubApp) persistMessage(ctx context.Context, conversationID, role, conte
 		return
 	}
 	defer res.Close()
+	if res.Err() != nil {
+		a.logger.Warn("persist message query error", "conversation", conversationID, "error", res.Err())
+	}
 }
 
 func (a *HubApp) Shutdown(ctx context.Context) error {
