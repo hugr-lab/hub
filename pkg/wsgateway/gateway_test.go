@@ -25,8 +25,8 @@ func testGateway(t *testing.T, opts ...func(*Config)) (*Gateway, *httptest.Serve
 		Lookup: func(ctx context.Context, id string) (*ConversationInfo, error) {
 			return &ConversationInfo{ID: id, UserID: "test-user", Mode: "tools"}, nil
 		},
-		Tools: func(ctx context.Context, userID string, msgs []LLMMessage, stream StreamCallback) (string, error) {
-			return "tools response", nil
+		Tools: func(ctx context.Context, userID string, msgs []LLMMessage, stream StreamCallback) (string, *UsageInfo, error) {
+			return "tools response", nil, nil
 		},
 		Logger: slog.Default(),
 	}
@@ -98,12 +98,12 @@ func wsReadAll(t *testing.T, conn *websocket.Conn, timeout time.Duration) []Chat
 
 func TestGateway_ToolsMode(t *testing.T) {
 	_, srv := testGateway(t, func(cfg *Config) {
-		cfg.Tools = func(ctx context.Context, userID string, msgs []LLMMessage, stream StreamCallback) (string, error) {
+		cfg.Tools = func(ctx context.Context, userID string, msgs []LLMMessage, stream StreamCallback) (string, *UsageInfo, error) {
 			if userID != "test-user" {
-				return "", fmt.Errorf("unexpected user: %s", userID)
+				return "", nil, fmt.Errorf("unexpected user: %s", userID)
 			}
 			stream(ChatMessage{Type: "status", Content: "thinking"})
-			return "hello from tools", nil
+			return "hello from tools", nil, nil
 		}
 	})
 
@@ -142,11 +142,11 @@ func TestGateway_LLMMode(t *testing.T) {
 		cfg.Lookup = func(ctx context.Context, id string) (*ConversationInfo, error) {
 			return &ConversationInfo{ID: id, UserID: "test-user", Mode: "llm", Model: "test-model"}, nil
 		}
-		cfg.LLM = func(ctx context.Context, model string, msgs []LLMMessage) (string, error) {
+		cfg.LLM = func(ctx context.Context, model string, msgs []LLMMessage) (string, *UsageInfo, error) {
 			if model != "test-model" {
-				return "", fmt.Errorf("unexpected model: %s", model)
+				return "", nil, fmt.Errorf("unexpected model: %s", model)
 			}
-			return "llm response", nil
+			return "llm response", nil, nil
 		}
 	})
 
@@ -182,8 +182,8 @@ func TestGateway_AgentFallback(t *testing.T) {
 		cfg.Agent = func(ctx context.Context, instanceID, convID, userID string, msgs []LLMMessage) (string, error) {
 			return "", fmt.Errorf("agent offline")
 		}
-		cfg.Tools = func(ctx context.Context, userID string, msgs []LLMMessage, stream StreamCallback) (string, error) {
-			return "fallback to tools", nil
+		cfg.Tools = func(ctx context.Context, userID string, msgs []LLMMessage, stream StreamCallback) (string, *UsageInfo, error) {
+			return "fallback to tools", nil, nil
 		}
 	})
 
@@ -215,11 +215,11 @@ func TestGateway_Cancel(t *testing.T) {
 	started := make(chan struct{})
 	cancelled := make(chan struct{})
 	_, srv := testGateway(t, func(cfg *Config) {
-		cfg.Tools = func(ctx context.Context, userID string, msgs []LLMMessage, stream StreamCallback) (string, error) {
+		cfg.Tools = func(ctx context.Context, userID string, msgs []LLMMessage, stream StreamCallback) (string, *UsageInfo, error) {
 			close(started)
 			<-ctx.Done()
 			close(cancelled)
-			return "", ctx.Err()
+			return "", nil, ctx.Err()
 		}
 	})
 
@@ -278,8 +278,8 @@ func TestGateway_Persist(t *testing.T) {
 			persisted = append(persisted, struct{ role, content string }{role, content})
 			mu.Unlock()
 		}
-		cfg.Tools = func(ctx context.Context, userID string, msgs []LLMMessage, stream StreamCallback) (string, error) {
-			return "persisted response", nil
+		cfg.Tools = func(ctx context.Context, userID string, msgs []LLMMessage, stream StreamCallback) (string, *UsageInfo, error) {
+			return "persisted response", nil, nil
 		}
 	})
 
@@ -339,8 +339,8 @@ func TestGateway_TitleGeneration(t *testing.T) {
 			titleSet = title
 			mu.Unlock()
 		}
-		cfg.Tools = func(ctx context.Context, userID string, msgs []LLMMessage, stream StreamCallback) (string, error) {
-			return "ok", nil
+		cfg.Tools = func(ctx context.Context, userID string, msgs []LLMMessage, stream StreamCallback) (string, *UsageInfo, error) {
+			return "ok", nil, nil
 		}
 	})
 
@@ -407,7 +407,7 @@ func TestGateway_RapidMessages(t *testing.T) {
 	var callOrder []string
 
 	_, srv := testGateway(t, func(cfg *Config) {
-		cfg.Tools = func(ctx context.Context, userID string, msgs []LLMMessage, stream StreamCallback) (string, error) {
+		cfg.Tools = func(ctx context.Context, userID string, msgs []LLMMessage, stream StreamCallback) (string, *UsageInfo, error) {
 			// Get last user message
 			last := msgs[len(msgs)-1].Content
 			mu.Lock()
@@ -419,9 +419,9 @@ func TestGateway_RapidMessages(t *testing.T) {
 				mu.Lock()
 				callOrder = append(callOrder, "cancel:"+last)
 				mu.Unlock()
-				return "", ctx.Err()
+				return "", nil, ctx.Err()
 			case <-time.After(500 * time.Millisecond):
-				return "response:" + last, nil
+				return "response:" + last, nil, nil
 			}
 		}
 	})

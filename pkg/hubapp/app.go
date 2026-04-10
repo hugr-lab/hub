@@ -165,7 +165,7 @@ func (a *HubApp) Init(ctx context.Context) error {
 		Lookup: func(ctx context.Context, conversationID string) (*wsgateway.ConversationInfo, error) {
 			return a.lookupConversation(ctx, conversationID)
 		},
-		LLM: func(ctx context.Context, model string, messages []wsgateway.LLMMessage) (string, error) {
+		LLM: func(ctx context.Context, model string, messages []wsgateway.LLMMessage) (string, *wsgateway.UsageInfo, error) {
 			msgs := make([]llmrouter.Message, len(messages))
 			for i, m := range messages {
 				msgs[i] = llmrouter.Message{Role: m.Role, Content: m.Content}
@@ -176,11 +176,16 @@ func (a *HubApp) Init(ctx context.Context) error {
 			}
 			resp, err := router.Complete(ctx, llmrouter.CompletionRequest{Messages: msgs})
 			if err != nil {
-				return "", err
+				return "", nil, err
 			}
-			return resp.Content, nil
+			usage := &wsgateway.UsageInfo{
+				TokensIn:  resp.TokensIn,
+				TokensOut: resp.TokensOut,
+				Model:     resp.Model,
+			}
+			return resp.Content, usage, nil
 		},
-		Tools: func(ctx context.Context, userID string, messages []wsgateway.LLMMessage, stream wsgateway.StreamCallback) (string, error) {
+		Tools: func(ctx context.Context, userID string, messages []wsgateway.LLMMessage, stream wsgateway.StreamCallback) (string, *wsgateway.UsageInfo, error) {
 			msgs := make([]llmrouter.Message, len(messages))
 			for i, m := range messages {
 				msgs[i] = llmrouter.Message{
@@ -195,12 +200,21 @@ func (a *HubApp) Init(ctx context.Context) error {
 			if u, ok := auth.UserFromContext(ctx); ok {
 				ctx = auth.InjectIdentity(ctx, u)
 			}
-			return mcpSrv.HandleUserMessage(ctx, userID, msgs, func(msgType, content string, toolCalls any, toolCallID string) {
+			text, chatUsage, err := mcpSrv.HandleUserMessage(ctx, userID, msgs, func(msgType, content string, toolCalls any, toolCallID string) {
 				stream(wsgateway.ChatMessage{
 					Type: msgType, Content: content,
 					ToolCalls: toolCalls, ToolCallID: toolCallID,
 				})
 			})
+			var usage *wsgateway.UsageInfo
+			if chatUsage != nil {
+				usage = &wsgateway.UsageInfo{
+					TokensIn:  chatUsage.TokensIn,
+					TokensOut: chatUsage.TokensOut,
+					Model:     chatUsage.Model,
+				}
+			}
+			return text, usage, err
 		},
 		Persist: func(ctx context.Context, conversationID, role, content string) {
 			a.persistMessage(ctx, conversationID, role, content)

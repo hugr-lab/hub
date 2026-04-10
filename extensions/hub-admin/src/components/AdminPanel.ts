@@ -657,23 +657,13 @@ export class AdminPanelWidget extends Widget {
 
   // ── Agents ─────────────────────────────────────────────
 
-  /** Fetch connected agent instance IDs from hub-service via hub-chat proxy. */
+  /** Fetch running agent IDs from Hugr via the hub.agent_runtime table function.
+   *  Previously this hit /hub-chat/api/agent/instances on hub-service — that
+   *  REST proxy has been removed as part of the GraphQL migration. */
   private async fetchConnectedAgents(): Promise<Set<string>> {
     try {
-      const baseUrl = (await import('@jupyterlab/coreutils')).PageConfig.getBaseUrl();
-      const settings = (await import('@jupyterlab/services')).ServerConnection.makeSettings();
-      const resp = await (await import('@jupyterlab/services')).ServerConnection.makeRequest(
-        baseUrl + 'hub-chat/api/agent/instances', {}, settings,
-      );
-      if (!resp.ok) return new Set();
-      const data = await resp.json();
-      const ids = new Set<string>();
-      if (Array.isArray(data)) {
-        for (const inst of data) {
-          if (inst.connected) ids.add(inst.id);
-        }
-      }
-      return ids;
+      const { fetchAgentRuntimeIds } = await import('../agentApiGraphQL.js');
+      return await fetchAgentRuntimeIds();
     } catch {
       return new Set();
     }

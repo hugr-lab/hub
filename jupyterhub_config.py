@@ -236,13 +236,24 @@ async def _post_auth_hook(authenticator, handler, authentication):
     if groups:
         authentication["groups"] = groups
 
+    # Resolve the user_id in the same shape Hugr will use via `auth.me`
+    # (= the OIDC `sub` claim by default). hub.db.users is keyed by this
+    # id so user_agents / conversations / agent_memory FKs line up with
+    # whatever the Go airport-go handlers receive via ArgFromContext.
+    oauth_user = auth_state.get("oauth_user", {}) or {}
+    user_sub = oauth_user.get("sub") or auth_state.get("sub") or authentication["name"]
+    display_name = (
+        oauth_user.get("name")
+        or oauth_user.get("preferred_username")
+        or auth_state.get("name")
+        or authentication["name"]
+    )
+
     # Admin flag — evaluated via the hub:management.admin capability in Hugr
     # core.role_permissions. No role names are hard-coded; whatever roles the
     # deployment has granted the capability to become admins automatically.
-    user_id = authentication["name"]
-    user_name = auth_state.get("name", user_id)
     primary_role = roles[0] if roles else ""
-    if await _has_hub_management_admin(user_id, user_name, primary_role):
+    if await _has_hub_management_admin(user_sub, display_name, primary_role):
         authentication["admin"] = True
 
     # Upsert user into hub.db.users via Hugr GraphQL (management secret auth).
@@ -252,10 +263,10 @@ async def _post_auth_hook(authenticator, handler, authentication):
     if hugr_secret:
         async with httpx.AsyncClient(verify=_hugr_tls_verify) as client:
             try:
-                user_id = authentication["name"]
-                user_name = auth_state.get("name", user_id)
+                user_id = user_sub
+                user_name = display_name
                 role = roles[0] if roles else "user"
-                email = auth_state.get("email", "")
+                email = oauth_user.get("email") or auth_state.get("email") or ""
                 # One round-trip: try an update, fall back to insert if zero affected.
                 gql = (
                     "mutation($id:String!,$name:String!,$role:String!,$email:String) {"
@@ -521,9 +532,16 @@ async def pre_spawn_hook(spawner, auth_state):
     # Merge with base volumes (Docker only — K8s uses PVC via KubeSpawner)
     if SPAWNER_TYPE != "kubernetes":
         storage_path = os.environ.get("HUB_STORAGE_PATH", "/var/hub-storage")
-        user_id = spawner.user.name
+        # JupyterHub username is the stable short handle — keep using it for
+        # the user's own home directory path so it stays predictable across
+        # OIDC provider changes.
+        user_name = spawner.user.name
+        # The Hugr-side user id (what hub.db.users.id and all FKs are keyed
+        # by) is the OIDC `sub` claim — same as what _post_auth_hook stored.
+        oauth_user = (auth_state or {}).get("oauth_user", {}) or {}
+        hugr_user_id = oauth_user.get("sub") or (auth_state or {}).get("sub") or user_name
         base_volumes = {
-            os.path.join(storage_path, "users", user_id): "/home/jovyan/work",
+            os.path.join(storage_path, "users", user_name): "/home/jovyan/work",
         }
         # Mount shared agent directories. Hugr is queried directly via the
         # management secret + impersonation header, replacing the removed
@@ -539,10 +557,12 @@ async def pre_spawn_hook(spawner, auth_state):
                 )
                 resp = httpx.post(
                     f"{HUGR_URL}/query",
-                    json={"query": gql, "variables": {"uid": user_id}},
+                    json={"query": gql, "variables": {"uid": hugr_user_id}},
                     headers={
                         "X-Hugr-Secret-Key": hugr_secret,
-                        "X-Hugr-User-Id": user_id,
+                        "x-hugr-impersonated-user-id": hugr_user_id,
+                        "x-hugr-impersonated-user-name": user_name,
+                        "x-hugr-impersonated-role": "admin",
                     },
                     timeout=5,
                     verify=_hugr_tls_verify,

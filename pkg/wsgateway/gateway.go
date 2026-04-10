@@ -39,11 +39,13 @@ type StreamCallback func(msg ChatMessage)
 // ConversationLookup resolves conversation info by ID.
 type ConversationLookup func(ctx context.Context, conversationID string) (*ConversationInfo, error)
 
-// ToolsHandler handles LLM + Hugr tools chat. Receives full history, streams intermediate results.
-type ToolsHandler func(ctx context.Context, userID string, messages []LLMMessage, stream StreamCallback) (string, error)
+// ToolsHandler handles LLM + Hugr tools chat. Receives full history, streams
+// intermediate results, and returns the final response text together with
+// token usage so the caller can attach a `usage` block to the WS response.
+type ToolsHandler func(ctx context.Context, userID string, messages []LLMMessage, stream StreamCallback) (string, *UsageInfo, error)
 
 // LLMHandler handles pure LLM chat (no tools). Receives full history.
-type LLMHandler func(ctx context.Context, model string, messages []LLMMessage) (string, error)
+type LLMHandler func(ctx context.Context, model string, messages []LLMMessage) (string, *UsageInfo, error)
 
 // AgentHandler sends messages to an agent container with full conversation history.
 type AgentHandler func(ctx context.Context, instanceID, conversationID, userID string, messages []LLMMessage) (string, error)
@@ -134,6 +136,12 @@ func (g *Gateway) Handler() http.Handler {
 			return
 		}
 		defer conn.CloseNow()
+
+		// Default ReadLimit on nhooyr.io/websocket is 32 KiB — way too small
+		// for chat history that includes a long pasted document or file.
+		// 16 MiB lets the client paste large specs / source files without
+		// silent truncation.
+		conn.SetReadLimit(16 * 1024 * 1024)
 
 		var prev *websocket.Conn
 		g.mu.Lock()
@@ -239,6 +247,15 @@ func (g *Gateway) readLoop(ctx context.Context, conn *websocket.Conn, userID, co
 	}
 }
 
+// TODO(spec-e): the client currently re-sends the full chat history (msg.Messages)
+// on every turn. The agent runtime is supposed to be stateful and own its
+// conversation history across sessions, browsers and reloads. The current
+// "client owns history" model breaks if the user opens the chat from a
+// different browser or if the agent has to run autonomously between user
+// turns (cron, sub-agents). Spec E re-architects this so the WebSocket only
+// carries the new user message + (optionally) a small "since N" cursor, and
+// the agent loop reads its history from hub.db.agent_messages directly.
+// Until then, the in-memory client history is treated as authoritative.
 func (g *Gateway) handleMessage(ctx context.Context, conn *websocket.Conn, userID, conversationID string, msg ChatMessage) {
 	g.logger.Info("chat message", "user", userID, "conversation", conversationID, "history_len", len(msg.Messages))
 
@@ -279,18 +296,19 @@ func (g *Gateway) handleMessage(ctx context.Context, conn *websocket.Conn, userI
 	}
 
 	var response string
+	var usage *UsageInfo
 
 	switch conv.Mode {
 	case "llm":
 		if g.llm != nil {
-			response, err = g.llm(ctx, conv.Model, msg.Messages)
+			response, usage, err = g.llm(ctx, conv.Model, msg.Messages)
 		} else {
 			err = fmt.Errorf("LLM mode not configured")
 		}
 
 	case "tools":
 		if g.tools != nil {
-			response, err = g.tools(ctx, userID, msg.Messages, stream)
+			response, usage, err = g.tools(ctx, userID, msg.Messages, stream)
 		} else {
 			err = fmt.Errorf("tools mode not configured")
 		}
@@ -311,7 +329,7 @@ func (g *Gateway) handleMessage(ctx context.Context, conn *websocket.Conn, userI
 			}
 			stream(ChatMessage{Type: "status", Content: "agent offline, using tools mode"})
 			if g.tools != nil {
-				response, err = g.tools(ctx, userID, msg.Messages, stream)
+				response, usage, err = g.tools(ctx, userID, msg.Messages, stream)
 			} else {
 				err = fmt.Errorf("no handler available")
 			}
@@ -343,6 +361,9 @@ func (g *Gateway) handleMessage(ctx context.Context, conn *websocket.Conn, userI
 	}
 
 	respMsg := ChatMessage{Type: "response", Content: response, AgentName: conv.AgentName}
+	if usage != nil {
+		respMsg.Usage = usage
+	}
 	g.writeJSON(ctx, conn, respMsg)
 
 	// Auto-generate title after first user message (synchronous — handleMessage is already in goroutine)

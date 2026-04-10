@@ -16,6 +16,7 @@
 
 import { PageConfig } from '@jupyterlab/coreutils';
 import { ServerConnection } from '@jupyterlab/services';
+import { HugrClient } from './hugrClient.js';
 
 // ── Types ─────────────────────────────────────────────────
 
@@ -86,38 +87,41 @@ export interface AgentInstance {
 }
 
 // ── Hugr GraphQL client ──────────────────────────────────
+//
+// Hugr returns responses as multipart/mixed: scalar/error parts are JSON,
+// table parts are Apache Arrow IPC. We reuse the same client as hub-admin
+// (copied at extensions/hub-chat/src/hugrClient.ts) so table function results
+// like `my_conversations` and `my_conversation_messages` are decoded with
+// apache-arrow — NOT via resp.json().
 
-let _hugrUrl: string | null = null;
+let _client: HugrClient | null = null;
 
-async function getHugrUrl(): Promise<string> {
-  if (_hugrUrl) return _hugrUrl;
+async function getClient(): Promise<HugrClient> {
+  if (_client) return _client;
+
   const baseUrl = PageConfig.getBaseUrl();
   const settings = ServerConnection.makeSettings();
   const resp = await ServerConnection.makeRequest(baseUrl + 'hugr/connections', {}, settings);
   if (!resp.ok) throw new Error(`Failed to get hugr connections: ${resp.status}`);
-  const conns: Array<{ name: string; status?: string }> = await resp.json();
+  const conns: Array<{ name: string; status?: string; query_timeout?: number }> = await resp.json();
   const def = conns.find(c => c.status === 'default') || conns[0];
   if (!def) throw new Error('No Hugr connection configured');
-  _hugrUrl = baseUrl + 'hugr/proxy/' + encodeURIComponent(def.name);
-  return _hugrUrl;
+
+  _client = new HugrClient({
+    url: baseUrl + 'hugr/proxy/' + encodeURIComponent(def.name),
+    authType: 'public',
+    connectionName: def.name,
+    timeout: def.query_timeout ? def.query_timeout * 1000 : undefined,
+  });
+  return _client;
 }
 
 async function gqlQuery(query: string, variables?: Record<string, unknown>): Promise<any> {
-  const url = await getHugrUrl();
-  const settings = ServerConnection.makeSettings();
-  const resp = await ServerConnection.makeRequest(
-    url,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query, variables: variables ?? {} }),
-    },
-    settings,
-  );
-  if (!resp.ok) throw new Error(`GraphQL HTTP ${resp.status}: ${await resp.text()}`);
-  const result = await resp.json();
+  const client = await getClient();
+  const result = await client.query(query, variables);
   if (result.errors && result.errors.length > 0) {
-    throw new Error(result.errors.map((e: any) => e.message).join(', '));
+    // Parse the errors part of the multipart response into a real Error.
+    throw new Error(result.errors.map(e => e.message).join(', '));
   }
   return result.data;
 }
@@ -125,9 +129,12 @@ async function gqlQuery(query: string, variables?: Record<string, unknown>): Pro
 // ── Conversations: reads ─────────────────────────────────
 
 export async function listConversations(folder?: string, limit = 100): Promise<Conversation[]> {
+  // my_conversations is registered as a Hugr table function, so its args are
+  // wrapped in a nested `args: { ... }` input object. BigInt Int64 args from
+  // the airport-go side surface as GraphQL `BigInt` in the args input type.
   const data = await gqlQuery(
-    `query($folder: String, $limit: BigInt) {
-      hub { my_conversations(folder: $folder, limit: $limit) {
+    `query($folder: String!, $limit: BigInt!) {
+      hub { my_conversations(args: { folder: $folder, limit: $limit }) {
         id user_id title folder mode agent_type_id agent_id model
         parent_id branch_point_message_id branch_label
         created_at updated_at
@@ -144,8 +151,8 @@ export async function listConversations(folder?: string, limit = 100): Promise<C
  */
 export async function loadMessages(conversationId: string, limit = 200, before?: string): Promise<ChatMessage[]> {
   const data = await gqlQuery(
-    `query($cid: String!, $limit: BigInt, $before: String) {
-      hub { my_conversation_messages(conversation_id: $cid, limit: $limit, before: $before) {
+    `query($cid: String!, $limit: BigInt!, $before: String!) {
+      hub { my_conversation_messages(args: { conversation_id: $cid, limit: $limit, before: $before }) {
         id conversation_id role content tool_calls tool_call_id tokens_used model
         is_summary summarized_by created_at
       } }
@@ -212,8 +219,11 @@ export async function createConversation(input: {
   agent_id?: string;
   agent_type_id?: string;
 }): Promise<ConversationHandle> {
+  // Input types declared via app.InputStruct get module-prefixed by Hugr
+  // when the app is registered under a module name ("hub" in our case), so
+  // the GraphQL type is `hub_create_conversation_input`.
   const data = await gqlQuery(
-    `mutation($input: create_conversation_input!) {
+    `mutation($input: hub_create_conversation_input!) {
       function { hub { create_conversation(input: $input) {
         id title mode parent_id branch_point_message_id
       } } }
@@ -257,7 +267,7 @@ export async function branchConversation(input: {
   title?: string;
 }): Promise<ConversationHandle> {
   const data = await gqlQuery(
-    `mutation($input: branch_conversation_input!) {
+    `mutation($input: hub_branch_conversation_input!) {
       function { hub { branch_conversation(input: $input) {
         id title mode parent_id branch_point_message_id
       } } }
@@ -295,7 +305,9 @@ export async function listModels(): Promise<ModelInfo[]> {
     _cachedModels = all.filter(m => m.type === 'llm');
     _hasLLM = _cachedModels.length > 0;
     return _cachedModels;
-  } catch {
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('[hub-chat] listModels failed:', err);
     _cachedModels = [];
     _hasLLM = false;
     return [];
@@ -311,13 +323,18 @@ export function hasLLM(): boolean {
 
 export async function listAgentInstances(): Promise<AgentInstance[]> {
   try {
+    // my_agent_instances has only ArgFromContext (hidden) args, so the
+    // generated args input is empty and Hugr accepts the call without
+    // any explicit args wrapper.
     const data = await gqlQuery(`{
       hub { my_agent_instances {
         id agent_type_id display_name hugr_role status connected access_role
       } }
     }`);
     return data?.hub?.my_agent_instances ?? [];
-  } catch {
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('[hub-chat] listAgentInstances failed:', err);
     return [];
   }
 }

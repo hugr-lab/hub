@@ -9,26 +9,26 @@ export class MessageRenderer {
 
   /**
    * Render a message as HTML. Returns an HTMLElement ready for insertion.
+   * Always shows a per-message footer with the wall-clock time and (when
+   * provided) duration / token usage.
    */
-  async render(role: string, content: string, timestamp?: string): Promise<HTMLElement> {
+  async render(
+    role: string,
+    content: string,
+    timestamp?: string | Date | number,
+    meta?: MessageMeta,
+  ): Promise<HTMLElement> {
     const wrapper = document.createElement('div');
     const cssRole = role === 'user' ? 'user' : 'assistant';
     wrapper.className = `hub-chat-message hub-chat-message--${cssRole}`;
 
-    // Role label
+    // Role label only — timestamp moves to the per-message footer.
     const header = document.createElement('div');
     header.className = 'hub-chat-message-header';
     const roleLabel = document.createElement('span');
     roleLabel.className = 'hub-chat-message-role';
     roleLabel.textContent = role === 'user' ? 'You' : role.charAt(0).toUpperCase() + role.slice(1);
     header.appendChild(roleLabel);
-
-    if (timestamp) {
-      const time = document.createElement('span');
-      time.className = 'hub-chat-message-time';
-      time.textContent = formatTime(timestamp);
-      header.appendChild(time);
-    }
     wrapper.appendChild(header);
 
     // Content — render as markdown for assistant, plain for user
@@ -42,11 +42,15 @@ export class MessageRenderer {
     }
 
     wrapper.appendChild(body);
+    wrapper.appendChild(buildMessageFooter(timestamp, meta));
     return wrapper;
   }
 
   /**
    * Create a streaming message element that can be updated with token chunks.
+   * Includes a live "Streaming… (Xs)" footer that ticks every 500ms while
+   * tokens arrive; `finalizeStreaming` stops the ticker and replaces the
+   * footer with the final time / duration / tokens line.
    */
   createStreamingMessage(role: string): HTMLElement {
     const wrapper = document.createElement('div');
@@ -65,6 +69,18 @@ export class MessageRenderer {
     body.dataset.streaming = 'true';
     wrapper.appendChild(body);
 
+    const startedAt = Date.now();
+    wrapper.dataset.startedAt = String(startedAt);
+    const liveFooter = document.createElement('div');
+    liveFooter.className = 'hub-chat-message-footer hub-chat-message-footer--live';
+    liveFooter.textContent = 'Streaming… (0s)';
+    wrapper.appendChild(liveFooter);
+    const tickerId = window.setInterval(() => {
+      const elapsed = (Date.now() - startedAt) / 1000;
+      liveFooter.textContent = `Streaming… (${formatElapsed(elapsed)})`;
+    }, 500);
+    wrapper.dataset.tickerId = String(tickerId);
+
     return wrapper;
   }
 
@@ -81,9 +97,28 @@ export class MessageRenderer {
   }
 
   /**
-   * Finalize a streaming message — render as markdown and add usage footer.
+   * Finalize a streaming message — stop the live ticker, render the
+   * accumulated text as markdown, and replace the live footer with the
+   * final timestamp · duration · tokens line. If `durationMs` isn't passed
+   * we derive it from the element's `startedAt` dataset.
    */
-  async finalizeStreaming(el: HTMLElement, usage?: { tokens_in: number; tokens_out: number; model: string }): Promise<void> {
+  async finalizeStreaming(
+    el: HTMLElement,
+    usage?: { tokens_in: number; tokens_out: number; model: string },
+    durationMs?: number,
+  ): Promise<void> {
+    // Stop live ticker.
+    const tickerId = Number(el.dataset.tickerId || 0);
+    if (tickerId > 0) {
+      window.clearInterval(tickerId);
+      delete el.dataset.tickerId;
+    }
+    if (durationMs === undefined) {
+      const startedAt = Number(el.dataset.startedAt || 0);
+      if (startedAt > 0) durationMs = Date.now() - startedAt;
+    }
+    delete el.dataset.startedAt;
+
     el.classList.remove('hub-chat-message--streaming');
     const body = el.querySelector('.hub-chat-message-body');
     if (!body) return;
@@ -93,27 +128,42 @@ export class MessageRenderer {
     body.innerHTML = '';
     await this.renderMarkdown(body as HTMLElement, raw);
 
-    if (usage) {
-      const footer = document.createElement('div');
-      footer.className = 'hub-chat-message-usage';
-      footer.textContent = `${usage.model} · ${usage.tokens_in}→${usage.tokens_out} tokens`;
-      el.appendChild(footer);
-    }
+    // Replace the live footer (if any) with the final stats line.
+    const liveFooter = el.querySelector('.hub-chat-message-footer--live');
+    if (liveFooter) liveFooter.remove();
+    el.appendChild(buildMessageFooter(new Date(), { usage, durationMs }));
   }
 
   /**
-   * Render a collapsible thinking section.
+   * Render a collapsible thinking section. Open by default while streaming
+   * with a live "Thinking… (Xs)" ticker that updates every second; call
+   * `finalizeThinking` once the LLM produces its first content delta or the
+   * response finishes — that stops the ticker and stamps the final "Thought
+   * (X.Xs)" label.
    */
   renderThinking(content: string): HTMLElement {
     const details = document.createElement('details');
-    details.className = 'hub-chat-thinking';
+    details.className = 'hub-chat-thinking hub-chat-thinking--streaming';
+    details.open = true;
+    const startedAt = Date.now();
+    details.dataset.startedAt = String(startedAt);
     const summary = document.createElement('summary');
-    summary.textContent = 'Thinking...';
+    summary.textContent = 'Thinking… (0s)';
     details.appendChild(summary);
     const body = document.createElement('div');
     body.className = 'hub-chat-thinking-body';
     body.textContent = content;
     details.appendChild(body);
+
+    // Live elapsed-time ticker. Stored on the element via setInterval id so
+    // finalizeThinking can clear it. We tick every 500ms so the UI feels
+    // live without spamming the layout.
+    const tickerId = window.setInterval(() => {
+      const elapsed = (Date.now() - startedAt) / 1000;
+      summary.textContent = `Thinking… (${formatElapsed(elapsed)})`;
+    }, 500);
+    details.dataset.tickerId = String(tickerId);
+
     return details;
   }
 
@@ -124,6 +174,28 @@ export class MessageRenderer {
     const body = el.querySelector('.hub-chat-thinking-body');
     if (body) {
       body.textContent = (body.textContent || '') + text;
+    }
+  }
+
+  /**
+   * Mark a thinking section as complete: stop the ticker, collapse the
+   * details, and replace "Thinking…" with "Thought (X.Xs)". The body is
+   * kept so the user can re-open and re-read the reasoning at any point.
+   */
+  finalizeThinking(el: HTMLElement): void {
+    const tickerId = Number(el.dataset.tickerId || 0);
+    if (tickerId > 0) {
+      window.clearInterval(tickerId);
+      delete el.dataset.tickerId;
+    }
+    el.classList.remove('hub-chat-thinking--streaming');
+    el.classList.add('hub-chat-thinking--done');
+    (el as HTMLDetailsElement).open = false;
+    const summary = el.querySelector('summary');
+    if (summary) {
+      const startedAt = Number(el.dataset.startedAt || 0);
+      const elapsed = startedAt > 0 ? (Date.now() - startedAt) / 1000 : 0;
+      summary.textContent = elapsed > 0 ? `Thought (${formatElapsed(elapsed)})` : 'Thought';
     }
   }
 
@@ -287,13 +359,75 @@ export class MessageRenderer {
   }
 }
 
-function formatTime(iso: string): string {
+/**
+ * Per-message metadata shown in the footer (timestamp / duration / tokens).
+ * All fields are optional — `render()` and `finalizeStreaming()` pass whatever
+ * they have. The footer is always rendered with at least the wall-clock time.
+ */
+export interface MessageMeta {
+  /** End-to-end duration from user send to final response, in milliseconds. */
+  durationMs?: number;
+  /** Token usage and model name (assistant messages only). */
+  usage?: { tokens_in: number; tokens_out: number; model: string };
+}
+
+/**
+ * Build the footer that sits under every chat message.
+ *
+ * Format: `HH:MM · 1.4s · gemma-4-26b · 12→128 tokens`
+ *
+ * Only the timestamp is mandatory; the other segments appear when their
+ * corresponding metadata field is present, so user messages and incomplete
+ * assistant messages still get a clean time stamp.
+ */
+function buildMessageFooter(
+  timestamp?: string | Date | number | null,
+  meta?: MessageMeta,
+): HTMLElement {
+  const footer = document.createElement('div');
+  footer.className = 'hub-chat-message-footer';
+
+  const parts: string[] = [];
+  parts.push(formatTime(timestamp ?? new Date()));
+  if (meta?.durationMs && meta.durationMs > 0) {
+    parts.push(formatDuration(meta.durationMs));
+  }
+  if (meta?.usage) {
+    if (meta.usage.model) parts.push(meta.usage.model);
+    if (meta.usage.tokens_in || meta.usage.tokens_out) {
+      parts.push(`${meta.usage.tokens_in}→${meta.usage.tokens_out} tokens`);
+    }
+  }
+  footer.textContent = parts.filter(Boolean).join(' · ');
+  return footer;
+}
+
+function formatTime(value: string | Date | number): string {
   try {
-    const d = new Date(iso);
+    const d = value instanceof Date ? value : new Date(value as any);
+    if (isNaN(d.getTime())) return '';
     return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   } catch {
     return '';
   }
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  return formatElapsed(ms / 1000);
+}
+
+/**
+ * Format an elapsed-seconds value for the live ticker. Sub-minute values
+ * stay in seconds (whole when ≥10s, one decimal otherwise) so the UI
+ * doesn't twitch while updating; longer waits switch to "Mm SSs".
+ */
+function formatElapsed(seconds: number): string {
+  if (seconds < 10) return `${seconds.toFixed(1)}s`;
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  const m = Math.floor(seconds / 60);
+  const s = Math.round(seconds - m * 60);
+  return `${m}m${s.toString().padStart(2, '0')}s`;
 }
 
 function escapeHtml(s: string): string {

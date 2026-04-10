@@ -61,36 +61,54 @@ func (r *Router) Stream(ctx context.Context, req CompletionRequest, cb StreamCal
 		toolStrings = append(toolStrings, string(b))
 	}
 
-	// 4. Build subscription query
+	// 4. Build subscription variables. All optional args are passed as
+	// nullable GraphQL variables — when unset they go in as `null` and the
+	// server uses its default. No string interpolation.
 	vars := map[string]any{
 		"model":    req.Model,
 		"messages": msgStrings,
 	}
-
-	var extraParams, extraArgs string
 	if len(toolStrings) > 0 {
-		extraParams += ", $tools: [String!]"
-		extraArgs += ", tools: $tools"
 		vars["tools"] = toolStrings
+	} else {
+		vars["tools"] = nil
 	}
 	if req.ToolChoice != "" {
-		extraParams += ", $tool_choice: String"
-		extraArgs += ", tool_choice: $tool_choice"
 		vars["tool_choice"] = req.ToolChoice
+	} else {
+		vars["tool_choice"] = nil
 	}
 	if req.MaxTokens > 0 {
-		extraParams += ", $max_tokens: Int"
-		extraArgs += ", max_tokens: $max_tokens"
 		vars["max_tokens"] = req.MaxTokens
+	} else {
+		vars["max_tokens"] = nil
 	}
 
-	gql := fmt.Sprintf(`subscription($model: String!, $messages: [String!]!%s) {
-		function { core { models {
-			chat_completion(model: $model, messages: $messages%s) {
-				content model finish_reason prompt_tokens completion_tokens total_tokens provider latency_ms tool_calls thinking
-			}
+	// chat_completion is exposed on Hugr's Subscription root under
+	//   subscription { core { models { chat_completion(...) { ... } } } }
+	// (verified via __schema introspection of subscriptionType — the field
+	// path is core → models → chat_completion). Returns llm_stream_event:
+	//   { type, content, model, finish_reason, tool_calls,
+	//     prompt_tokens, completion_tokens }
+	// where `type` is one of "content_delta", "reasoning", "tool_use",
+	// "finish", "error".
+	const gql = `subscription(
+		$model: String!
+		$messages: [String!]!
+		$tools: [String!]
+		$tool_choice: String
+		$max_tokens: Int
+	) {
+		core { models { chat_completion(
+			model: $model
+			messages: $messages
+			tools: $tools
+			tool_choice: $tool_choice
+			max_tokens: $max_tokens
+		) {
+			type content model finish_reason tool_calls prompt_tokens completion_tokens
 		} } }
-	}`, extraParams, extraArgs)
+	}`
 
 	// 5. Subscribe
 	sub, err := r.hugrClient.Subscribe(ctx, gql, vars)
@@ -102,6 +120,7 @@ func (r *Router) Stream(ctx context.Context, req CompletionRequest, cb StreamCal
 	// 6. Iterate events
 	var lastModel, lastFinishReason string
 	var totalIn, totalOut int
+	var contentChunks, totalChunks int
 
 	for event := range sub.Events {
 		if ctx.Err() != nil {
@@ -111,15 +130,19 @@ func (r *Router) Stream(ctx context.Context, req CompletionRequest, cb StreamCal
 		reader := event.Reader
 		for reader.Next() {
 			rec := reader.Record()
+			totalChunks++
 
-			// Extract fields from Arrow record
+			// llm_stream_event columns from query-engine's runtime/models source.
+			eventType := getStringField(rec, "type")
 			content := getStringField(rec, "content")
 			toolCalls := getStringField(rec, "tool_calls")
-			thinking := getStringField(rec, "thinking")
 			finishReason := getStringField(rec, "finish_reason")
 			model := getStringField(rec, "model")
 			promptTokens := getIntField(rec, "prompt_tokens")
 			completionTokens := getIntField(rec, "completion_tokens")
+			if content != "" && (eventType == "" || eventType == "content_delta") {
+				contentChunks++
+			}
 
 			if model != "" {
 				lastModel = model
@@ -134,15 +157,34 @@ func (r *Router) Stream(ctx context.Context, req CompletionRequest, cb StreamCal
 				totalOut = completionTokens
 			}
 
-			// Emit chunks
-			if thinking != "" {
-				cb(StreamChunk{Type: "thinking", Content: thinking})
-			}
-			if content != "" {
-				cb(StreamChunk{Type: "token", Content: content})
-			}
-			if toolCalls != "" && toolCalls != "[]" {
-				cb(StreamChunk{Type: "tool_calls", ToolCalls: toolCalls})
+			// Dispatch on the explicit `type` column (preferred). Fall back to
+			// content/tool_calls heuristics for older Hugr builds that didn't
+			// expose `type` on the event row.
+			switch eventType {
+			case "content_delta":
+				if content != "" {
+					cb(StreamChunk{Type: "token", Content: content})
+				}
+			case "reasoning":
+				if content != "" {
+					cb(StreamChunk{Type: "thinking", Content: content})
+				}
+			case "tool_use":
+				if toolCalls != "" && toolCalls != "[]" {
+					cb(StreamChunk{Type: "tool_calls", ToolCalls: toolCalls})
+				}
+			case "finish":
+				// finish is handled by the post-loop "done" emit below.
+			case "error":
+				cb(StreamChunk{Type: "error", Content: content})
+			default:
+				// Unknown / empty type — fall back to old heuristic.
+				if content != "" {
+					cb(StreamChunk{Type: "token", Content: content})
+				}
+				if toolCalls != "" && toolCalls != "[]" {
+					cb(StreamChunk{Type: "tool_calls", ToolCalls: toolCalls})
+				}
 			}
 		}
 
@@ -150,6 +192,20 @@ func (r *Router) Stream(ctx context.Context, req CompletionRequest, cb StreamCal
 			cb(StreamChunk{Type: "error", Content: err.Error()})
 			return fmt.Errorf("subscription read: %w", err)
 		}
+	}
+
+	// Surface "subscription closed without producing data" as an explicit
+	// error rather than silently returning empty content. This catches
+	// upstream subscription errors that the client only logs at debug level
+	// and would otherwise turn into a mysterious blank LLM response.
+	if totalChunks == 0 {
+		err := fmt.Errorf("LLM stream returned no events (subscription closed without data)")
+		cb(StreamChunk{Type: "error", Content: err.Error()})
+		return err
+	}
+	if contentChunks == 0 && lastFinishReason == "" {
+		r.logger.Warn("llm stream returned chunks but no content delta",
+			"model", lastModel, "total_chunks", totalChunks)
 	}
 
 	// 7. Done

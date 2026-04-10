@@ -101,18 +101,34 @@ async function gqlQuery(query: string, variables?: Record<string, unknown>): Pro
 
 // ── Agent CRUD via standard Hugr mutations ────────────────
 
+/** Resolve the current caller's user id via Hugr's auth module. */
+async function currentUserId(): Promise<string> {
+  const data = await gqlQuery(`{ function { core { auth { me { user_id } } } } }`);
+  return data?.function?.core?.auth?.me?.user_id ?? '';
+}
+
 /**
  * Create an agent identity + grant owner access in one atomic Hugr mutation.
  *
  * For personal agents, leave `hugr_user_id` empty — the caller (or
  * `owner_user_id`) becomes the Hugr identity.
  * For team agents, pass explicit `hugr_user_id` + `hugr_role`.
+ *
+ * Empty `owner_user_id` defaults to the calling user (resolved via
+ * `function.core.auth.me`). An empty owner would violate the user_agents FK
+ * so we refuse the create if no caller identity can be resolved.
  */
 export async function createAgent(input: CreateAgentInput): Promise<CreatedAgent> {
   const id = `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const displayName = input.display_name || input.agent_type_id;
   const description = input.description || '';
-  const ownerID = input.owner_user_id || '';
+  let ownerID = input.owner_user_id || '';
+  if (!ownerID) {
+    ownerID = await currentUserId();
+  }
+  if (!ownerID) {
+    throw new Error('Cannot create agent: no owner_user_id provided and caller identity unavailable');
+  }
   // Personal vs team identity
   const hugrUserID = input.hugr_user_id || ownerID;
   const hugrUserName = input.hugr_user_name || hugrUserID;
@@ -172,33 +188,45 @@ export async function renameAgent(agentId: string, displayName: string): Promise
 
 /**
  * Start an agent container. Caller must have owner access (or be admin).
- * Returns the short Docker container ID.
+ * Returns the post-start runtime state ({id, status, container_id}) so the
+ * admin panel can update its row without a follow-up `hub.agent_runtime` fetch.
  *
  * Backend: pkg/hubapp/handlers_agent.go handleStartAgent
  */
-export async function startAgent(agentId: string): Promise<string> {
+export interface AgentRuntimeState {
+  id: string;
+  status: string;
+  container_id: string;
+}
+
+export async function startAgent(agentId: string): Promise<AgentRuntimeState> {
   const data = await gqlQuery(
     `mutation($id: String!) {
-      function { hub { start_agent(agent_id: $id) } }
+      function { hub { start_agent(agent_id: $id) {
+        id status container_id
+      } } }
     }`,
     { id: agentId },
   );
-  return data?.function?.hub?.start_agent ?? '';
+  return data?.function?.hub?.start_agent ?? { id: agentId, status: '', container_id: '' };
 }
 
 /**
  * Stop a running agent. Idempotent — succeeds even if not running.
+ * Returns the resulting runtime state ({id, status='stopped', container_id=''}).
  *
  * Backend: pkg/hubapp/handlers_agent.go handleStopAgent
  */
-export async function stopAgent(agentId: string): Promise<string> {
+export async function stopAgent(agentId: string): Promise<AgentRuntimeState> {
   const data = await gqlQuery(
     `mutation($id: String!) {
-      function { hub { stop_agent(agent_id: $id) } }
+      function { hub { stop_agent(agent_id: $id) {
+        id status container_id
+      } } }
     }`,
     { id: agentId },
   );
-  return data?.function?.hub?.stop_agent ?? '';
+  return data?.function?.hub?.stop_agent ?? { id: agentId, status: 'stopped', container_id: '' };
 }
 
 /**
@@ -218,6 +246,23 @@ export async function deleteAgent(agentId: string): Promise<string> {
 }
 
 // ── Read operations ───────────────────────────────────────
+
+/**
+ * Fetch the IDs of agents that currently have a running container according
+ * to Hugr's `hub.agent_runtime` table function (in-memory view populated by
+ * hub-service's DockerRuntime). Used by AdminPanel to decorate the agent list
+ * with a "connected/running" badge.
+ *
+ * Replaces the removed REST path `/hub-chat/api/agent/instances`.
+ */
+export async function fetchAgentRuntimeIds(): Promise<Set<string>> {
+  const data = await gqlQuery(
+    `{ hub { agent_runtime(args: { agent_id: "" }) { agent_id status } } }`,
+  ).catch(() => null);
+  const running: Array<{ agent_id: string; status: string }> =
+    data?.hub?.agent_runtime ?? [];
+  return new Set(running.map(r => r.agent_id));
+}
 
 /**
  * Fetch all agents with merged runtime state.

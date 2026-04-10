@@ -33,10 +33,59 @@
 .hub-chat-message-role { font-weight: 600; }
 .hub-chat-message-time { opacity: 0.6; }
 
+/* Per-message footer: HH:MM · 1.4s · model · 12→128 tokens */
+.hub-chat-message-footer {
+  font-size: 10px;
+  color: var(--jp-ui-font-color3);
+  opacity: 0.75;
+  margin-top: 4px;
+  padding-left: 14px;
+  font-family: var(--jp-content-font-family);
+  letter-spacing: 0.2px;
+}
+.hub-chat-message-footer--live {
+  color: var(--jp-brand-color1);
+  opacity: 0.9;
+}
+.hub-chat-message--user .hub-chat-message-footer {
+  text-align: right;
+  padding-left: 0;
+  padding-right: 14px;
+}
+
+/* Thinking section: live ticker → final stamp */
+.hub-chat-thinking--streaming > summary {
+  color: var(--jp-brand-color1);
+  font-style: italic;
+}
+.hub-chat-thinking--done > summary {
+  opacity: 0.7;
+}
+
 .hub-chat-message-body {
   padding: 10px 14px;
   border-radius: 12px;
   line-height: 1.5;
+  /* Long words / URLs / non-breaking content should wrap inside the bubble
+     instead of pushing the container wider. `overflow-wrap: anywhere` is
+     stronger than the legacy `word-break: break-word` for CJK / no-spaces
+     text and also catches long base64 / paths. */
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  max-width: 100%;
+  /* Hard cap on bubble width relative to the chat panel so a giant single
+     line doesn't blow the chat into a horizontal scroller. */
+  min-width: 0;
+}
+.hub-chat-message {
+  max-width: 100%;
+  min-width: 0;
+}
+.hub-chat-message--assistant .hub-chat-message-body pre {
+  /* Overrides earlier rule — already has overflow-x: auto, just make sure
+     the pre itself never escapes the bubble. */
+  max-width: 100%;
+  white-space: pre-wrap;
   word-break: break-word;
 }
 

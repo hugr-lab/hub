@@ -42,6 +42,9 @@ export class ChatDocumentWidget extends Widget {
   private thinkingEl: HTMLElement | null = null;
   private toolCallsEl: HTMLElement | null = null;
   private statusElement: HTMLElement | null = null;
+  /** Wall-clock time (epoch ms) when the user message was sent — used to
+   * compute response duration in the assistant footer. */
+  private sendStartedAt: number | null = null;
 
   // Message ID tracking for branching/summarization
   private messageIds: string[] = [];
@@ -176,7 +179,16 @@ export class ChatDocumentWidget extends Widget {
       // open) is fine for typical conversations (<500 msgs); pagination for
       // longer history uses loadMessages in loadOlderMessages below.
       const messages = await loadMessagesWithSummaries(this.conversationId);
-      messages.sort((a, b) => a.created_at.localeCompare(b.created_at));
+      // Apache Arrow Timestamp columns deserialize as JS Date objects, not
+      // ISO strings, so localeCompare fails. Coerce to numeric epoch ms for
+      // both sides — works for Date, ISO string, and numeric epoch input.
+      const epoch = (v: unknown): number => {
+        if (v instanceof Date) return v.getTime();
+        if (typeof v === 'number') return v;
+        if (typeof v === 'string') return new Date(v).getTime();
+        return 0;
+      };
+      messages.sort((a, b) => epoch(a.created_at) - epoch(b.created_at));
       for (const msg of messages) {
         const histMsg: HistoryMessage = { role: msg.role, content: msg.content };
         if (msg.tool_calls) histMsg.tool_calls = msg.tool_calls;
@@ -273,8 +285,12 @@ export class ChatDocumentWidget extends Widget {
     this.stopBtn.style.display = '';
 
     this.chatHistory.push({ role: 'user', content: text });
-    await this.appendMessage('user', text);
+    await this.appendMessage('user', text, new Date());
     this.scrollToBottom();
+
+    // Mark the start of the request so we can attribute the eventual
+    // response duration to the assistant footer ("HH:MM · 1.4s · ...").
+    this.sendStartedAt = Date.now();
 
     this.ws.send(JSON.stringify({
       type: 'message',
@@ -284,8 +300,19 @@ export class ChatDocumentWidget extends Widget {
   }
 
   private async onWsMessage(msg: WsMessage): Promise<void> {
+    // eslint-disable-next-line no-console
+    console.log('[hub-chat] ws message:', msg.type, msg);
     switch (msg.type) {
       case 'token':
+        // First token after a thinking block — collapse the thinking block
+        // and stamp it with its duration. The reasoning text stays visible
+        // for the user to re-open later, it's just no longer the active
+        // streaming target. We do NOT push the thinking content into
+        // chatHistory, so it never gets sent back to the LLM on follow-ups.
+        if (this.thinkingEl) {
+          this.renderer.finalizeThinking(this.thinkingEl);
+          this.thinkingEl = null;
+        }
         // Streaming token — append to streaming element
         if (!this.streamingEl) {
           this.removeStatusMsg();
@@ -308,6 +335,11 @@ export class ChatDocumentWidget extends Widget {
         break;
 
       case 'tool_call':
+        // First tool call after thinking — collapse the reasoning block.
+        if (this.thinkingEl) {
+          this.renderer.finalizeThinking(this.thinkingEl);
+          this.thinkingEl = null;
+        }
         this.chatHistory.push({
           role: 'assistant',
           content: msg.content || '',
@@ -331,31 +363,41 @@ export class ChatDocumentWidget extends Widget {
         }
         break;
 
-      case 'response':
-        this.chatHistory.push({ role: 'assistant', content: msg.content });
+      case 'response': {
+        const responseText = typeof msg.content === 'string' ? msg.content : '';
+        const durationMs = this.sendStartedAt ? Date.now() - this.sendStartedAt : undefined;
+        this.sendStartedAt = null;
+
+        // Final response → close any open thinking block (with elapsed stamp).
+        if (this.thinkingEl) {
+          this.renderer.finalizeThinking(this.thinkingEl);
+          this.thinkingEl = null;
+        }
+
+        this.chatHistory.push({ role: 'assistant', content: responseText });
 
         // If we were streaming, finalize. Otherwise render full message.
         if (this.streamingEl) {
-          await this.renderer.finalizeStreaming(this.streamingEl, msg.usage);
+          await this.renderer.finalizeStreaming(this.streamingEl, msg.usage, durationMs);
           this.streamingEl = null;
         } else {
           const label = msg.agent_name || 'assistant';
-          await this.appendMessage(label, msg.content);
-          // Show usage footer if available
-          if (msg.usage) {
-            const footer = document.createElement('div');
-            footer.className = 'hub-chat-message-usage';
-            footer.textContent = `${msg.usage.model} · ${msg.usage.tokens_in}→${msg.usage.tokens_out} tokens`;
-            this.messagesEl.lastElementChild?.appendChild(footer);
-          }
+          // Empty/missing content can happen if the LLM stream produced
+          // no token chunks (e.g. tool-only turn or upstream parse issue);
+          // show a placeholder instead of literal "undefined".
+          const display = responseText || '_(no response text)_';
+          await this.appendMessage(label, display, new Date(), undefined, {
+            usage: msg.usage,
+            durationMs,
+          });
         }
-        this.thinkingEl = null;
         this.toolCallsEl = null;
         this.processing = false;
         this.stopBtn.style.display = 'none';
         this.removeStatusMsg();
         this.scrollToBottom();
         break;
+      }
 
       case 'summary':
         if (msg.summary_of) {
@@ -404,12 +446,24 @@ export class ChatDocumentWidget extends Widget {
       this.renderer.finalizeStreaming(this.streamingEl);
       this.streamingEl = null;
     }
-    this.thinkingEl = null;
+    if (this.thinkingEl) {
+      // Stop the live ticker even on cancel/error so it doesn't keep
+      // counting forever inside an orphaned details block.
+      this.renderer.finalizeThinking(this.thinkingEl);
+      this.thinkingEl = null;
+    }
     this.toolCallsEl = null;
+    this.sendStartedAt = null;
   }
 
-  private async appendMessage(role: string, content: string, timestamp?: string, messageId?: string): Promise<HTMLElement> {
-    const el = await this.renderer.render(role, content, timestamp);
+  private async appendMessage(
+    role: string,
+    content: string,
+    timestamp?: string | Date | number,
+    messageId?: string,
+    meta?: { durationMs?: number; usage?: { tokens_in: number; tokens_out: number; model: string } },
+  ): Promise<HTMLElement> {
+    const el = await this.renderer.render(role, content, timestamp, meta);
     if (messageId) {
       el.dataset.messageId = messageId;
     }
