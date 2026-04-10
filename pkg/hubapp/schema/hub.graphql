@@ -38,10 +38,32 @@ type conversations @table(name: "conversations", soft_delete: true, soft_delete_
   mode: String!
   """Agent type (for mode=agent) — stable across instance restarts"""
   agent_type_id: String
-  """Agent instance (cached, may change on restart)"""
-  agent_instance_id: String
+  """Agent identity"""
+  agent_id: String @field_references(
+    name: "conv_agent_ref"
+    references_name: "agents"
+    field: "id"
+    query: "agent"
+    description: "Agent linked to this conversation"
+    references_query: "conversations"
+    references_description: "Conversations using this agent"
+  )
   """LLM model override (for mode=llm)"""
   model: String
+  """Parent conversation (for threading — null = root)"""
+  parent_id: String @field_references(
+    name: "conv_parent_ref"
+    references_name: "conversations"
+    field: "id"
+    query: "parent"
+    description: "Parent conversation this was branched from"
+    references_query: "branches"
+    references_description: "Conversations branched from this one"
+  )
+  """Message in parent where this branch starts"""
+  branch_point_message_id: String
+  """User-specified label for this branch"""
+  branch_label: String
   """Soft delete timestamp (null = active)"""
   deleted_at: Timestamp
   """Creation timestamp"""
@@ -74,47 +96,67 @@ type agent_types @table(name: "agent_types") {
   metadata: JSON
 }
 
-"""Running agent container bound to a user and agent type."""
-type agent_instances @table(name: "agent_instances") {
-  """Instance UUID"""
+"""Agent identity — persistent entity with Hugr credentials and display info. Runtime state (container_id, auth_token) is in Hub Service memory."""
+type agents @table(name: "agents") {
+  """Agent UUID"""
   id: String! @pk
-  """Owner user"""
-  user_id: String! @field_references(
-    name: "instances_user_ref"
-    references_name: "users"
-    field: "id"
-    query: "user"
-    description: "User who owns this instance"
-    references_query: "agent_instances"
-    references_description: "Agent instances owned by this user"
-  )
-  """Human-readable name for this instance"""
-  display_name: String
   """Agent type configuration"""
   agent_type_id: String! @field_references(
-    name: "instances_type_ref"
+    name: "agents_type_ref"
     references_name: "agent_types"
     field: "id"
     query: "agent_type"
     description: "Agent type configuration"
-    references_query: "instances"
-    references_description: "Running instances of this agent type"
+    references_query: "agents"
+    references_description: "Agents of this type"
   )
-  """Docker container ID or K8s pod name"""
-  container_id: String
-  """Authentication token for agent-to-hub communication"""
-  auth_token: String
-  """Lifecycle state: creating, running, idle, stopping, stopped"""
-  status: String
-  """When the container was started"""
-  started_at: Timestamp @default(insert_exp: "NOW()")
-  """Last user interaction timestamp"""
-  last_activity_at: Timestamp @default(insert_exp: "NOW()", update_exp: "NOW()")
-  """Runtime metadata (resource usage, etc.)"""
+  """Display name shown in chat UI"""
+  display_name: String!
+  """What this agent does"""
+  description: String
+  """Hugr user ID for impersonation"""
+  hugr_user_id: String!
+  """Hugr user name for audit"""
+  hugr_user_name: String!
+  """Hugr RBAC role"""
+  hugr_role: String!
+  """Last interaction timestamp"""
+  last_activity_at: Timestamp
+  """Creation timestamp"""
+  created_at: Timestamp @default(insert_exp: "NOW()")
+  """Extra configuration"""
   metadata: JSON
 }
 
-"""Conversation between a user and their agent."""
+"""User-Agent access grant. M:N relationship with owner/member roles."""
+type user_agents @table(name: "user_agents") {
+  """User granted access"""
+  user_id: String! @pk @field_references(
+    name: "ua_user_ref"
+    references_name: "users"
+    field: "id"
+    query: "user"
+    description: "User with access to this agent"
+    references_query: "agent_access"
+    references_description: "Agent access grants for this user"
+  )
+  """Agent being accessed"""
+  agent_id: String! @pk @field_references(
+    name: "ua_agent_ref"
+    references_name: "agents"
+    field: "id"
+    query: "agent"
+    description: "Agent this access grant is for"
+    references_query: "user_access"
+    references_description: "User access grants for this agent"
+  )
+  """Access level: owner (manage + chat) or member (chat only)"""
+  role: String!
+  """When access was granted"""
+  created_at: Timestamp @default(insert_exp: "NOW()")
+}
+
+"""Agent session — a conversation between a user and their agent."""
 type agent_sessions @table(name: "agent_sessions") {
   """Session UUID"""
   id: String! @pk
@@ -128,15 +170,15 @@ type agent_sessions @table(name: "agent_sessions") {
     references_query: "agent_sessions"
     references_description: "Agent sessions for this user"
   )
-  """Agent instance running this session"""
-  instance_id: String @field_references(
-    name: "sessions_instance_ref"
-    references_name: "agent_instances"
+  """Agent running this session"""
+  agent_id: String @field_references(
+    name: "sessions_agent_ref"
+    references_name: "agents"
     field: "id"
-    query: "instance"
-    description: "Agent instance running this session"
+    query: "agent"
+    description: "Agent running this session"
     references_query: "sessions"
-    references_description: "Sessions on this agent instance"
+    references_description: "Sessions on this agent"
   )
   """Session start timestamp"""
   started_at: Timestamp @default(insert_exp: "NOW()")
@@ -182,8 +224,47 @@ type agent_messages @table(name: "agent_messages") {
   tokens_used: Int
   """LLM model used to generate this message"""
   model: String
+  """Reference to summary message that replaces this one (when this message has been summarized)"""
+  summarized_by: String @field_references(
+    name: "messages_summary_ref"
+    references_name: "agent_messages"
+    field: "id"
+    query: "summary"
+    description: "Summary message that replaces this one"
+    references_query: "summarized_messages"
+    references_description: "Original messages this summary directly replaces"
+  )
+  """True if this message is a summary of other messages"""
+  is_summary: Boolean
   """When the message was created"""
   created_at: Timestamp @default(insert_exp: "NOW()")
+}
+
+"""Junction linking a summary message to the original messages it covers.
+Use it to fetch full original messages from a summary in one GraphQL query, in order."""
+type message_summary_items @table(name: "message_summary_items") {
+  """Summary message that aggregates the originals"""
+  summary_message_id: String! @pk @field_references(
+    name: "msi_summary_ref"
+    references_name: "agent_messages"
+    field: "id"
+    query: "summary_message"
+    description: "Summary message containing this item"
+    references_query: "summary_items"
+    references_description: "Original messages covered by this summary, in order"
+  )
+  """Original message included in the summary"""
+  original_message_id: String! @pk @field_references(
+    name: "msi_original_ref"
+    references_name: "agent_messages"
+    field: "id"
+    query: "original_message"
+    description: "Original message included in the summary"
+    references_query: "summary_links"
+    references_description: "Summaries that include this message as an original"
+  )
+  """Position of the original message inside the summary (preserves chronological order)"""
+  position: Int!
 }
 
 """Learned information stored with semantic embedding for similarity search."""
@@ -329,4 +410,58 @@ type llm_usage @table(name: "llm_usage") {
   period_key: String!
   """When the request was made"""
   created_at: Timestamp @default(insert_exp: "NOW()")
+}
+
+"""Conversation context — recursive view that resolves messages across branched conversations."""
+input conversation_context_args {
+  conversation_id: String!
+}
+
+type conversation_context @view(
+  name: "conversation_context"
+  sql: """
+  WITH RECURSIVE conv_chain AS (
+    SELECT id, parent_id, branch_point_message_id, 0 AS depth
+    FROM hub.db.conversations WHERE id = [$conversation_id]
+    UNION ALL
+    SELECT c.id, c.parent_id, c.branch_point_message_id, cc.depth + 1
+    FROM hub.db.conversations c
+    JOIN conv_chain cc ON c.id = cc.parent_id
+    WHERE cc.depth < 3
+  )
+  SELECT m.id, m.conversation_id, m.role, m.content,
+         m.tool_calls, m.tool_call_id, m.tokens_used, m.model,
+         m.is_summary, m.summarized_by, m.created_at
+  FROM hub.db.agent_messages m
+  JOIN conv_chain cc ON m.conversation_id = cc.id
+  WHERE cc.branch_point_message_id IS NULL
+     OR m.created_at <= (
+       SELECT created_at FROM hub.db.agent_messages
+       WHERE id = cc.branch_point_message_id
+     )
+  ORDER BY m.created_at
+  """
+) @args(name: "conversation_context_args", required: true) {
+  """Message ID"""
+  id: String!
+  """Conversation this message belongs to"""
+  conversation_id: String!
+  """Sender role"""
+  role: String!
+  """Message content"""
+  content: String!
+  """Tool calls (JSON)"""
+  tool_calls: JSON
+  """Tool call ID"""
+  tool_call_id: String
+  """Tokens used"""
+  tokens_used: Int
+  """Model used"""
+  model: String
+  """Whether this is a summary message"""
+  is_summary: Boolean
+  """Reference to summary that replaces this message"""
+  summarized_by: String
+  """Creation timestamp"""
+  created_at: Timestamp!
 }

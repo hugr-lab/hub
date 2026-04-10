@@ -11,10 +11,14 @@ import {
   fetchCatalogSources, fetchCatalogs, insertCatalogSource, updateCatalogSource,
   deleteCatalogSource, linkCatalog, unlinkCatalog,
   fetchModelSources,
-  fetchAgentInstances, fetchAgentSessions, fetchAgentTypes,
-  startAgent, stopAgent, stopAgentDB, renameAgent, deleteAgent, clearAgentMemory,
+  fetchAgentSessions, fetchAgentTypes,
+  clearAgentMemory,
   fetchLLMBudgets, fetchLLMUsage, insertLLMBudget, deleteLLMBudget,
 } from '../api.js';
+// Agent CRUD + lifecycle via direct Hugr GraphQL.
+import {
+  fetchAgents, createAgent, startAgent, stopAgent, renameAgent, deleteAgent,
+} from '../agentApiGraphQL.js';
 import type { DataSource, CatalogSource, CatalogLink, ModelSource, AgentType } from '../api.js';
 import { ICON, iconBtn } from './icons.js';
 import { Modal } from './modal.js';
@@ -118,11 +122,11 @@ export class AdminPanelWidget extends Widget {
   private async renderDashboard(el: HTMLElement): Promise<void> {
     el.innerHTML = '<div class="hub-admin-loading">Loading...</div>';
     try {
-      const [instances, sessions, usage, models] = await Promise.all([
-        fetchAgentInstances(), fetchAgentSessions(), fetchLLMUsage(1000), fetchModelSources(),
+      const [agents, sessions, usage, models] = await Promise.all([
+        fetchAgents(), fetchAgentSessions(), fetchLLMUsage(1000), fetchModelSources(),
       ]);
       el.innerHTML = '';
-      const running = instances.filter(i => i.status === 'running').length;
+      const running = agents.filter(a => a.status === 'running').length;
       const totalTokens = usage.reduce((s, u) => s + u.tokens_in + u.tokens_out, 0);
       const stats = document.createElement('div');
       stats.className = 'hub-admin-stats';
@@ -678,62 +682,75 @@ export class AdminPanelWidget extends Widget {
   private async renderAgents(el: HTMLElement): Promise<void> {
     el.innerHTML = '<div class="hub-admin-loading">Loading...</div>';
     try {
-      const [instances, agentTypes, connectedSet] = await Promise.all([
-        fetchAgentInstances(),
+      const [agents, agentTypes, connectedSet] = await Promise.all([
+        fetchAgents(),
         fetchAgentTypes(),
         this.fetchConnectedAgents(),
       ]);
       el.innerHTML = '';
 
-      // Toolbar: Start Agent
+      // Toolbar: Create Agent
       const toolbar = document.createElement('div');
       toolbar.className = 'hub-admin-toolbar';
       if (agentTypes.length > 0) {
-        const startBtn = iconBtn(ICON.play, 'Start Agent', 'hub-admin-icon-btn hub-admin-icon-btn--primary');
-        startBtn.addEventListener('click', () => this.openStartAgentModal(agentTypes));
-        toolbar.appendChild(startBtn);
+        const createBtn = iconBtn(ICON.plus, 'Create Agent', 'hub-admin-icon-btn hub-admin-icon-btn--primary');
+        createBtn.addEventListener('click', () => this.openCreateAgentModal(agentTypes));
+        toolbar.appendChild(createBtn);
       }
       const refreshBtn = iconBtn(ICON.refresh, 'Refresh');
       refreshBtn.addEventListener('click', () => this.loadSection('agents'));
       toolbar.appendChild(refreshBtn);
       el.appendChild(toolbar);
 
-      if (instances.length === 0) { el.appendChild(empty('No agent instances')); return; }
-      for (const inst of instances) {
+      if (agents.length === 0) { el.appendChild(empty('No agents — click Create Agent to add one')); return; }
+      for (const agent of agents) {
         const row = document.createElement('div');
         row.className = 'hub-admin-list-item';
-        const isConnected = connectedSet.has(inst.id);
+        const isRunning = agent.status === 'running';
+        const isConnected = isRunning && connectedSet.has(agent.id);
         const dot = isConnected ? 'hub-admin-dot--active' :
-          inst.status === 'running' ? 'hub-admin-dot--warning' :
-          inst.status === 'error' ? 'hub-admin-dot--error' : 'hub-admin-dot--inactive';
-        const connLabel = inst.status === 'running' ? (isConnected ? 'connected' : 'disconnected') : inst.status;
-        const displayName = inst.display_name || `${inst.agent_type_id} (${inst.user_id})`;
+          isRunning ? 'hub-admin-dot--warning' :
+          agent.status === 'error' ? 'hub-admin-dot--error' : 'hub-admin-dot--inactive';
+        const statusLabel = isRunning ? (isConnected ? 'connected' : 'disconnected') : (agent.status || 'stopped');
+        const meta = isRunning && agent.started_at
+          ? `${statusLabel} — since ${fmtDate(agent.started_at)} — ${esc(agent.hugr_role)}`
+          : `${statusLabel} — ${esc(agent.hugr_role)}`;
         row.innerHTML = `
           <div class="hub-admin-list-item-main">
-            <span class="hub-admin-dot ${dot}" title="${connLabel}"></span>
-            <span class="hub-admin-list-item-title">${esc(displayName)}</span>
-            <span class="hub-admin-list-item-meta">${connLabel} — ${fmtDate(inst.started_at)}</span>
+            <span class="hub-admin-dot ${dot}" title="${statusLabel}"></span>
+            <span class="hub-admin-list-item-title">${esc(agent.display_name)}</span>
+            <span class="hub-admin-list-item-meta">${meta}</span>
           </div>
         `;
         const actions = document.createElement('div');
         actions.className = 'hub-admin-list-item-actions';
-        if (inst.status === 'running') {
+
+        if (isRunning) {
           const stopBtn = iconBtn(ICON.stop, 'Stop', 'hub-admin-icon-btn hub-admin-icon-btn--danger');
           stopBtn.addEventListener('click', async () => {
-            if (!confirm(`Stop agent for "${inst.user_id}"?`)) return;
+            if (!confirm(`Stop agent "${agent.display_name}"?`)) return;
             await this.runBusy(`Stopping agent...`, async () => {
-              try { await stopAgent(inst.user_id); }
-              catch { await stopAgentDB(inst.id); }
+              try { await stopAgent(agent.id); } catch (err: any) { alert(err.message); }
             });
             this.loadSection('agents');
           });
           actions.appendChild(stopBtn);
+        } else {
+          const startBtn = iconBtn(ICON.play, 'Start', 'hub-admin-icon-btn hub-admin-icon-btn--primary');
+          startBtn.addEventListener('click', async () => {
+            await this.runBusy(`Starting agent...`, async () => {
+              try { await startAgent(agent.id); } catch (err: any) { alert(err.message); }
+            });
+            this.loadSection('agents');
+          });
+          actions.appendChild(startBtn);
         }
+
         const renBtn = iconBtn(ICON.edit, 'Rename');
         renBtn.addEventListener('click', async () => {
-          const newName = prompt('Agent display name:', inst.display_name || '');
-          if (newName !== null && newName !== inst.display_name) {
-            await renameAgent(inst.id, newName);
+          const newName = prompt('Agent display name:', agent.display_name || '');
+          if (newName !== null && newName !== agent.display_name) {
+            await renameAgent(agent.id, newName);
             this.loadSection('agents');
           }
         });
@@ -741,18 +758,17 @@ export class AdminPanelWidget extends Widget {
 
         const clearBtn = iconBtn(ICON.eraser, 'Clear Memory');
         clearBtn.addEventListener('click', async () => {
-          if (!confirm(`Clear all memory for "${inst.user_id}"?`)) return;
-          await clearAgentMemory(inst.user_id);
+          if (!confirm(`Clear all memory for agent "${agent.display_name}"?`)) return;
+          await clearAgentMemory(agent.hugr_user_id);
           this.loadSection('agents');
         });
         actions.appendChild(clearBtn);
 
         const delBtn = iconBtn(ICON.trash, 'Delete', 'hub-admin-icon-btn hub-admin-icon-btn--danger');
         delBtn.addEventListener('click', async () => {
-          if (!confirm(`Delete agent "${inst.user_id}"? This will stop the container and remove the record.`)) return;
+          if (!confirm(`Delete agent "${agent.display_name}"? This will stop the container and remove the record.`)) return;
           await this.runBusy('Deleting agent...', async () => {
-            try { await deleteAgent(inst.id); }
-            catch (err: any) { alert(err.message); }
+            try { await deleteAgent(agent.id); } catch (err: any) { alert(err.message); }
           });
           this.loadSection('agents');
         });
@@ -765,29 +781,80 @@ export class AdminPanelWidget extends Widget {
     }
   }
 
-  private openStartAgentModal(agentTypes: AgentType[]): void {
-    const modal = new Modal({ title: 'Start Agent', width: '400px' });
+  private openCreateAgentModal(agentTypes: AgentType[]): void {
+    const modal = new Modal({ title: 'Create Agent', width: '440px' });
     const form = document.createElement('div');
     form.className = 'hub-admin-modal-form';
     form.innerHTML = `
-      <div class="hub-admin-form-group"><label>User ID <span style="color:var(--jp-ui-font-color2)">(optional — leave empty for autonomous agent)</span></label><input type="text" id="sa-user" placeholder="e.g. admin" /></div>
-      <div class="hub-admin-form-group"><label>Hugr Role</label><input type="text" id="sa-role" value="admin" placeholder="e.g. admin, analyst" /></div>
-      <div class="hub-admin-form-group"><label>Agent Type</label>
-        <select id="sa-type">${agentTypes.map(t => `<option value="${t.id}">${esc(t.display_name || t.id)}</option>`).join('')}</select>
+      <div class="hub-admin-form-group">
+        <label>Display Name</label>
+        <input type="text" id="ca-name" placeholder="e.g. My Assistant, Team Analyst" />
+      </div>
+      <div class="hub-admin-form-group">
+        <label>Agent Type</label>
+        <select id="ca-type">${agentTypes.map(t => `<option value="${t.id}">${esc(t.display_name || t.id)}</option>`).join('')}</select>
+      </div>
+      <div class="hub-admin-form-group">
+        <label>Description <span style="color:var(--jp-ui-font-color2)">(optional)</span></label>
+        <input type="text" id="ca-desc" />
+      </div>
+      <div class="hub-admin-form-group">
+        <label>Identity</label>
+        <select id="ca-identity">
+          <option value="personal">Personal — inherit owner's Hugr permissions</option>
+          <option value="team">Team — independent Hugr identity</option>
+        </select>
+      </div>
+      <div class="hub-admin-form-group">
+        <label>Owner User ID <span style="color:var(--jp-ui-font-color2)">(empty = current user)</span></label>
+        <input type="text" id="ca-owner" placeholder="e.g. alice" />
+      </div>
+      <div id="ca-team-fields" style="display:none">
+        <div class="hub-admin-form-group">
+          <label>Hugr User ID <span style="color:var(--jp-ui-font-color2)">(team identity)</span></label>
+          <input type="text" id="ca-huid" placeholder="e.g. agent-analyst-1" />
+        </div>
+        <div class="hub-admin-form-group">
+          <label>Hugr Role</label>
+          <input type="text" id="ca-role" value="agent" placeholder="e.g. analyst, agent" />
+        </div>
+      </div>
+      <div class="hub-admin-form-group">
+        <label><input type="checkbox" id="ca-start" checked /> Start agent immediately</label>
       </div>
     `;
     modal.body.appendChild(form);
 
-    modal.addAction('Start', 'hub-admin-btn hub-admin-btn--primary', async () => {
-      const userId = (form.querySelector('#sa-user') as HTMLInputElement).value.trim();
-      const role = (form.querySelector('#sa-role') as HTMLInputElement).value.trim();
-      const typeId = (form.querySelector('#sa-type') as HTMLSelectElement).value;
-      const label = userId || 'autonomous';
+    const identitySelect = form.querySelector('#ca-identity') as HTMLSelectElement;
+    const teamFields = form.querySelector('#ca-team-fields') as HTMLElement;
+    identitySelect.addEventListener('change', () => {
+      teamFields.style.display = identitySelect.value === 'team' ? '' : 'none';
+    });
+
+    modal.addAction('Create', 'hub-admin-btn hub-admin-btn--primary', async () => {
+      const displayName = (form.querySelector('#ca-name') as HTMLInputElement).value.trim();
+      const typeId = (form.querySelector('#ca-type') as HTMLSelectElement).value;
+      const description = (form.querySelector('#ca-desc') as HTMLInputElement).value.trim();
+      const ownerUserID = (form.querySelector('#ca-owner') as HTMLInputElement).value.trim();
+      const isTeam = identitySelect.value === 'team';
+      const hugrUserID = isTeam ? (form.querySelector('#ca-huid') as HTMLInputElement).value.trim() : '';
+      const hugrRole = isTeam ? (form.querySelector('#ca-role') as HTMLInputElement).value.trim() : '';
+      const startNow = (form.querySelector('#ca-start') as HTMLInputElement).checked;
+
       modal.close();
-      await this.runBusy(`Starting agent (${label})...`, async () => {
+      await this.runBusy('Creating agent...', async () => {
         try {
-          const res = await startAgent(userId || undefined, typeId, role || undefined);
-          alert(`Agent started: ${res.container_id?.substring(0, 12)}`);
+          const created = await createAgent({
+            agent_type_id: typeId,
+            display_name: displayName || undefined,
+            description: description || undefined,
+            hugr_user_id: hugrUserID || undefined,
+            hugr_role: hugrRole || undefined,
+            owner_user_id: ownerUserID || undefined,
+          });
+          if (startNow) {
+            await startAgent(created.id);
+          }
         } catch (err: any) { alert(err.message); }
       });
       this.loadSection('agents');

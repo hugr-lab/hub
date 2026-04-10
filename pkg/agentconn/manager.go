@@ -22,9 +22,11 @@ type AgentMessage struct {
 	RequestID      string        `json:"request_id"`
 	ConversationID string        `json:"conversation_id,omitempty"`
 	UserID         string        `json:"user_id,omitempty"`
-	Type           string        `json:"type"` // "request", "response", "status", "error", "ping", "pong"
+	Type           string        `json:"type"` // "request", "response", "status", "error", "ping", "pong", "token", "thinking", "tool_call", "tool_result"
 	Content        string        `json:"content,omitempty"`
 	Messages       []ChatMessage `json:"messages,omitempty"` // full conversation history for request type
+	ToolCalls      any           `json:"tool_calls,omitempty"`
+	ToolCallID     string        `json:"tool_call_id,omitempty"`
 }
 
 // ChatMessage is a single message in conversation history (matches wsgateway.LLMMessage).
@@ -141,8 +143,8 @@ func (m *Manager) readLoop(ctx context.Context, ac *agentConn) {
 		switch msg.Type {
 		case "pong":
 			// heartbeat response — nothing to do
-		case "response", "status", "error":
-			// Route to pending request
+		case "response", "status", "error", "token", "thinking", "tool_call", "tool_result":
+			// Route to pending request (includes streaming types)
 			ac.mu.Lock()
 			ch, ok := ac.pending[msg.RequestID]
 			ac.mu.Unlock()
@@ -223,8 +225,11 @@ func (m *Manager) SendMessage(ctx context.Context, instanceID, conversationID, u
 	}
 }
 
+// StreamCallback receives streaming messages from agent.
+type StreamCallback func(msg AgentMessage)
+
 // SendMessageStream sends a message and streams intermediate results via callback.
-func (m *Manager) SendMessageStream(ctx context.Context, instanceID, conversationID, userID string, messages []ChatMessage, onStatus func(string)) (string, error) {
+func (m *Manager) SendMessageStream(ctx context.Context, instanceID, conversationID, userID string, messages []ChatMessage, onStream StreamCallback) (string, error) {
 	m.mu.RLock()
 	ac, ok := m.agents[instanceID]
 	m.mu.RUnlock()
@@ -273,12 +278,15 @@ func (m *Manager) SendMessageStream(ctx context.Context, instanceID, conversatio
 		case resp := <-ch:
 			switch resp.Type {
 			case "response":
+				if onStream != nil {
+					onStream(resp)
+				}
 				return resp.Content, nil
 			case "error":
 				return "", fmt.Errorf("agent error: %s", resp.Content)
-			case "status":
-				if onStatus != nil {
-					onStatus(resp.Content)
+			case "status", "token", "thinking", "tool_call", "tool_result":
+				if onStream != nil {
+					onStream(resp)
 				}
 			}
 		}

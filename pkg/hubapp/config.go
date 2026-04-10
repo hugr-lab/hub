@@ -14,6 +14,7 @@ type Config struct {
 	InternalURL   string // Hub Service URL accessible from agent containers
 	DatabaseDSN   string // PostgreSQL DSN for hub DB
 	RedisURL      string // Redis URL for per-user rate limiting (required)
+	StoragePath   string // Root directory for persistent storage (HUB_STORAGE_PATH)
 	QueryTimeout  time.Duration // Timeout for Hugr GraphQL queries (HUGR_QUERY_TIMEOUT)
 	LogLevel      slog.Level
 }
@@ -27,6 +28,7 @@ func LoadConfig() Config {
 		DatabaseDSN:   envOrDefault("HUB_DATABASE_DSN", "postgres://hugr:hugr_password@localhost:18032/hub"),
 		InternalURL:   envOrDefault("HUB_SERVICE_INTERNAL_URL", "http://hub-service:8082"),
 		RedisURL:      envOrDefault("HUB_REDIS_URL", "redis://localhost:6379/0"),
+		StoragePath:   envOrDefault("HUB_STORAGE_PATH", "/var/hub-storage"),
 		QueryTimeout:  envDuration("HUGR_QUERY_TIMEOUT", 5*time.Minute),
 	}
 

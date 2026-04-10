@@ -153,19 +153,68 @@ c.GenericOAuthenticator.client_secret = os.environ.get("OIDC_CLIENT_SECRET", "")
 c.GenericOAuthenticator.scope = oidc["scopes"]
 c.GenericOAuthenticator.login_service = "Hugr SSO"
 
-# Admin users — from env (static) + OIDC claim (dynamic)
-_admin_users = os.environ.get("HUGR_ADMIN_USERS", "")
-if _admin_users:
-    c.Authenticator.admin_users = set(_admin_users.split(","))
-
-# OIDC role/admin extraction via post_auth_hook
-_admin_claim = os.environ.get("HUGR_ADMIN_CLAIM", "")
-_admin_values = set(os.environ.get("HUGR_ADMIN_VALUES", "admin").split(","))
+# OIDC role extraction + hub:management.admin capability check via post_auth_hook.
+#
+# Admin detection is driven entirely by Hugr core.role_permissions — deployments
+# grant the hub:management.admin capability to whatever role they consider
+# administrative, and both JupyterHub (this file) and hub-service consult the
+# same table. No role name is hard-coded here.
 
 HUB_SERVICE_URL = os.environ.get("HUB_SERVICE_URL")
 
+
+async def _has_hub_management_admin(user_id: str, user_name: str, role: str) -> bool:
+    """Return True if the caller's role has the hub:management.admin capability
+    enabled in Hugr core.role_permissions.
+
+    Uses the management secret + x-hugr-impersonated-* headers to evaluate the
+    permission against the target role (requires the admin-keyed role in Hugr
+    to have can_impersonate=true — see .env.example for setup).
+    """
+    hugr_secret = os.environ.get("HUGR_SECRET_KEY", "")
+    if not hugr_secret or not role:
+        return False
+    try:
+        async with httpx.AsyncClient(verify=_hugr_tls_verify) as client:
+            resp = await client.post(
+                f"{HUGR_URL}/query",
+                json={"query": (
+                    "{ function { core { auth { my_permissions { disabled "
+                    "permissions { object field disabled } } } } } }"
+                )},
+                headers={
+                    "X-Hugr-Secret-Key": hugr_secret,
+                    "x-hugr-impersonated-user-id": user_id,
+                    "x-hugr-impersonated-user-name": user_name or user_id,
+                    "x-hugr-impersonated-role": role,
+                },
+                timeout=5,
+            )
+        payload = (
+            (resp.json() or {})
+            .get("data", {})
+            .get("function", {})
+            .get("core", {})
+            .get("auth", {})
+            .get("my_permissions")
+            or {}
+        )
+        if payload.get("disabled", False):
+            return False
+        for p in payload.get("permissions", []) or []:
+            if (
+                p.get("object") == "hub:management"
+                and p.get("field") == "admin"
+                and not p.get("disabled", True)
+            ):
+                return True
+    except Exception as e:
+        logger.warning("Failed to check hub:management.admin capability for %s: %s", user_id, e)
+    return False
+
+
 async def _post_auth_hook(authenticator, handler, authentication):
-    """Extract OIDC roles → JupyterHub groups + admin flag + notify Hub Service."""
+    """Extract OIDC roles → JupyterHub groups + admin flag (via capability) + sync user."""
     from hub_profiles.resolver import extract_claim
 
     auth_state = authentication.get("auth_state", {})
@@ -187,32 +236,67 @@ async def _post_auth_hook(authenticator, handler, authentication):
     if groups:
         authentication["groups"] = groups
 
-    # Admin flag from claim
-    if _admin_claim:
-        admin_values = extract_claim(auth_state, _admin_claim)
-        if any(v in _admin_values for v in admin_values):
-            authentication["admin"] = True
-    elif roles:
-        # Fallback: check roles against admin values
-        if any(r in _admin_values for r in roles):
-            authentication["admin"] = True
+    # Admin flag — evaluated via the hub:management.admin capability in Hugr
+    # core.role_permissions. No role names are hard-coded; whatever roles the
+    # deployment has granted the capability to become admins automatically.
+    user_id = authentication["name"]
+    user_name = auth_state.get("name", user_id)
+    primary_role = roles[0] if roles else ""
+    if await _has_hub_management_admin(user_id, user_name, primary_role):
+        authentication["admin"] = True
 
-    # Notify Hub Service about user login (sync to hub.users)
-    if HUB_SERVICE_URL:
+    # Upsert user into hub.db.users via Hugr GraphQL (management secret auth).
+    # This previously called Hub Service's /api/user/login, which has been
+    # removed — Hugr is now the single write path for all hub.db.* data.
+    hugr_secret = os.environ.get("HUGR_SECRET_KEY", "")
+    if hugr_secret:
         async with httpx.AsyncClient(verify=_hugr_tls_verify) as client:
             try:
-                await client.post(
-                    f"{HUB_SERVICE_URL}/api/user/login",
+                user_id = authentication["name"]
+                user_name = auth_state.get("name", user_id)
+                role = roles[0] if roles else "user"
+                email = auth_state.get("email", "")
+                # One round-trip: try an update, fall back to insert if zero affected.
+                gql = (
+                    "mutation($id:String!,$name:String!,$role:String!,$email:String) {"
+                    " hub { db {"
+                    "  update_users(filter:{id:{eq:$id}}, data:{display_name:$name, hugr_role:$role, email:$email}) { affected_rows }"
+                    " } }"
+                    "}"
+                )
+                resp = await client.post(
+                    f"{HUGR_URL}/query",
                     json={
-                        "user_id": authentication["name"],
-                        "user_name": auth_state.get("name", authentication["name"]),
-                        "role": roles[0] if roles else "",
-                        "email": auth_state.get("email", ""),
+                        "query": gql,
+                        "variables": {"id": user_id, "name": user_name, "role": role, "email": email},
                     },
+                    headers={"X-Hugr-Secret-Key": hugr_secret},
                     timeout=5,
                 )
+                affected = 0
+                try:
+                    affected = int(
+                        (resp.json() or {}).get("data", {}).get("hub", {}).get("db", {}).get("update_users", {}).get("affected_rows", 0)
+                    )
+                except Exception:
+                    affected = 0
+                if affected == 0:
+                    ins = (
+                        "mutation($id:String!,$name:String!,$role:String!,$email:String) {"
+                        " hub { db { insert_users(data:{id:$id, display_name:$name, hugr_role:$role, email:$email}) { id } } }"
+                        "}"
+                    )
+                    await client.post(
+                        f"{HUGR_URL}/query",
+                        json={
+                            "query": ins,
+                            "variables": {"id": user_id, "name": user_name, "role": role, "email": email},
+                        },
+                        headers={"X-Hugr-Secret-Key": hugr_secret},
+                        timeout=5,
+                    )
             except Exception as e:
-                logger.warning("Failed to notify Hub Service: %s", e)
+                logger.warning("Failed to upsert user in Hugr: %s", e)
 
     return authentication
 
@@ -436,7 +520,45 @@ async def pre_spawn_hook(spawner, auth_state):
     )
     # Merge with base volumes (Docker only — K8s uses PVC via KubeSpawner)
     if SPAWNER_TYPE != "kubernetes":
-        base_volumes = {"hub-user-{username}": "/home/jovyan/work"}
+        storage_path = os.environ.get("HUB_STORAGE_PATH", "/var/hub-storage")
+        user_id = spawner.user.name
+        base_volumes = {
+            os.path.join(storage_path, "users", user_id): "/home/jovyan/work",
+        }
+        # Mount shared agent directories. Hugr is queried directly via the
+        # management secret + impersonation header, replacing the removed
+        # Hub Service /api/user/agents REST endpoint.
+        hugr_secret = os.environ.get("HUGR_SECRET_KEY", "")
+        if hugr_secret:
+            try:
+                import httpx
+                gql = (
+                    "query($uid:String!) { hub { db { user_agents("
+                    " filter:{user_id:{eq:$uid}}"
+                    ") { agent { id display_name } } } } }"
+                )
+                resp = httpx.post(
+                    f"{HUGR_URL}/query",
+                    json={"query": gql, "variables": {"uid": user_id}},
+                    headers={
+                        "X-Hugr-Secret-Key": hugr_secret,
+                        "X-Hugr-User-Id": user_id,
+                    },
+                    timeout=5,
+                    verify=_hugr_tls_verify,
+                )
+                if resp.status_code == 200:
+                    payload = (resp.json() or {}).get("data", {}).get("hub", {}).get("db", {}).get("user_agents", []) or []
+                    for ua in payload:
+                        agent = ua.get("agent") or {}
+                        agent_id = agent.get("id", "")
+                        agent_name = agent.get("display_name", agent_id)
+                        if agent_id:
+                            host_path = os.path.join(storage_path, "shared", agent_id)
+                            container_path = f"/home/jovyan/agents/{agent_name}"
+                            base_volumes[host_path] = container_path
+            except Exception as e:
+                spawner.log.warning(f"Failed to fetch user agents for volume mounts: {e}")
         base_volumes.update(storage_volumes)
         spawner.volumes = base_volumes
 
@@ -445,7 +567,9 @@ async def pre_spawn_hook(spawner, auth_state):
     if user_tz:
         spawner.environment["TZ"] = user_tz
 
-    # 7. Admin flag for hub-admin extension
+    # 7. Admin flag for hub-admin extension. JupyterHub's user.admin is set in
+    #    post_auth_hook from the user's hub:management.admin capability, so
+    #    here we just forward it as an env var.
     if spawner.user.admin:
         spawner.environment["HUGR_HUB_ADMIN"] = "true"
 

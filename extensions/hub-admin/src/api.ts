@@ -40,21 +40,14 @@ export interface ModelSource {
   model: string;
 }
 
-export interface AgentInstance {
-  id: string;
-  user_id: string;
-  agent_type_id: string;
-  display_name: string;
-  status: string;
-  container_id: string;
-  started_at: string;
-  last_activity_at: string;
-}
+// Agent type moved to agentApiGraphQL.ts (single source of truth).
+// Re-exported here for backward compatibility with code that still imports from api.ts.
+export type { Agent } from './agentApiGraphQL.js';
 
 export interface AgentSession {
   id: string;
   user_id: string;
-  instance_id: string;
+  agent_id: string;
   started_at: string;
   ended_at: string;
 }
@@ -274,52 +267,17 @@ export async function fetchModelSources(): Promise<ModelSource[]> {
   return data?.function?.core?.models?.model_sources ?? [];
 }
 
-// ── Agents (hub.db.*) ────────────────────────────────────
-
-export async function fetchAgentInstances(): Promise<AgentInstance[]> {
-  const data = await hugrQuery(`{
-    hub { db { agent_instances(order_by: [{field: "started_at", direction: DESC}], limit: 50) {
-      id user_id agent_type_id display_name status container_id started_at last_activity_at
-    } } }
-  }`);
-  return data?.hub?.db?.agent_instances ?? [];
-}
+// ── Agent CRUD + lifecycle ──────────────────────────────
+// Moved to agentApiGraphQL.ts. Import from there:
+//   import { fetchAgents, createAgent, startAgent, stopAgent, deleteAgent, renameAgent } from './agentApiGraphQL.js';
 
 export async function fetchAgentSessions(): Promise<AgentSession[]> {
   const data = await hugrQuery(`{
     hub { db { agent_sessions(order_by: [{field: "started_at", direction: DESC}], limit: 50) {
-      id user_id instance_id started_at ended_at
+      id user_id agent_id started_at ended_at
     } } }
   }`);
   return data?.hub?.db?.agent_sessions ?? [];
-}
-
-export async function stopAgentDB(instanceId: string): Promise<void> {
-  await hugrQuery(
-    `mutation($filter: hub_db_agent_instances_filter!, $data: hub_db_agent_instances_mut_data!) {
-      hub { db { update_agent_instances(filter: $filter, data: $data) { affected_rows } } }
-    }`,
-    { filter: { id: { eq: instanceId } }, data: { status: 'stopped' } },
-  );
-}
-
-// ── Hub Service API (via proxy) ─────────────────────────
-
-async function hubServiceAPI(path: string, method = 'GET', body?: any): Promise<any> {
-  const baseUrl = PageConfig.getBaseUrl();
-  const settings = ServerConnection.makeSettings();
-  const url = baseUrl + 'hub-admin/api/hub/' + path.replace(/^\//, '');
-  const init: RequestInit = { method };
-  if (body) {
-    init.body = JSON.stringify(body);
-    init.headers = { 'Content-Type': 'application/json' };
-  }
-  const resp = await ServerConnection.makeRequest(url, init, settings);
-  if (!resp.ok) {
-    const text = await resp.text();
-    throw new Error(`Hub Service error: ${resp.status} ${text}`);
-  }
-  return resp.json();
 }
 
 export interface AgentType {
@@ -336,25 +294,6 @@ export async function fetchAgentTypes(): Promise<AgentType[]> {
     } } }
   }`);
   return data?.hub?.db?.agent_types ?? [];
-}
-
-export async function startAgent(userId?: string, agentTypeId?: string, role?: string): Promise<{ status: string; container_id: string }> {
-  const body: Record<string, string> = { agent_type_id: agentTypeId ?? 'default' };
-  if (userId) body.user_id = userId;
-  if (role) body.role = role;
-  return hubServiceAPI('api/agent/start', 'POST', body);
-}
-
-export async function stopAgent(userId: string): Promise<{ status: string }> {
-  return hubServiceAPI('api/agent/stop', 'POST', { user_id: userId });
-}
-
-export async function renameAgent(instanceId: string, displayName: string): Promise<{ renamed: string }> {
-  return hubServiceAPI('api/agent/rename', 'POST', { id: instanceId, display_name: displayName });
-}
-
-export async function deleteAgent(instanceId: string): Promise<{ deleted: string }> {
-  return hubServiceAPI('api/agent/delete', 'POST', { id: instanceId });
 }
 
 export async function clearAgentMemory(userId: string): Promise<void> {

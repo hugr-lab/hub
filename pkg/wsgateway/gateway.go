@@ -48,6 +48,9 @@ type LLMHandler func(ctx context.Context, model string, messages []LLMMessage) (
 // AgentHandler sends messages to an agent container with full conversation history.
 type AgentHandler func(ctx context.Context, instanceID, conversationID, userID string, messages []LLMMessage) (string, error)
 
+// AgentStreamHandler sends messages to an agent and streams intermediate results.
+type AgentStreamHandler func(ctx context.Context, instanceID, conversationID, userID string, messages []LLMMessage, stream StreamCallback) (string, error)
+
 // MessagePersister saves messages to DB.
 type MessagePersister func(ctx context.Context, conversationID, role, content string)
 
@@ -62,10 +65,11 @@ type TitleUpdater func(ctx context.Context, conversationID, title string)
 
 // Gateway is a WebSocket relay between browser clients and backend.
 type Gateway struct {
-	lookup   ConversationLookup
-	llm      LLMHandler
-	tools    ToolsHandler
-	agent    AgentHandler
+	lookup      ConversationLookup
+	llm         LLMHandler
+	tools       ToolsHandler
+	agent       AgentHandler
+	agentStream AgentStreamHandler
 	persist     MessagePersister
 	persistFull FullMessagePersister
 	genTitle    TitleGenerator
@@ -78,10 +82,11 @@ type Gateway struct {
 
 // Config holds all handlers for the gateway.
 type Config struct {
-	Lookup   ConversationLookup
-	LLM      LLMHandler
-	Tools    ToolsHandler
-	Agent    AgentHandler
+	Lookup      ConversationLookup
+	LLM         LLMHandler
+	Tools       ToolsHandler
+	Agent       AgentHandler
+	AgentStream AgentStreamHandler
 	Persist     MessagePersister
 	PersistFull FullMessagePersister
 	GenTitle    TitleGenerator
@@ -91,10 +96,11 @@ type Config struct {
 
 func New(cfg Config) *Gateway {
 	return &Gateway{
-		lookup:   cfg.Lookup,
-		llm:      cfg.LLM,
-		tools:    cfg.Tools,
-		agent:    cfg.Agent,
+		lookup:      cfg.Lookup,
+		llm:         cfg.LLM,
+		tools:       cfg.Tools,
+		agent:       cfg.Agent,
+		agentStream: cfg.AgentStream,
 		persist:     cfg.Persist,
 		persistFull: cfg.PersistFull,
 		genTitle:    cfg.GenTitle,
@@ -155,14 +161,23 @@ func (g *Gateway) Handler() http.Handler {
 	})
 }
 
-// ChatMessage is the wire format for WebSocket messages.
+// ChatMessage is the wire format for WebSocket messages (channel protocol).
 type ChatMessage struct {
-	Type       string       `json:"type"`                   // "message", "response", "error", "status", "tool_call", "tool_result", "info"
-	Content    string       `json:"content,omitempty"`      // text content
-	Messages   []LLMMessage `json:"messages,omitempty"`     // full history (client → server)
-	ToolCalls  any          `json:"tool_calls,omitempty"`   // tool calls from LLM
-	ToolCallID string       `json:"tool_call_id,omitempty"` // for tool_result
-	AgentName  string       `json:"agent_name,omitempty"`   // agent display name (for personalization)
+	Type       string       `json:"type"`                    // "message", "token", "thinking", "tool_call", "tool_result", "response", "error", "status", "title_update", "summary", "cancel", "summarize"
+	Content    string       `json:"content,omitempty"`       // text content
+	Messages   []LLMMessage `json:"messages,omitempty"`      // full history (client → server)
+	ToolCalls  any          `json:"tool_calls,omitempty"`    // tool calls from LLM
+	ToolCallID string       `json:"tool_call_id,omitempty"`  // for tool_result
+	AgentName  string       `json:"agent_name,omitempty"`    // agent display name (for personalization)
+	Usage      *UsageInfo   `json:"usage,omitempty"`         // token usage metadata (on response)
+	SummaryOf  []string     `json:"summary_of,omitempty"`    // message IDs summarized (on summary)
+}
+
+// UsageInfo contains token usage metadata for a response.
+type UsageInfo struct {
+	TokensIn  int    `json:"tokens_in"`
+	TokensOut int    `json:"tokens_out"`
+	Model     string `json:"model"`
 }
 
 func (g *Gateway) readLoop(ctx context.Context, conn *websocket.Conn, userID, conversationID string) {
@@ -215,6 +230,9 @@ func (g *Gateway) readLoop(ctx context.Context, conn *websocket.Conn, userID, co
 		case "cancel":
 			cancelAndWait()
 			g.writeJSON(ctx, conn, ChatMessage{Type: "status", Content: "cancelled"})
+		case "summarize":
+			// Summarize handled in future phase — placeholder
+			g.writeJSON(ctx, conn, ChatMessage{Type: "status", Content: "summarization not yet implemented"})
 		default:
 			g.writeJSON(ctx, conn, ChatMessage{Type: "error", Content: fmt.Sprintf("unknown type: %s", msg.Type)})
 		}
@@ -279,10 +297,12 @@ func (g *Gateway) handleMessage(ctx context.Context, conn *websocket.Conn, userI
 
 	case "agent":
 		agentID := conv.AgentInstanceID
-		if g.agent != nil && agentID != "" {
+		if g.agentStream != nil && agentID != "" {
+			response, err = g.agentStream(ctx, agentID, conversationID, userID, msg.Messages, stream)
+		} else if g.agent != nil && agentID != "" {
 			response, err = g.agent(ctx, agentID, conversationID, userID, msg.Messages)
 		}
-		if g.agent == nil || agentID == "" || err != nil {
+		if (g.agent == nil && g.agentStream == nil) || agentID == "" || err != nil {
 			if agentID == "" {
 				g.logger.Info("agent mode but no instance linked, falling back to tools", "conversation", conversationID)
 			}

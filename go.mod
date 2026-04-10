@@ -3,19 +3,19 @@ module github.com/hugr-lab/hub
 go 1.26.1
 
 require (
+	github.com/apache/arrow-go/v18 v18.5.2
 	github.com/docker/docker v28.5.2+incompatible
 	github.com/golang-jwt/jwt/v5 v5.3.1
-	github.com/google/uuid v1.6.0
 	github.com/hugr-lab/airport-go v0.2.1
-	github.com/hugr-lab/query-engine v0.3.20
-	github.com/hugr-lab/query-engine/client v0.3.20
+	github.com/hugr-lab/query-engine v0.3.24
+	github.com/hugr-lab/query-engine/client v0.3.24
+	github.com/hugr-lab/query-engine/types v0.3.24
 	github.com/mark3labs/mcp-go v0.47.0
 	nhooyr.io/websocket v1.8.17
 )
 
 require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
-	github.com/apache/arrow-go/v18 v18.5.2 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/containerd/errdefs v1.0.0 // indirect
 	github.com/containerd/errdefs/pkg v0.3.0 // indirect
@@ -29,8 +29,8 @@ require (
 	github.com/goccy/go-json v0.10.6 // indirect
 	github.com/google/flatbuffers v25.12.19+incompatible // indirect
 	github.com/google/jsonschema-go v0.4.2 // indirect
+	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
-	github.com/hugr-lab/query-engine/types v0.3.20 // indirect
 	github.com/itchyny/gojq v0.12.19 // indirect
 	github.com/itchyny/timefmt-go v0.1.8 // indirect
 	github.com/klauspost/compress v1.18.5 // indirect

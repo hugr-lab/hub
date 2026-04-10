@@ -198,19 +198,23 @@ func (r *Router) Complete(ctx context.Context, req CompletionRequest) (Completio
 }
 
 // ListModels returns available LLM model sources from Hugr.
+// Returns empty list (not error) when no LLM data sources are configured.
 func (r *Router) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	gql := `{ function { core { models { model_sources { name type provider model } } } } }`
 	res, err := r.hugrClient.Query(ctx, gql, nil)
 	if err != nil {
-		return nil, fmt.Errorf("query model sources: %w", err)
+		// No LLM configured — return empty list, not error
+		r.logger.Debug("list models failed (no LLM configured?)", "error", err)
+		return []ModelInfo{}, nil
 	}
 	defer res.Close()
 	if res.Err() != nil {
-		return nil, fmt.Errorf("model sources error: %w", res.Err())
+		r.logger.Debug("list models query error (no LLM configured?)", "error", res.Err())
+		return []ModelInfo{}, nil
 	}
 	var models []ModelInfo
 	if err := res.ScanData("function.core.models.model_sources", &models); err != nil {
-		return nil, err
+		return []ModelInfo{}, nil
 	}
 	return models, nil
 }
@@ -227,6 +231,16 @@ func (r *Router) CompleteDirect(ctx context.Context, model, message string) (str
 		return "", err
 	}
 	return resp.Content, nil
+}
+
+// MakeSummaryRequest creates a CompletionRequest for summarizing conversation history.
+func (r *Router) MakeSummaryRequest(history string) CompletionRequest {
+	return CompletionRequest{
+		Messages: []Message{
+			{Role: "system", Content: "Summarize the following conversation concisely, preserving key facts, decisions, and context. Reply with ONLY the summary, nothing else."},
+			{Role: "user", Content: history},
+		},
+	}
 }
 
 // ModelInfo describes a registered AI model data source.

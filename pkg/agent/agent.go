@@ -121,6 +121,31 @@ func (a *Agent) HandleMessage(ctx context.Context, userMessage string) (string, 
 	return a.RunLoop(ctx, userMessage)
 }
 
+// AgentStreamCallback sends streaming messages back to Hub Service.
+type AgentStreamCallback func(msgType, content string, toolCalls any, toolCallID string)
+
+// HandleMessagesWithStream processes conversation history with streaming callbacks.
+func (a *Agent) HandleMessagesWithStream(ctx context.Context, messages []historyMessage, stream AgentStreamCallback) (string, error) {
+	a.logger.Info("handling messages with stream", "count", len(messages))
+
+	history := make([]llmrouter.Message, 0, len(messages))
+	for _, m := range messages {
+		msg := llmrouter.Message{
+			Role: m.Role, Content: m.Content,
+			ToolCallID: m.ToolCallID,
+		}
+		if m.ToolCalls != nil {
+			data, _ := json.Marshal(m.ToolCalls)
+			var tcs []any
+			json.Unmarshal(data, &tcs)
+			msg.ToolCalls = tcs
+		}
+		history = append(history, msg)
+	}
+
+	return a.runAgenticLoopWithStream(ctx, history, stream)
+}
+
 // HandleMessages processes a full conversation history through the agentic loop.
 func (a *Agent) HandleMessages(ctx context.Context, messages []historyMessage) (string, error) {
 	a.logger.Info("handling messages", "count", len(messages))
@@ -187,9 +212,11 @@ type agentMessage struct {
 	RequestID      string           `json:"request_id"`
 	ConversationID string           `json:"conversation_id,omitempty"`
 	UserID         string           `json:"user_id,omitempty"`
-	Type           string           `json:"type"` // request, response, status, error, ping, pong
+	Type           string           `json:"type"` // request, response, status, error, ping, pong, token, thinking, tool_call, tool_result
 	Content        string           `json:"content,omitempty"`
 	Messages       []historyMessage `json:"messages,omitempty"` // full conversation history
+	ToolCalls      any              `json:"tool_calls,omitempty"`
+	ToolCallID     string           `json:"tool_call_id,omitempty"`
 }
 
 // historyMessage is a single message in conversation history.
@@ -285,10 +312,21 @@ func (a *Agent) wsSession(ctx context.Context, endpoint string) (bool, error) {
 			go func(req agentMessage) {
 				writeMsg(agentMessage{RequestID: req.RequestID, Type: "status", Content: "processing"})
 
+				// Stream callback for intermediate messages
+				streamCb := func(msgType, content string, toolCalls any, toolCallID string) {
+					writeMsg(agentMessage{
+						RequestID:  req.RequestID,
+						Type:       msgType,
+						Content:    content,
+						ToolCalls:  toolCalls,
+						ToolCallID: toolCallID,
+					})
+				}
+
 				var response string
 				var err error
 				if len(req.Messages) > 0 {
-					response, err = a.HandleMessages(ctx, req.Messages)
+					response, err = a.HandleMessagesWithStream(ctx, req.Messages, streamCb)
 				} else {
 					response, err = a.HandleMessage(ctx, req.Content)
 				}

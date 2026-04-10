@@ -172,15 +172,18 @@ Hub configuration via environment:
 | `HUGR_PROFILES_PATH` | `/srv/jupyterhub/config/profiles.json` | Path to profiles.json |
 | `HUGR_PROFILE_CLAIM` | — | OIDC claim for profile matching (e.g., `x-hub-profile`, `groups`) |
 | `HUGR_ROLE_CLAIM` | `x-hugr-role` | OIDC claim for Hugr role |
-| `HUGR_ADMIN_CLAIM` | — | OIDC claim for admin detection |
-| `HUGR_ADMIN_VALUES` | `admin` | Comma-separated values that grant admin |
-| `HUGR_ADMIN_USERS` | — | Static admin usernames (comma-separated) |
 | `HUGR_SECRET_PROVIDER` | `env` | Secret provider: `env`, `k8s`, `vault` |
 | `HUGR_SPAWNER` | `docker` | Orchestrator: `docker`, `kubernetes` |
 | `HUGR_IDLE_TIMEOUT` | `3600` | Default idle timeout (seconds) |
 | `HUGR_MAX_SERVER_AGE` | `86400` | Default max server age (seconds) |
 | `HUGR_CULL_INTERVAL` | `300` | Idle culler check interval (seconds) |
 | `HUGR_CULL_ADMINS` | `false` | Cull admin workspaces |
+
+> Admin detection is driven by the `hub:management.admin` capability in Hugr
+> `core.role_permissions`, not by env vars. `HUGR_ADMIN_CLAIM`,
+> `HUGR_ADMIN_VALUES`, and `HUGR_ADMIN_USERS` have all been removed — see
+> `pkg/hubapp/CAPABILITIES.md` for the capability setup and recovery via
+> direct Hugr DB access if grants get lost.
 
 ## Example: Minimal
 

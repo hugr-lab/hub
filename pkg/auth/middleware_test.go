@@ -1,10 +1,13 @@
 package auth
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/hugr-lab/query-engine/types"
 )
 
 func testMiddleware(cfg AuthConfig) http.Handler {
@@ -107,32 +110,26 @@ func TestMiddleware_InvalidBearer(t *testing.T) {
 	}
 }
 
-func TestUserTransport(t *testing.T) {
-	var capturedHeaders http.Header
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		capturedHeaders = r.Header.Clone()
-		w.WriteHeader(200)
-	}))
-	defer srv.Close()
+func TestInjectIdentity(t *testing.T) {
+	// InjectIdentity wraps the context with query-engine's AsUser, which the
+	// query-engine client uses on Query() and Subscribe() to set impersonation
+	// headers natively. We verify the identity round-trips through the standard
+	// types.AsUserFromContext accessor.
+	u := UserInfo{ID: "user-1", Name: "Test User", Role: "analyst"}
+	ctx := InjectIdentity(context.Background(), u)
 
-	transport := &UserTransport{Base: http.DefaultTransport}
-	client := &http.Client{Transport: transport}
-
-	req, _ := http.NewRequest("GET", srv.URL, nil)
-	req = req.WithContext(ContextWithUser(req.Context(), UserInfo{
-		ID: "user-1", Name: "Test User", Role: "analyst",
-	}))
-
-	_, err := client.Do(req)
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
+	id := types.AsUserFromContext(ctx)
+	if id == nil {
+		t.Fatalf("expected impersonation identity in context, got nil")
 	}
-
-	if capturedHeaders.Get("X-Hugr-User-Id") != "user-1" {
-		t.Fatalf("expected user-id header, got: %v", capturedHeaders)
+	if id.UserId != "user-1" {
+		t.Errorf("UserId: got %q, want %q", id.UserId, "user-1")
 	}
-	if capturedHeaders.Get("X-Hugr-Role") != "analyst" {
-		t.Fatalf("expected role header, got: %v", capturedHeaders)
+	if id.UserName != "Test User" {
+		t.Errorf("UserName: got %q, want %q", id.UserName, "Test User")
+	}
+	if id.Role != "analyst" {
+		t.Errorf("Role: got %q, want %q", id.Role, "analyst")
 	}
 }
 

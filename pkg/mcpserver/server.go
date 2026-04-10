@@ -100,24 +100,46 @@ func (s *Server) HandleUserMessage(ctx context.Context, userID string, clientMes
 	history := make([]llmrouter.Message, len(clientMessages))
 	copy(history, clientMessages)
 
-	// Multi-turn loop
+	// Multi-turn loop with streaming
 	for turn := 0; turn < maxTurns; turn++ {
 		if ctx.Err() != nil {
 			return "", ctx.Err()
 		}
 
-		resp, err := s.llmRouter.Complete(ctx, llmrouter.CompletionRequest{
+		var accumulated strings.Builder
+		var toolCallsJSON string
+		var finishReason string
+
+		err := s.llmRouter.Stream(ctx, llmrouter.CompletionRequest{
 			Messages: history,
 			Tools:    tools,
 			UserID:   userID,
+		}, func(chunk llmrouter.StreamChunk) {
+			switch chunk.Type {
+			case "token":
+				accumulated.WriteString(chunk.Content)
+				if stream != nil {
+					stream("token", chunk.Content, nil, "")
+				}
+			case "thinking":
+				if stream != nil {
+					stream("thinking", chunk.Content, nil, "")
+				}
+			case "tool_calls":
+				toolCallsJSON = chunk.ToolCalls
+			case "done":
+				finishReason = chunk.FinishReason
+			}
 		})
 		if err != nil {
 			return "", fmt.Errorf("turn %d: %w", turn, err)
 		}
 
+		responseText := accumulated.String()
+
 		// No tool calls — final response
-		if resp.ToolCalls == "" || resp.FinishReason == "stop" {
-			return resp.Content, nil
+		if toolCallsJSON == "" || finishReason == "stop" {
+			return responseText, nil
 		}
 
 		// Parse tool calls
@@ -126,22 +148,22 @@ func (s *Server) HandleUserMessage(ctx context.Context, userID string, clientMes
 			Name      string         `json:"name"`
 			Arguments map[string]any `json:"arguments"`
 		}
-		if err := json.Unmarshal([]byte(resp.ToolCalls), &toolCalls); err != nil {
-			return resp.Content, nil
+		if err := json.Unmarshal([]byte(toolCallsJSON), &toolCalls); err != nil {
+			return responseText, nil
 		}
 		if len(toolCalls) == 0 {
-			return resp.Content, nil
+			return responseText, nil
 		}
 
 		// Stream tool_calls to client
 		if stream != nil {
-			stream("tool_call", resp.Content, toolCalls, "")
+			stream("tool_call", responseText, toolCalls, "")
 		}
 
 		// Add assistant message with tool calls
 		history = append(history, llmrouter.Message{
 			Role:      "assistant",
-			Content:   resp.Content,
+			Content:   responseText,
 			ToolCalls: toAnySlice(toolCalls),
 		})
 

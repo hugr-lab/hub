@@ -1,14 +1,16 @@
 /**
  * ChatSidebar — conversation tree in left sidebar.
- * Lists conversations grouped by mode/folder.
- * Clicking opens conversation as main area tab.
+ * Uses ConversationTree for hierarchical display with branches.
+ * Disables LLM/Tools modes when no LLM configured.
  */
 import { Widget } from '@lumino/widgets';
 import { MainAreaWidget } from '@jupyterlab/apputils';
 import {
   listConversations, createConversation, renameConversation, deleteConversation,
-  moveConversation, listModels, listAgentInstances, Conversation,
-} from '../api.js';
+  moveConversation, listModels, listAgentInstances, hasLLM,
+  Conversation,
+} from '../convApiGraphQL.js';
+import { ConversationTree } from './ConversationTree.js';
 
 type OpenCallback = (conversationId: string, title: string) => void;
 
@@ -17,6 +19,8 @@ export class ChatSidebarWidget extends Widget {
   private openWidgets: Map<string, MainAreaWidget<any>>;
   private conversations: Conversation[] = [];
   private listEl: HTMLDivElement;
+  private tree: ConversationTree;
+  private bannerEl: HTMLDivElement | null = null;
 
   constructor(onOpen: OpenCallback, openWidgets: Map<string, MainAreaWidget<any>>) {
     super();
@@ -45,18 +49,45 @@ export class ChatSidebarWidget extends Widget {
 
     this.node.appendChild(header);
 
+    // LLM availability banner
+    this.bannerEl = document.createElement('div');
+    this.bannerEl.className = 'hub-chat-sidebar-banner';
+    this.bannerEl.style.display = 'none';
+    this.node.appendChild(this.bannerEl);
+
     // Conversation list
     this.listEl = document.createElement('div');
     this.listEl.className = 'hub-chat-sidebar-list';
     this.node.appendChild(this.listEl);
+
+    this.tree = new ConversationTree(
+      this.listEl,
+      (id, title) => this.onOpen(id, title),
+      (e, conv) => this.showContextMenu(e, conv),
+    );
 
     this.refresh();
   }
 
   async refresh(): Promise<void> {
     try {
+      // Check LLM availability
+      await listModels();
+      if (!hasLLM() && this.bannerEl) {
+        this.bannerEl.style.display = '';
+        this.bannerEl.innerHTML = `
+          <div class="hub-chat-sidebar-banner-icon">ℹ️</div>
+          <div class="hub-chat-sidebar-banner-text">
+            LLM models not configured. Add an LLM data source to Hugr to enable AI chat.
+            Agent mode is still available if agents are configured.
+          </div>
+        `;
+      } else if (this.bannerEl) {
+        this.bannerEl.style.display = 'none';
+      }
+
       this.conversations = await listConversations();
-      this.renderList();
+      this.tree.render(this.conversations);
     } catch (err: any) {
       const errEl = document.createElement('div');
       errEl.className = 'hub-chat-sidebar-error';
@@ -66,72 +97,22 @@ export class ChatSidebarWidget extends Widget {
     }
   }
 
-  private renderList(): void {
-    this.listEl.innerHTML = '';
-
-    if (this.conversations.length === 0) {
-      this.listEl.innerHTML = '<div class="hub-chat-sidebar-empty">No conversations yet</div>';
-      return;
-    }
-
-    // Group by folder (null = ungrouped)
-    const grouped = new Map<string, Conversation[]>();
-    for (const conv of this.conversations) {
-      const key = conv.folder || '';
-      if (!grouped.has(key)) grouped.set(key, []);
-      grouped.get(key)!.push(conv);
-    }
-
-    // Render ungrouped first, then folders
-    const ungrouped = grouped.get('') || [];
-    for (const conv of ungrouped) {
-      this.listEl.appendChild(this.renderConvItem(conv));
-    }
-
-    for (const [folder, convs] of grouped) {
-      if (folder === '') continue;
-      const folderEl = document.createElement('div');
-      folderEl.className = 'hub-chat-sidebar-folder';
-      folderEl.innerHTML = `<div class="hub-chat-sidebar-folder-name">${esc(folder)}</div>`;
-      for (const conv of convs) {
-        folderEl.appendChild(this.renderConvItem(conv));
-      }
-      this.listEl.appendChild(folderEl);
-    }
-  }
-
-  private renderConvItem(conv: Conversation): HTMLElement {
-    const el = document.createElement('div');
-    el.className = 'hub-chat-sidebar-item';
-    el.dataset.id = conv.id;
-
-    const modeIcon = conv.mode === 'agent' ? '🤖' : conv.mode === 'tools' ? '🔧' : '💬';
-    el.innerHTML = `
-      <span class="hub-chat-sidebar-item-icon">${modeIcon}</span>
-      <span class="hub-chat-sidebar-item-title">${esc(conv.title)}</span>
-    `;
-
-    el.addEventListener('click', () => {
-      this.onOpen(conv.id, conv.title);
-    });
-
-    // Context menu
-    el.addEventListener('contextmenu', (e) => {
-      e.preventDefault();
-      this.showContextMenu(e, conv);
-    });
-
-    return el;
-  }
-
   private async showNewChatDialog(): Promise<void> {
+    const llmAvailable = hasLLM();
+
     const dialog = document.createElement('div');
     dialog.className = 'hub-chat-sidebar-dialog';
+
+    const toolsDisabled = !llmAvailable ? 'disabled' : '';
+    const llmDisabled = !llmAvailable ? 'disabled' : '';
+    const toolsTooltip = !llmAvailable ? 'title="No LLM models configured"' : '';
+    const llmTooltip = !llmAvailable ? 'title="No LLM models configured"' : '';
+
     dialog.innerHTML = `
       <div class="hub-chat-sidebar-dialog-title">New Chat</div>
       <select id="hc-mode">
-        <option value="tools">LLM + Tools</option>
-        <option value="llm">LLM only</option>
+        <option value="tools" ${toolsDisabled} ${toolsTooltip}>LLM + Tools</option>
+        <option value="llm" ${llmDisabled} ${llmTooltip}>LLM only</option>
         <option value="agent">Agent</option>
       </select>
       <div id="hc-model-row" style="display:none">
@@ -156,6 +137,11 @@ export class ChatSidebarWidget extends Widget {
     const agentSelect = dialog.querySelector('#hc-agent') as HTMLSelectElement;
     let modelsLoaded = false;
     let agentsLoaded = false;
+
+    // If no LLM, default to agent mode
+    if (!llmAvailable) {
+      modeSelect.value = 'agent';
+    }
 
     const updateModeUI = async () => {
       modelRow.style.display = 'none';
@@ -199,17 +185,23 @@ export class ChatSidebarWidget extends Widget {
       }
     };
     modeSelect.addEventListener('change', updateModeUI);
+    updateModeUI();
 
     dialog.querySelector('#hc-cancel')!.addEventListener('click', () => dialog.remove());
     dialog.querySelector('#hc-create')!.addEventListener('click', async () => {
       const mode = modeSelect.value as 'llm' | 'tools' | 'agent';
       const title = (dialog.querySelector('#hc-title') as HTMLInputElement).value.trim();
       const model = mode === 'llm' ? modelSelect.value : undefined;
-      const agentInstanceId = mode === 'agent' ? agentSelect.value : undefined;
+      const agentId = mode === 'agent' ? agentSelect.value : undefined;
       dialog.remove();
 
       try {
-        const result = await createConversation(mode, title || undefined, undefined, agentInstanceId, model);
+        const result = await createConversation({
+          mode,
+          title: title || undefined,
+          agent_id: agentId || undefined,
+          model: model || undefined,
+        });
         await this.refresh();
         const convId = result?.id;
         const convTitle = result?.title || title || 'New Chat';
@@ -223,7 +215,6 @@ export class ChatSidebarWidget extends Widget {
   }
 
   private showContextMenu(e: MouseEvent, conv: Conversation): void {
-    // Remove any existing context menu
     document.querySelectorAll('.hub-chat-ctx-menu').forEach(m => m.remove());
 
     const menu = document.createElement('div');
@@ -287,8 +278,4 @@ export class ChatSidebarWidget extends Widget {
     const close = () => { menu.remove(); document.removeEventListener('click', close); };
     setTimeout(() => document.addEventListener('click', close), 0);
   }
-}
-
-function esc(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }

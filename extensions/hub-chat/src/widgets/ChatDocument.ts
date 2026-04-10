@@ -1,11 +1,13 @@
 /**
  * ChatDocument — main area widget for a single conversation.
- * Client owns the full message history (including tool_calls/tool_results).
- * Hub Service is a stateless proxy to LLM.
+ * Supports streaming tokens, tool call visibility, and summarization.
  */
 import { Widget } from '@lumino/widgets';
 import { IRenderMimeRegistry } from '@jupyterlab/rendermime';
-import { loadMessages, getWsBaseUrl, connectWebSocket, WsMessage } from '../api.js';
+import { getWsBaseUrl, connectWebSocket, sendCancel, WsMessage } from '../api.js';
+import {
+  loadMessages, loadMessagesWithSummaries, summarizeMessages, branchConversation,
+} from '../convApiGraphQL.js';
 import { MessageRenderer } from './MessageRenderer.js';
 
 interface HistoryMessage {
@@ -18,8 +20,8 @@ interface HistoryMessage {
 export class ChatDocumentWidget extends Widget {
   readonly conversationId: string;
   private renderer: MessageRenderer;
-  /** Called when title changes (auto-generated or renamed). */
   onTitleChange: ((newTitle: string) => void) | null = null;
+  onBranch: ((branchId: string, title: string) => void) | null = null;
   private messagesEl: HTMLDivElement;
   private inputEl: HTMLTextAreaElement;
   private stopBtn: HTMLButtonElement;
@@ -33,9 +35,16 @@ export class ChatDocumentWidget extends Widget {
   private loading = false;
   private oldestTimestamp: string | null = null;
   private hasMore = true;
-
-  // Full conversation history — sent to Hub Service with each message
   private chatHistory: HistoryMessage[] = [];
+
+  // Streaming state
+  private streamingEl: HTMLElement | null = null;
+  private thinkingEl: HTMLElement | null = null;
+  private toolCallsEl: HTMLElement | null = null;
+  private statusElement: HTMLElement | null = null;
+
+  // Message ID tracking for branching/summarization
+  private messageIds: string[] = [];
 
   constructor(conversationId: string, title: string, rendermime: IRenderMimeRegistry) {
     super();
@@ -45,7 +54,6 @@ export class ChatDocumentWidget extends Widget {
     this.title.label = title;
     this.title.closable = true;
 
-    // System prompt
     this.chatHistory.push({
       role: 'system',
       content: 'You are a helpful data assistant for Analytics Hub. You have access to Hugr Data Mesh tools for data discovery, schema exploration, and query execution. Use tools to find and analyze data.',
@@ -144,9 +152,9 @@ export class ChatDocumentWidget extends Widget {
     this.ws = null;
     this.processing = false;
     this.stopBtn.style.display = 'none';
-    this.removeStatus();
+    this.removeStatusMsg();
+    this.finalizeStream();
 
-    // Exponential backoff: 1s, 2s, 4s, 8s, ... max 30s
     const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempt), 30000);
     this.reconnectAttempt++;
     this.updateStatus(`reconnecting in ${Math.round(delay / 1000)}s...`);
@@ -162,24 +170,40 @@ export class ChatDocumentWidget extends Widget {
 
   private async loadInitialMessages(): Promise<void> {
     try {
-      const messages = await loadMessages(this.conversationId, 50);
-      messages.reverse();
+      // loadMessagesWithSummaries returns every message in the conversation
+      // with the summary_items reverse relation pre-joined, so we can render
+      // summary blocks without a second fetch. The rare cost (full fetch on
+      // open) is fine for typical conversations (<500 msgs); pagination for
+      // longer history uses loadMessages in loadOlderMessages below.
+      const messages = await loadMessagesWithSummaries(this.conversationId);
+      messages.sort((a, b) => a.created_at.localeCompare(b.created_at));
       for (const msg of messages) {
-        // Rebuild chatHistory from DB
         const histMsg: HistoryMessage = { role: msg.role, content: msg.content };
         if (msg.tool_calls) histMsg.tool_calls = msg.tool_calls;
         if (msg.tool_call_id) histMsg.tool_call_id = msg.tool_call_id;
         this.chatHistory.push(histMsg);
+        this.messageIds.push(msg.id);
 
-        // Only show user/assistant messages in UI (not tool messages)
-        if (msg.role === 'user' || msg.role === 'assistant') {
-          await this.appendMessage(msg.role, msg.content, msg.created_at);
+        // Show summary blocks — originals are embedded via summary_items.
+        if (msg.is_summary && msg.summary_items && msg.summary_items.length > 0) {
+          const originals = [...msg.summary_items]
+            .sort((a, b) => a.position - b.position)
+            .map(item => item.original_message);
+          const block = this.renderer.renderSummaryBlock(
+            originals.length,
+            msg.content,
+            () => this.renderOriginalMessages(originals),
+          );
+          this.messagesEl.appendChild(block);
+        } else if (!msg.summarized_by && (msg.role === 'user' || msg.role === 'assistant')) {
+          const el = await this.appendMessage(msg.role, msg.content, msg.created_at, msg.id);
+          this.addMessageContextMenu(el, msg.id);
         }
       }
       if (messages.length > 0) {
         this.oldestTimestamp = messages[0].created_at;
       }
-      this.hasMore = messages.length === 50;
+      this.hasMore = false; // full fetch — nothing older to load
       this.scrollToBottom();
     } catch (err: any) {
       const errEl = document.createElement('div');
@@ -187,6 +211,16 @@ export class ChatDocumentWidget extends Widget {
       errEl.textContent = `Failed to load messages: ${err.message}`;
       this.messagesEl.innerHTML = '';
       this.messagesEl.appendChild(errEl);
+    }
+  }
+
+  private async renderOriginalMessages(
+    originals: Array<{ id: string; role: string; content: string; created_at: string }>,
+  ): Promise<void> {
+    for (const msg of originals) {
+      if (msg.role === 'user' || msg.role === 'assistant') {
+        await this.appendMessage(msg.role, msg.content, msg.created_at);
+      }
     }
   }
 
@@ -221,11 +255,12 @@ export class ChatDocumentWidget extends Widget {
 
   private handleStop(): void {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({ type: 'cancel' }));
+      sendCancel(this.ws);
     }
     this.processing = false;
     this.stopBtn.style.display = 'none';
-    this.removeStatus();
+    this.removeStatusMsg();
+    this.finalizeStream();
   }
 
   private async handleSend(): Promise<void> {
@@ -237,12 +272,10 @@ export class ChatDocumentWidget extends Widget {
     this.processing = true;
     this.stopBtn.style.display = '';
 
-    // Add to history and show
     this.chatHistory.push({ role: 'user', content: text });
     await this.appendMessage('user', text);
     this.scrollToBottom();
 
-    // Send full history to Hub Service
     this.ws.send(JSON.stringify({
       type: 'message',
       content: text,
@@ -250,54 +283,101 @@ export class ChatDocumentWidget extends Widget {
     }));
   }
 
-  private statusElement: HTMLElement | null = null;
-
   private async onWsMessage(msg: WsMessage): Promise<void> {
     switch (msg.type) {
-      case 'response':
-        this.removeStatus();
-        this.processing = false;
-        this.stopBtn.style.display = 'none';
-        // Add to history
-        this.chatHistory.push({ role: 'assistant', content: msg.content });
-        // Show agent name if available
-        const label = msg.agent_name || 'assistant';
-        await this.appendMessage(label, msg.content);
+      case 'token':
+        // Streaming token — append to streaming element
+        if (!this.streamingEl) {
+          this.removeStatusMsg();
+          this.streamingEl = this.renderer.createStreamingMessage('assistant');
+          this.messagesEl.appendChild(this.streamingEl);
+        }
+        this.renderer.appendToken(this.streamingEl, msg.content);
+        this.scrollToBottom();
+        break;
+
+      case 'thinking':
+        // Thinking/reasoning — collapsible section
+        if (!this.thinkingEl) {
+          this.thinkingEl = this.renderer.renderThinking(msg.content);
+          this.messagesEl.appendChild(this.thinkingEl);
+        } else {
+          this.renderer.appendThinking(this.thinkingEl, msg.content);
+        }
         this.scrollToBottom();
         break;
 
       case 'tool_call':
-        // LLM wants to call tools — add assistant message with tool_calls to history
         this.chatHistory.push({
           role: 'assistant',
           content: msg.content || '',
           tool_calls: msg.tool_calls,
         });
-        // Show tool calls in UI as status
         if (Array.isArray(msg.tool_calls)) {
-          const names = msg.tool_calls.map((tc: any) => tc.name).join(', ');
-          this.showStatus(`calling: ${names}`);
+          this.toolCallsEl = this.renderer.renderToolCall(msg.tool_calls);
+          this.messagesEl.appendChild(this.toolCallsEl);
+          this.scrollToBottom();
         }
         break;
 
       case 'tool_result':
-        // Tool result — add to history
         this.chatHistory.push({
           role: 'tool',
           content: msg.content,
           tool_call_id: msg.tool_call_id,
         });
+        if (this.toolCallsEl && msg.tool_call_id) {
+          this.renderer.setToolResult(this.toolCallsEl, msg.tool_call_id, msg.content);
+        }
+        break;
+
+      case 'response':
+        this.chatHistory.push({ role: 'assistant', content: msg.content });
+
+        // If we were streaming, finalize. Otherwise render full message.
+        if (this.streamingEl) {
+          await this.renderer.finalizeStreaming(this.streamingEl, msg.usage);
+          this.streamingEl = null;
+        } else {
+          const label = msg.agent_name || 'assistant';
+          await this.appendMessage(label, msg.content);
+          // Show usage footer if available
+          if (msg.usage) {
+            const footer = document.createElement('div');
+            footer.className = 'hub-chat-message-usage';
+            footer.textContent = `${msg.usage.model} · ${msg.usage.tokens_in}→${msg.usage.tokens_out} tokens`;
+            this.messagesEl.lastElementChild?.appendChild(footer);
+          }
+        }
+        this.thinkingEl = null;
+        this.toolCallsEl = null;
+        this.processing = false;
+        this.stopBtn.style.display = 'none';
+        this.removeStatusMsg();
+        this.scrollToBottom();
+        break;
+
+      case 'summary':
+        if (msg.summary_of) {
+          const block = this.renderer.renderSummaryBlock(
+            msg.summary_of.length,
+            msg.content,
+          );
+          this.messagesEl.appendChild(block);
+          this.scrollToBottom();
+        }
         break;
 
       case 'status':
         if (msg.content === 'cancelled') {
-          this.removeStatus();
+          this.finalizeStream();
           this.processing = false;
           this.stopBtn.style.display = 'none';
+          this.removeStatusMsg();
           await this.appendMessage('system', 'Cancelled by user');
           this.scrollToBottom();
         } else {
-          this.showStatus(msg.content);
+          this.showStatusMsg(msg.content);
         }
         break;
 
@@ -306,32 +386,102 @@ export class ChatDocumentWidget extends Widget {
         if (this.onTitleChange) {
           this.onTitleChange(msg.content);
         }
-        this.scrollToBottom();
         break;
 
       case 'error':
-        this.removeStatus();
+        this.finalizeStream();
         this.processing = false;
         this.stopBtn.style.display = 'none';
+        this.removeStatusMsg();
         await this.appendMessage('system', `Error: ${msg.content}`);
         this.scrollToBottom();
         break;
     }
   }
 
-  private async appendMessage(role: string, content: string, timestamp?: string): Promise<void> {
-    const el = await this.renderer.render(role, content, timestamp);
-    this.messagesEl.appendChild(el);
+  private finalizeStream(): void {
+    if (this.streamingEl) {
+      this.renderer.finalizeStreaming(this.streamingEl);
+      this.streamingEl = null;
+    }
+    this.thinkingEl = null;
+    this.toolCallsEl = null;
   }
 
-  private showStatus(content: string): void {
-    this.removeStatus();
+  private async appendMessage(role: string, content: string, timestamp?: string, messageId?: string): Promise<HTMLElement> {
+    const el = await this.renderer.render(role, content, timestamp);
+    if (messageId) {
+      el.dataset.messageId = messageId;
+    }
+    this.messagesEl.appendChild(el);
+    return el;
+  }
+
+  private addMessageContextMenu(el: HTMLElement, messageId: string): void {
+    el.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      this.renderer.createMessageContextMenu(e, messageId, {
+        onBranch: (mid) => this.handleBranch(mid),
+        onBranchWithSummary: (mid) => this.handleBranchWithSummary(mid),
+        onSummarizeAbove: (mid) => this.handleSummarize(mid),
+        canBranch: true, // TODO: check depth
+      });
+    });
+  }
+
+  private async handleBranch(messageId: string): Promise<void> {
+    try {
+      const result = await branchConversation({
+        parent_id: this.conversationId,
+        branch_point_message_id: messageId,
+      });
+      if (this.onBranch) {
+        this.onBranch(result.id, result.title);
+      }
+    } catch (err: any) {
+      await this.appendMessage('system', `Branch failed: ${err.message}`);
+    }
+  }
+
+  private async handleBranchWithSummary(messageId: string): Promise<void> {
+    try {
+      const result = await branchConversation({
+        parent_id: this.conversationId,
+        branch_point_message_id: messageId,
+        title: 'Thread with summary',
+      });
+      if (this.onBranch) {
+        this.onBranch(result.id, result.title);
+      }
+    } catch (err: any) {
+      await this.appendMessage('system', `Branch failed: ${err.message}`);
+    }
+  }
+
+  private async handleSummarize(messageId: string): Promise<void> {
+    try {
+      this.showStatusMsg('Summarizing...');
+      await summarizeMessages(this.conversationId, messageId);
+      this.removeStatusMsg();
+      // Refresh messages to show summary block
+      this.messagesEl.innerHTML = '';
+      this.chatHistory = [this.chatHistory[0]]; // keep system prompt
+      this.messageIds = [];
+      await this.loadInitialMessages();
+    } catch (err: any) {
+      this.removeStatusMsg();
+      await this.appendMessage('system', `Summarization failed: ${err.message}`);
+    }
+  }
+
+  private showStatusMsg(content: string): void {
+    this.removeStatusMsg();
     this.statusElement = this.renderer.renderStatus(content);
     this.messagesEl.appendChild(this.statusElement);
     this.scrollToBottom();
   }
 
-  private removeStatus(): void {
+  private removeStatusMsg(): void {
     if (this.statusElement) {
       this.statusElement.remove();
       this.statusElement = null;
@@ -344,7 +494,6 @@ export class ChatDocumentWidget extends Widget {
 
   private updateStatus(status: string): void {
     this.statusEl.textContent = status;
-    // Map status text to CSS class
     let cssStatus = status;
     if (status.startsWith('reconnecting')) cssStatus = 'reconnecting';
     this.statusEl.className = `hub-chat-status-bar hub-chat-status-bar--${cssStatus}`;

@@ -40,6 +40,7 @@ extensions/*/.venv/
 hub-data/
 hugr-data/
 hub-db-data/
+hub-storage/
 
 # Helm (downloaded dependencies)
 k8s/*/charts/

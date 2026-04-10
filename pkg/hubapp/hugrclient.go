@@ -3,15 +3,14 @@ package hubapp
 import (
 	"time"
 
-	"github.com/hugr-lab/hub/pkg/auth"
 	"github.com/hugr-lab/query-engine/client"
 )
 
-// NewHugrClient creates a Hugr client with management auth + user identity from context.
+// NewHugrClient creates a Hugr client with native secret-key auth and subscription pool.
 func NewHugrClient(hugrURL, secretKey string, timeout time.Duration) *client.Client {
 	return client.NewClient(hugrURL,
-		client.WithTransport(&auth.UserTransport{}),
-		client.WithApiKeyCustomHeader(secretKey, "x-hugr-secret-key"),
+		client.WithSecretKeyAuth(secretKey),
 		client.WithTimeout(timeout),
+		client.WithSubscriptionPool(5, 2),
 	)
 }
