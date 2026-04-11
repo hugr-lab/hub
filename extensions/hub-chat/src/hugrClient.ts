@@ -281,16 +281,27 @@ export class HugrClient {
         case 'data': {
           const path = part.headers['X-Hugr-Path'];
           let parsed: any;
-          if (format === 'table') {
-            const table = tableFromIPC(part.body);
-            parsed = table.toArray().map((row: any) => {
-              if (typeof row.toJSON === 'function') return row.toJSON();
-              const obj: Record<string, any> = {};
-              for (const field of table.schema.fields) obj[field.name] = row[field.name];
-              return obj;
+          try {
+            if (format === 'table') {
+              const table = tableFromIPC(part.body);
+              parsed = table.toArray().map((row: any) => {
+                if (typeof row.toJSON === 'function') return row.toJSON();
+                const obj: Record<string, any> = {};
+                for (const field of table.schema.fields) obj[field.name] = row[field.name];
+                return obj;
+              });
+            } else {
+              parsed = JSON.parse(decoder.decode(part.body));
+            }
+          } catch (e) {
+            // A malformed Arrow blob or JSON body shouldn't tear down the
+            // whole response — surface it as a query error and skip the part.
+            const msg = e instanceof Error ? e.message : String(e);
+            result.errors.push({
+              message: `Failed to parse multipart data part (${format ?? 'json'}): ${msg}`,
+              path: path ? path.split('.') : undefined,
             });
-          } else {
-            parsed = JSON.parse(decoder.decode(part.body));
+            break;
           }
           if (path) setNested(result, path, parsed);
           else Object.assign(result.data, parsed);

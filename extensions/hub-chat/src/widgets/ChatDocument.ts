@@ -121,6 +121,10 @@ export class ChatDocumentWidget extends Widget {
       this.ws.close();
       this.ws = null;
     }
+    // Clear any in-flight streaming/thinking ticker intervals so they don't
+    // keep running after the widget is gone, holding closure references on
+    // detached DOM nodes.
+    this.finalizeStream();
     super.dispose();
   }
 
@@ -300,8 +304,6 @@ export class ChatDocumentWidget extends Widget {
   }
 
   private async onWsMessage(msg: WsMessage): Promise<void> {
-    // eslint-disable-next-line no-console
-    console.log('[hub-chat] ws message:', msg.type, msg);
     switch (msg.type) {
       case 'token':
         // First token after a thinking block — collapse the thinking block

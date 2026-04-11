@@ -284,13 +284,23 @@ func (g *Gateway) handleMessage(ctx context.Context, conn *websocket.Conn, userI
 
 	stream := func(m ChatMessage) {
 		g.writeJSON(ctx, conn, m)
-		// Persist intermediate tool messages
+		// Persist intermediate tool messages. Each persist runs in its own
+		// goroutine with a 30s timeout — without the timeout a wedged DB
+		// would leak goroutines on every tool call.
 		if g.persistFull != nil {
 			switch m.Type {
 			case "tool_call":
-				go g.persistFull(context.WithoutCancel(ctx), conversationID, "assistant", m.Content, m.ToolCalls, "")
+				go func(content string, toolCalls any) {
+					pCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+					defer cancel()
+					g.persistFull(pCtx, conversationID, "assistant", content, toolCalls, "")
+				}(m.Content, m.ToolCalls)
 			case "tool_result":
-				go g.persistFull(context.WithoutCancel(ctx), conversationID, "tool", m.Content, nil, m.ToolCallID)
+				go func(content, toolCallID string) {
+					pCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+					defer cancel()
+					g.persistFull(pCtx, conversationID, "tool", content, nil, toolCallID)
+				}(m.Content, m.ToolCallID)
 			}
 		}
 	}
@@ -377,7 +387,11 @@ func (g *Gateway) handleMessage(ctx context.Context, conn *websocket.Conn, userI
 		if userMsgCount <= 1 {
 			title := g.genTitle(context.WithoutCancel(ctx), msg.Content)
 			if title != "" {
-				go g.setTitle(context.WithoutCancel(ctx), conversationID, title)
+				go func(t string) {
+					pCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+					defer cancel()
+					g.setTitle(pCtx, conversationID, t)
+				}(title)
 				g.writeJSON(ctx, conn, ChatMessage{Type: "title_update", Content: title})
 			}
 		}

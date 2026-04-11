@@ -144,15 +144,24 @@ func (m *Manager) readLoop(ctx context.Context, ac *agentConn) {
 		case "pong":
 			// heartbeat response — nothing to do
 		case "response", "status", "error", "token", "thinking", "tool_call", "tool_result":
-			// Route to pending request (includes streaming types)
+			// Route to pending request (includes streaming types). We use a
+			// blocking send guarded by ctx + a short timeout instead of a
+			// `default:` drop — the latter silently loses streaming tokens
+			// when the consumer (gateway → browser) is briefly slower than
+			// the agent. Backpressure into the agent read loop is preferable
+			// to losing chunks of the visible response.
 			ac.mu.Lock()
 			ch, ok := ac.pending[msg.RequestID]
 			ac.mu.Unlock()
 			if ok {
+				sendCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 				select {
 				case ch <- msg:
-				default:
+				case <-sendCtx.Done():
+					m.logger.Warn("dropped agent message — pending channel blocked",
+						"instance", ac.instanceID, "request", msg.RequestID, "type", msg.Type)
 				}
+				cancel()
 			}
 		default:
 			m.logger.Warn("unknown agent message type", "type", msg.Type, "instance", ac.instanceID)
