@@ -5,12 +5,16 @@ OIDC endpoints are auto-discovered from Hugr's /auth/config endpoint.
 Only three env vars required: HUGR_URL, OIDC_CLIENT_SECRET, HUB_BASE_URL.
 """
 
+import base64
+import json
+import logging
 import os
 import time
-import logging
 
 import httpx
 from oauthenticator.generic import GenericOAuthenticator
+from tornado import web
+from tornado.httpclient import HTTPClientError
 
 SPAWNER_TYPE = os.environ.get("HUGR_SPAWNER", "docker")
 
@@ -134,6 +138,140 @@ def discover_oidc(max_retries=30, initial_delay=2, max_delay=60):
 oidc = discover_oidc()
 
 # ===========================================================================
+# Proactive token refresh hook
+# ===========================================================================
+# OAuthenticator's stock refresh_user is *lazy*: it only triggers a real
+# Keycloak refresh after the current access_token has died (userinfo lookup
+# returns 401 → fallback to refresh_token branch). That leaves a "death
+# window" between exp and the next refresh where kernel requests fail with
+# 401, and — worse — refresh only happens at all when something hits JH with
+# user-cookie auth. The workspace's hugr_connection_service poller hits JH
+# with a server token (JUPYTERHUB_API_TOKEN), which still goes through
+# get_current_user → refresh_auth → refresh_user → this hook.
+#
+# Wiring: just `c.GenericOAuthenticator.refresh_user_hook = ...` plus a low
+# `auth_refresh_age` so refresh_auth doesn't dedupe across polls. No custom
+# Authenticator subclass, no custom routes.
+
+# Default refresh margin in seconds — the hook does a real KC refresh as
+# soon as the current access_token is closer than this margin to its exp.
+# Configurable via HUGR_TOKEN_REFRESH_MARGIN_SECONDS env (minimum 5).
+_REFRESH_MARGIN_SECONDS_DEFAULT = 30
+
+
+def _decode_jwt_exp(token):
+    """Decode the `exp` claim from a JWT without signature verification."""
+    if not token:
+        return None
+    try:
+        parts = token.split(".")
+        if len(parts) < 2:
+            return None
+        payload = parts[1] + "=" * (4 - len(parts[1]) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload))
+        exp = claims.get("exp")
+        return float(exp) if exp is not None else None
+    except Exception:
+        return None
+
+
+async def _proactive_refresh_hook(authenticator, user, auth_state):
+    """Proactive token refresh hook for GenericOAuthenticator.refresh_user_hook.
+
+    The default oauthenticator `refresh_user` flow is *lazy*: it only triggers
+    a real Keycloak refresh after the current access_token has actually died
+    (userinfo lookup returns 401 → fallback to refresh_token branch). That
+    creates a "death window" between exp and the next refresh where kernel
+    requests fail with 401.
+
+    This hook makes refresh *proactive*: as soon as the current access_token
+    is within `HUGR_TOKEN_REFRESH_MARGIN_SECONDS` of its exp, we directly
+    POST to Keycloak's /token endpoint with the refresh_token and return a
+    fresh auth_model. JupyterHub persists it via auth_to_user automatically.
+
+    Returns:
+      True       — current access_token is still safely valid; no refresh
+      False      — refresh_token is missing/invalid → fresh login required
+      auth_model — successful KC refresh, JH will save and use this
+      None       — transient failure (network, 5xx); fall back to default
+                   lazy refresh_user flow
+    """
+    if not auth_state:
+        return False
+    refresh_token = auth_state.get("refresh_token")
+    if not refresh_token:
+        return False
+
+    margin = _REFRESH_MARGIN_SECONDS_DEFAULT
+    try:
+        margin = max(int(os.environ.get("HUGR_TOKEN_REFRESH_MARGIN_SECONDS", margin)), 5)
+    except ValueError:
+        pass
+
+    # If current token still has plenty of life, skip the refresh.
+    exp = _decode_jwt_exp(auth_state.get("access_token", ""))
+    if exp is not None and exp - time.time() > margin:
+        return True
+
+    # Within margin (or already dead) — actively exchange refresh_token at KC.
+    # handler=None: get_token_info goes through self.httpfetch and never reads
+    # the handler arg for the token endpoint call (verified in oauthenticator
+    # 17.4.0). If a future version starts using it, this will surface as a
+    # clean AttributeError instead of a silent miss.
+    try:
+        params = authenticator.build_refresh_token_request_params(refresh_token)
+        token_info = await authenticator.get_token_info(None, params)
+    except HTTPClientError as e:
+        if 400 <= e.code < 500:
+            authenticator.log.info(
+                "refresh_user_hook: invalid_grant for %s (HTTP %d). Requiring fresh login.",
+                user.name, e.code,
+            )
+            return False
+        authenticator.log.warning(
+            "refresh_user_hook: KC token endpoint returned %d for %s, falling back to lazy flow.",
+            e.code, user.name,
+        )
+        return None
+    except web.HTTPError as e:
+        # get_token_info raises HTTPError(403) on error_description responses
+        # (e.g. invalid_grant body without HTTP 4xx)
+        if 400 <= e.status_code < 500:
+            authenticator.log.info(
+                "refresh_user_hook: bad token response for %s (%s). Requiring fresh login.",
+                user.name, e.log_message,
+            )
+            return False
+        return None
+    except Exception as e:
+        authenticator.log.warning(
+            "refresh_user_hook: unexpected error refreshing %s: %s. Falling back.",
+            user.name, e,
+        )
+        return None
+
+    # KC may not return a new refresh_token (depends on rotation policy).
+    # Preserve the existing one in that case so we don't lose the ability
+    # to refresh next time.
+    if not token_info.get("refresh_token"):
+        token_info["refresh_token"] = refresh_token
+
+    try:
+        auth_model = await authenticator._token_to_auth_model(token_info)
+    except Exception as e:
+        authenticator.log.warning(
+            "refresh_user_hook: failed to build auth_model for %s: %s",
+            user.name, e,
+        )
+        return None
+    # Returning auth_model — JH's BaseHandler.refresh_auth will persist it via
+    # auth_to_user(auth_model, user) automatically. We don't (and shouldn't)
+    # call user.save_auth_state ourselves; doing so here would race with JH's
+    # own save and could leak partial state.
+    return auth_model
+
+
+# ===========================================================================
 # Authenticator
 # ===========================================================================
 
@@ -153,19 +291,68 @@ c.GenericOAuthenticator.client_secret = os.environ.get("OIDC_CLIENT_SECRET", "")
 c.GenericOAuthenticator.scope = oidc["scopes"]
 c.GenericOAuthenticator.login_service = "Hugr SSO"
 
-# Admin users — from env (static) + OIDC claim (dynamic)
-_admin_users = os.environ.get("HUGR_ADMIN_USERS", "")
-if _admin_users:
-    c.Authenticator.admin_users = set(_admin_users.split(","))
-
-# OIDC role/admin extraction via post_auth_hook
-_admin_claim = os.environ.get("HUGR_ADMIN_CLAIM", "")
-_admin_values = set(os.environ.get("HUGR_ADMIN_VALUES", "admin").split(","))
+# OIDC role extraction + hub:management.admin capability check via post_auth_hook.
+#
+# Admin detection is driven entirely by Hugr core.role_permissions — deployments
+# grant the hub:management.admin capability to whatever role they consider
+# administrative, and both JupyterHub (this file) and hub-service consult the
+# same table. No role name is hard-coded here.
 
 HUB_SERVICE_URL = os.environ.get("HUB_SERVICE_URL")
 
+
+async def _has_hub_management_admin(user_id: str, user_name: str, role: str) -> bool:
+    """Return True if the caller's role has the hub:management.admin capability
+    enabled in Hugr core.role_permissions.
+
+    Uses the management secret + x-hugr-impersonated-* headers to evaluate the
+    permission against the target role (requires the admin-keyed role in Hugr
+    to have can_impersonate=true — see .env.example for setup).
+    """
+    hugr_secret = os.environ.get("HUGR_SECRET_KEY", "")
+    if not hugr_secret or not role:
+        return False
+    try:
+        async with httpx.AsyncClient(verify=_hugr_tls_verify) as client:
+            resp = await client.post(
+                f"{HUGR_URL}/query",
+                json={"query": (
+                    "{ function { core { auth { my_permissions { disabled "
+                    "permissions { object field disabled } } } } } }"
+                )},
+                headers={
+                    "X-Hugr-Secret-Key": hugr_secret,
+                    "x-hugr-impersonated-user-id": user_id,
+                    "x-hugr-impersonated-user-name": user_name or user_id,
+                    "x-hugr-impersonated-role": role,
+                },
+                timeout=5,
+            )
+        payload = (
+            (resp.json() or {})
+            .get("data", {})
+            .get("function", {})
+            .get("core", {})
+            .get("auth", {})
+            .get("my_permissions")
+            or {}
+        )
+        if payload.get("disabled", False):
+            return False
+        for p in payload.get("permissions", []) or []:
+            if (
+                p.get("object") == "hub:management"
+                and p.get("field") == "admin"
+                and not p.get("disabled", True)
+            ):
+                return True
+    except Exception as e:
+        logger.warning("Failed to check hub:management.admin capability for %s: %s", user_id, e)
+    return False
+
+
 async def _post_auth_hook(authenticator, handler, authentication):
-    """Extract OIDC roles → JupyterHub groups + admin flag + notify Hub Service."""
+    """Extract OIDC roles → JupyterHub groups + admin flag (via capability) + sync user."""
     from hub_profiles.resolver import extract_claim
 
     auth_state = authentication.get("auth_state", {})
@@ -187,36 +374,83 @@ async def _post_auth_hook(authenticator, handler, authentication):
     if groups:
         authentication["groups"] = groups
 
-    # Admin flag from claim
-    if _admin_claim:
-        admin_values = extract_claim(auth_state, _admin_claim)
-        if any(v in _admin_values for v in admin_values):
-            authentication["admin"] = True
-    elif roles:
-        # Fallback: check roles against admin values
-        if any(r in _admin_values for r in roles):
-            authentication["admin"] = True
+    # Resolve the user_id in the same shape Hugr will use via `auth.me`
+    # (= the OIDC `sub` claim by default). hub.db.users is keyed by this
+    # id so user_agents / conversations / agent_memory FKs line up with
+    # whatever the Go airport-go handlers receive via ArgFromContext.
+    oauth_user = auth_state.get("oauth_user", {}) or {}
+    user_sub = oauth_user.get("sub") or auth_state.get("sub") or authentication["name"]
+    display_name = (
+        oauth_user.get("name")
+        or oauth_user.get("preferred_username")
+        or auth_state.get("name")
+        or authentication["name"]
+    )
 
-    # Notify Hub Service about user login (sync to hub.users)
-    if HUB_SERVICE_URL:
+    # Admin flag — evaluated via the hub:management.admin capability in Hugr
+    # core.role_permissions. No role names are hard-coded; whatever roles the
+    # deployment has granted the capability to become admins automatically.
+    primary_role = roles[0] if roles else ""
+    if await _has_hub_management_admin(user_sub, display_name, primary_role):
+        authentication["admin"] = True
+
+    # Upsert user into hub.db.users via Hugr GraphQL (management secret auth).
+    # This previously called Hub Service's /api/user/login, which has been
+    # removed — Hugr is now the single write path for all hub.db.* data.
+    hugr_secret = os.environ.get("HUGR_SECRET_KEY", "")
+    if hugr_secret:
         async with httpx.AsyncClient(verify=_hugr_tls_verify) as client:
             try:
-                await client.post(
-                    f"{HUB_SERVICE_URL}/api/user/login",
+                user_id = user_sub
+                user_name = display_name
+                role = roles[0] if roles else "user"
+                email = oauth_user.get("email") or auth_state.get("email") or ""
+                # One round-trip: try an update, fall back to insert if zero affected.
+                gql = (
+                    "mutation($id:String!,$name:String!,$role:String!,$email:String) {"
+                    " hub { db {"
+                    "  update_users(filter:{id:{eq:$id}}, data:{display_name:$name, hugr_role:$role, email:$email}) { affected_rows }"
+                    " } }"
+                    "}"
+                )
+                resp = await client.post(
+                    f"{HUGR_URL}/query",
                     json={
-                        "user_id": authentication["name"],
-                        "user_name": auth_state.get("name", authentication["name"]),
-                        "role": roles[0] if roles else "",
-                        "email": auth_state.get("email", ""),
+                        "query": gql,
+                        "variables": {"id": user_id, "name": user_name, "role": role, "email": email},
                     },
+                    headers={"X-Hugr-Secret-Key": hugr_secret},
                     timeout=5,
                 )
+                affected = 0
+                try:
+                    affected = int(
+                        (resp.json() or {}).get("data", {}).get("hub", {}).get("db", {}).get("update_users", {}).get("affected_rows", 0)
+                    )
+                except Exception:
+                    affected = 0
+                if affected == 0:
+                    ins = (
+                        "mutation($id:String!,$name:String!,$role:String!,$email:String) {"
+                        " hub { db { insert_users(data:{id:$id, display_name:$name, hugr_role:$role, email:$email}) { id } } }"
+                        "}"
+                    )
+                    await client.post(
+                        f"{HUGR_URL}/query",
+                        json={
+                            "query": ins,
+                            "variables": {"id": user_id, "name": user_name, "role": role, "email": email},
+                        },
+                        headers={"X-Hugr-Secret-Key": hugr_secret},
+                        timeout=5,
+                    )
             except Exception as e:
-                logger.warning("Failed to notify Hub Service: %s", e)
+                logger.warning("Failed to upsert user in Hugr: %s", e)
 
     return authentication
 
 c.GenericOAuthenticator.post_auth_hook = _post_auth_hook
+c.GenericOAuthenticator.refresh_user_hook = _proactive_refresh_hook
 c.GenericOAuthenticator.manage_groups = True
 
 # Override default auth_state_groups_key ("oauth_user.groups") which doesn't exist
@@ -237,7 +471,11 @@ c.GenericOAuthenticator.auth_state_groups_key = _groups_from_auth_state
 
 c.GenericOAuthenticator.enable_auth_state = True
 c.GenericOAuthenticator.refresh_pre_spawn = True
-c.GenericOAuthenticator.auth_refresh_age = 120
+# Low refresh age — we want refresh_user_hook to be called on (almost) every
+# authenticated request from the workspace's hub_token_provider poller, not
+# deduped by JH. The hook itself decides whether a real KC refresh is needed
+# based on the access_token's exp vs HUGR_TOKEN_REFRESH_MARGIN_SECONDS.
+c.GenericOAuthenticator.auth_refresh_age = 10
 c.GenericOAuthenticator.username_claim = os.environ.get(
     "OIDC_USERNAME_CLAIM", "preferred_username"
 )
@@ -436,7 +674,54 @@ async def pre_spawn_hook(spawner, auth_state):
     )
     # Merge with base volumes (Docker only — K8s uses PVC via KubeSpawner)
     if SPAWNER_TYPE != "kubernetes":
-        base_volumes = {"hub-user-{username}": "/home/jovyan/work"}
+        storage_path = os.environ.get("HUB_STORAGE_PATH", "/var/hub-storage")
+        # JupyterHub username is the stable short handle — keep using it for
+        # the user's own home directory path so it stays predictable across
+        # OIDC provider changes.
+        user_name = spawner.user.name
+        # The Hugr-side user id (what hub.db.users.id and all FKs are keyed
+        # by) is the OIDC `sub` claim — same as what _post_auth_hook stored.
+        oauth_user = (auth_state or {}).get("oauth_user", {}) or {}
+        hugr_user_id = oauth_user.get("sub") or (auth_state or {}).get("sub") or user_name
+        base_volumes = {
+            os.path.join(storage_path, "users", user_name): "/home/jovyan/work",
+        }
+        # Mount shared agent directories. Hugr is queried directly via the
+        # management secret + impersonation header, replacing the removed
+        # Hub Service /api/user/agents REST endpoint.
+        hugr_secret = os.environ.get("HUGR_SECRET_KEY", "")
+        if hugr_secret:
+            try:
+                import httpx
+                gql = (
+                    "query($uid:String!) { hub { db { user_agents("
+                    " filter:{user_id:{eq:$uid}}"
+                    ") { agent { id display_name } } } } }"
+                )
+                resp = httpx.post(
+                    f"{HUGR_URL}/query",
+                    json={"query": gql, "variables": {"uid": hugr_user_id}},
+                    headers={
+                        "X-Hugr-Secret-Key": hugr_secret,
+                        "x-hugr-impersonated-user-id": hugr_user_id,
+                        "x-hugr-impersonated-user-name": user_name,
+                        "x-hugr-impersonated-role": "admin",
+                    },
+                    timeout=5,
+                    verify=_hugr_tls_verify,
+                )
+                if resp.status_code == 200:
+                    payload = (resp.json() or {}).get("data", {}).get("hub", {}).get("db", {}).get("user_agents", []) or []
+                    for ua in payload:
+                        agent = ua.get("agent") or {}
+                        agent_id = agent.get("id", "")
+                        agent_name = agent.get("display_name", agent_id)
+                        if agent_id:
+                            host_path = os.path.join(storage_path, "shared", agent_id)
+                            container_path = f"/home/jovyan/agents/{agent_name}"
+                            base_volumes[host_path] = container_path
+            except Exception as e:
+                spawner.log.warning(f"Failed to fetch user agents for volume mounts: {e}")
         base_volumes.update(storage_volumes)
         spawner.volumes = base_volumes
 
@@ -445,7 +730,9 @@ async def pre_spawn_hook(spawner, auth_state):
     if user_tz:
         spawner.environment["TZ"] = user_tz
 
-    # 7. Admin flag for hub-admin extension
+    # 7. Admin flag for hub-admin extension. JupyterHub's user.admin is set in
+    #    post_auth_hook from the user's hub:management.admin capability, so
+    #    here we just forward it as an env var.
     if spawner.user.admin:
         spawner.environment["HUGR_HUB_ADMIN"] = "true"
 

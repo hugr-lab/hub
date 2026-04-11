@@ -68,6 +68,78 @@ func (a *Agent) RunLoopWithHistory(ctx context.Context, history []llmrouter.Mess
 	return a.runAgenticLoop(ctx, history)
 }
 
+// runAgenticLoopWithStream is the multi-turn loop with streaming callbacks.
+func (a *Agent) runAgenticLoopWithStream(ctx context.Context, history []llmrouter.Message, stream AgentStreamCallback) (string, error) {
+	if len(history) == 0 || history[0].Role != "system" {
+		var lastUserMsg string
+		for i := len(history) - 1; i >= 0; i-- {
+			if history[i].Role == "user" {
+				lastUserMsg = history[i].Content
+				break
+			}
+		}
+		learnedContext := a.learner.RetrieveContext(ctx, lastUserMsg)
+		systemPrompt := a.skills.SystemPrompt()
+		if learnedContext != "" {
+			systemPrompt += "\n\n" + learnedContext
+		}
+		history = append([]llmrouter.Message{{Role: "system", Content: systemPrompt}}, history...)
+	}
+
+	tools := a.registry.ToLLMTools()
+
+	for turn := 0; turn < a.config.MaxTurns; turn++ {
+		resp, err := a.callLLM(ctx, history, tools)
+		if err != nil {
+			return "", fmt.Errorf("turn %d: %w", turn, err)
+		}
+
+		if len(resp.ToolCalls) == 0 {
+			return resp.Content, nil
+		}
+
+		// Stream tool_call
+		if stream != nil {
+			stream("tool_call", resp.Content, resp.ToolCalls, "")
+		}
+
+		history = append(history, llmrouter.Message{
+			Role:      "assistant",
+			Content:   resp.Content,
+			ToolCalls: toolCallsToAny(resp.ToolCalls),
+		})
+
+		for _, tc := range resp.ToolCalls {
+			if stream != nil {
+				stream("status", fmt.Sprintf("tool:%s", tc.Name), nil, "")
+			}
+
+			result, err := a.executeTool(ctx, tc)
+			resultText := result
+			if err != nil {
+				resultText = fmt.Sprintf("Error: %v", err)
+			}
+
+			// Stream tool_result
+			if stream != nil {
+				stream("tool_result", resultText, nil, tc.ID)
+			}
+
+			history = append(history, llmrouter.Message{
+				Role:       "tool",
+				Content:    resultText,
+				ToolCallID: tc.ID,
+			})
+
+			if err == nil {
+				a.learner.LearnFromToolCall(ctx, tc.Name, tc.Arguments, result)
+			}
+		}
+	}
+
+	return "", fmt.Errorf("max turns (%d) reached", a.config.MaxTurns)
+}
+
 // runAgenticLoop is the core multi-turn loop shared by RunLoop and RunLoopWithHistory.
 func (a *Agent) runAgenticLoop(ctx context.Context, history []llmrouter.Message) (string, error) {
 	// Get tools for LLM

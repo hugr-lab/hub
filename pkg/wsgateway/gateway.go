@@ -39,14 +39,19 @@ type StreamCallback func(msg ChatMessage)
 // ConversationLookup resolves conversation info by ID.
 type ConversationLookup func(ctx context.Context, conversationID string) (*ConversationInfo, error)
 
-// ToolsHandler handles LLM + Hugr tools chat. Receives full history, streams intermediate results.
-type ToolsHandler func(ctx context.Context, userID string, messages []LLMMessage, stream StreamCallback) (string, error)
+// ToolsHandler handles LLM + Hugr tools chat. Receives full history, streams
+// intermediate results, and returns the final response text together with
+// token usage so the caller can attach a `usage` block to the WS response.
+type ToolsHandler func(ctx context.Context, userID string, messages []LLMMessage, stream StreamCallback) (string, *UsageInfo, error)
 
 // LLMHandler handles pure LLM chat (no tools). Receives full history.
-type LLMHandler func(ctx context.Context, model string, messages []LLMMessage) (string, error)
+type LLMHandler func(ctx context.Context, model string, messages []LLMMessage) (string, *UsageInfo, error)
 
 // AgentHandler sends messages to an agent container with full conversation history.
 type AgentHandler func(ctx context.Context, instanceID, conversationID, userID string, messages []LLMMessage) (string, error)
+
+// AgentStreamHandler sends messages to an agent and streams intermediate results.
+type AgentStreamHandler func(ctx context.Context, instanceID, conversationID, userID string, messages []LLMMessage, stream StreamCallback) (string, error)
 
 // MessagePersister saves messages to DB.
 type MessagePersister func(ctx context.Context, conversationID, role, content string)
@@ -62,10 +67,11 @@ type TitleUpdater func(ctx context.Context, conversationID, title string)
 
 // Gateway is a WebSocket relay between browser clients and backend.
 type Gateway struct {
-	lookup   ConversationLookup
-	llm      LLMHandler
-	tools    ToolsHandler
-	agent    AgentHandler
+	lookup      ConversationLookup
+	llm         LLMHandler
+	tools       ToolsHandler
+	agent       AgentHandler
+	agentStream AgentStreamHandler
 	persist     MessagePersister
 	persistFull FullMessagePersister
 	genTitle    TitleGenerator
@@ -78,10 +84,11 @@ type Gateway struct {
 
 // Config holds all handlers for the gateway.
 type Config struct {
-	Lookup   ConversationLookup
-	LLM      LLMHandler
-	Tools    ToolsHandler
-	Agent    AgentHandler
+	Lookup      ConversationLookup
+	LLM         LLMHandler
+	Tools       ToolsHandler
+	Agent       AgentHandler
+	AgentStream AgentStreamHandler
 	Persist     MessagePersister
 	PersistFull FullMessagePersister
 	GenTitle    TitleGenerator
@@ -91,10 +98,11 @@ type Config struct {
 
 func New(cfg Config) *Gateway {
 	return &Gateway{
-		lookup:   cfg.Lookup,
-		llm:      cfg.LLM,
-		tools:    cfg.Tools,
-		agent:    cfg.Agent,
+		lookup:      cfg.Lookup,
+		llm:         cfg.LLM,
+		tools:       cfg.Tools,
+		agent:       cfg.Agent,
+		agentStream: cfg.AgentStream,
 		persist:     cfg.Persist,
 		persistFull: cfg.PersistFull,
 		genTitle:    cfg.GenTitle,
@@ -129,6 +137,12 @@ func (g *Gateway) Handler() http.Handler {
 		}
 		defer conn.CloseNow()
 
+		// Default ReadLimit on nhooyr.io/websocket is 32 KiB — way too small
+		// for chat history that includes a long pasted document or file.
+		// 16 MiB lets the client paste large specs / source files without
+		// silent truncation.
+		conn.SetReadLimit(16 * 1024 * 1024)
+
 		var prev *websocket.Conn
 		g.mu.Lock()
 		if old, ok := g.conns[conversationID]; ok {
@@ -155,14 +169,23 @@ func (g *Gateway) Handler() http.Handler {
 	})
 }
 
-// ChatMessage is the wire format for WebSocket messages.
+// ChatMessage is the wire format for WebSocket messages (channel protocol).
 type ChatMessage struct {
-	Type       string       `json:"type"`                   // "message", "response", "error", "status", "tool_call", "tool_result", "info"
-	Content    string       `json:"content,omitempty"`      // text content
-	Messages   []LLMMessage `json:"messages,omitempty"`     // full history (client → server)
-	ToolCalls  any          `json:"tool_calls,omitempty"`   // tool calls from LLM
-	ToolCallID string       `json:"tool_call_id,omitempty"` // for tool_result
-	AgentName  string       `json:"agent_name,omitempty"`   // agent display name (for personalization)
+	Type       string       `json:"type"`                    // "message", "token", "thinking", "tool_call", "tool_result", "response", "error", "status", "title_update", "summary", "cancel", "summarize"
+	Content    string       `json:"content,omitempty"`       // text content
+	Messages   []LLMMessage `json:"messages,omitempty"`      // full history (client → server)
+	ToolCalls  any          `json:"tool_calls,omitempty"`    // tool calls from LLM
+	ToolCallID string       `json:"tool_call_id,omitempty"`  // for tool_result
+	AgentName  string       `json:"agent_name,omitempty"`    // agent display name (for personalization)
+	Usage      *UsageInfo   `json:"usage,omitempty"`         // token usage metadata (on response)
+	SummaryOf  []string     `json:"summary_of,omitempty"`    // message IDs summarized (on summary)
+}
+
+// UsageInfo contains token usage metadata for a response.
+type UsageInfo struct {
+	TokensIn  int    `json:"tokens_in"`
+	TokensOut int    `json:"tokens_out"`
+	Model     string `json:"model"`
 }
 
 func (g *Gateway) readLoop(ctx context.Context, conn *websocket.Conn, userID, conversationID string) {
@@ -215,12 +238,24 @@ func (g *Gateway) readLoop(ctx context.Context, conn *websocket.Conn, userID, co
 		case "cancel":
 			cancelAndWait()
 			g.writeJSON(ctx, conn, ChatMessage{Type: "status", Content: "cancelled"})
+		case "summarize":
+			// Summarize handled in future phase — placeholder
+			g.writeJSON(ctx, conn, ChatMessage{Type: "status", Content: "summarization not yet implemented"})
 		default:
 			g.writeJSON(ctx, conn, ChatMessage{Type: "error", Content: fmt.Sprintf("unknown type: %s", msg.Type)})
 		}
 	}
 }
 
+// TODO(spec-e): the client currently re-sends the full chat history (msg.Messages)
+// on every turn. The agent runtime is supposed to be stateful and own its
+// conversation history across sessions, browsers and reloads. The current
+// "client owns history" model breaks if the user opens the chat from a
+// different browser or if the agent has to run autonomously between user
+// turns (cron, sub-agents). Spec E re-architects this so the WebSocket only
+// carries the new user message + (optionally) a small "since N" cursor, and
+// the agent loop reads its history from hub.db.agent_messages directly.
+// Until then, the in-memory client history is treated as authoritative.
 func (g *Gateway) handleMessage(ctx context.Context, conn *websocket.Conn, userID, conversationID string, msg ChatMessage) {
 	g.logger.Info("chat message", "user", userID, "conversation", conversationID, "history_len", len(msg.Messages))
 
@@ -249,40 +284,53 @@ func (g *Gateway) handleMessage(ctx context.Context, conn *websocket.Conn, userI
 
 	stream := func(m ChatMessage) {
 		g.writeJSON(ctx, conn, m)
-		// Persist intermediate tool messages
+		// Persist intermediate tool messages. Each persist runs in its own
+		// goroutine with a 30s timeout — without the timeout a wedged DB
+		// would leak goroutines on every tool call.
 		if g.persistFull != nil {
 			switch m.Type {
 			case "tool_call":
-				go g.persistFull(context.WithoutCancel(ctx), conversationID, "assistant", m.Content, m.ToolCalls, "")
+				go func(content string, toolCalls any) {
+					pCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+					defer cancel()
+					g.persistFull(pCtx, conversationID, "assistant", content, toolCalls, "")
+				}(m.Content, m.ToolCalls)
 			case "tool_result":
-				go g.persistFull(context.WithoutCancel(ctx), conversationID, "tool", m.Content, nil, m.ToolCallID)
+				go func(content, toolCallID string) {
+					pCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+					defer cancel()
+					g.persistFull(pCtx, conversationID, "tool", content, nil, toolCallID)
+				}(m.Content, m.ToolCallID)
 			}
 		}
 	}
 
 	var response string
+	var usage *UsageInfo
 
 	switch conv.Mode {
 	case "llm":
 		if g.llm != nil {
-			response, err = g.llm(ctx, conv.Model, msg.Messages)
+			response, usage, err = g.llm(ctx, conv.Model, msg.Messages)
 		} else {
 			err = fmt.Errorf("LLM mode not configured")
 		}
 
 	case "tools":
 		if g.tools != nil {
-			response, err = g.tools(ctx, userID, msg.Messages, stream)
+			response, usage, err = g.tools(ctx, userID, msg.Messages, stream)
 		} else {
 			err = fmt.Errorf("tools mode not configured")
 		}
 
 	case "agent":
 		agentID := conv.AgentInstanceID
-		if g.agent != nil && agentID != "" {
+		if g.agentStream != nil && agentID != "" {
+			response, err = g.agentStream(ctx, agentID, conversationID, userID, msg.Messages, stream)
+		} else if g.agent != nil && agentID != "" {
 			response, err = g.agent(ctx, agentID, conversationID, userID, msg.Messages)
 		}
-		if g.agent == nil || agentID == "" || err != nil {
+		if (g.agent == nil && g.agentStream == nil) || agentID == "" || err != nil {
 			if agentID == "" {
 				g.logger.Info("agent mode but no instance linked, falling back to tools", "conversation", conversationID)
 			}
@@ -291,7 +339,7 @@ func (g *Gateway) handleMessage(ctx context.Context, conn *websocket.Conn, userI
 			}
 			stream(ChatMessage{Type: "status", Content: "agent offline, using tools mode"})
 			if g.tools != nil {
-				response, err = g.tools(ctx, userID, msg.Messages, stream)
+				response, usage, err = g.tools(ctx, userID, msg.Messages, stream)
 			} else {
 				err = fmt.Errorf("no handler available")
 			}
@@ -323,6 +371,9 @@ func (g *Gateway) handleMessage(ctx context.Context, conn *websocket.Conn, userI
 	}
 
 	respMsg := ChatMessage{Type: "response", Content: response, AgentName: conv.AgentName}
+	if usage != nil {
+		respMsg.Usage = usage
+	}
 	g.writeJSON(ctx, conn, respMsg)
 
 	// Auto-generate title after first user message (synchronous — handleMessage is already in goroutine)
@@ -336,7 +387,11 @@ func (g *Gateway) handleMessage(ctx context.Context, conn *websocket.Conn, userI
 		if userMsgCount <= 1 {
 			title := g.genTitle(context.WithoutCancel(ctx), msg.Content)
 			if title != "" {
-				go g.setTitle(context.WithoutCancel(ctx), conversationID, title)
+				go func(t string) {
+					pCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+					defer cancel()
+					g.setTitle(pCtx, conversationID, t)
+				}(title)
 				g.writeJSON(ctx, conn, ChatMessage{Type: "title_update", Content: title})
 			}
 		}

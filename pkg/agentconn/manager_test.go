@@ -126,7 +126,11 @@ func TestManager_SendMessageStream(t *testing.T) {
 
 	var statuses []string
 	result, err := mgr.SendMessageStream(context.Background(), "inst-stream", "conv-1", "user-1", []ChatMessage{{Role: "user", Content: "work"}},
-		func(s string) { statuses = append(statuses, s) })
+		func(msg AgentMessage) {
+			if msg.Type == "status" {
+				statuses = append(statuses, msg.Content)
+			}
+		})
 	if err != nil {
 		t.Fatalf("send stream: %v", err)
 	}

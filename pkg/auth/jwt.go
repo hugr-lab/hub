@@ -53,12 +53,23 @@ func (v *JWTValidator) Validate(tokenStr string) (*UserInfo, error) {
 		return nil, fmt.Errorf("invalid token claims")
 	}
 
-	userID := claimString(claims, "preferred_username")
+	// User identity is keyed by the OIDC `sub` claim — same as what Hugr's
+	// own JWT provider uses for `[$auth.user_id]`. This must match so that:
+	//   - hub.db.users.id (seeded by jupyterhub_config.py from sub)
+	//   - the user_id stored on conversations / agents / user_agents
+	//     (set via Hugr GraphQL with the sub in [$auth.user_id])
+	//   - the WebSocket gateway's userID extracted here
+	// all reference the same identifier. We fall back to preferred_username
+	// for tokens that lack a sub claim.
+	userID := claimString(claims, "sub")
 	if userID == "" {
-		userID = claimString(claims, "sub")
+		userID = claimString(claims, "preferred_username")
 	}
 
-	name := claimString(claims, "name")
+	name := claimString(claims, "preferred_username")
+	if name == "" {
+		name = claimString(claims, "name")
+	}
 	role := claimString(claims, v.roleClaim)
 
 	return &UserInfo{

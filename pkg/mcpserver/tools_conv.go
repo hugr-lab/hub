@@ -17,7 +17,7 @@ func (s *Server) registerConversationTools(mcpSrv *server.MCPServer, userID stri
 			mcp.WithString("title", mcp.Description("Conversation title (default: New Chat)")),
 			mcp.WithString("mode", mcp.Required(), mcp.Description("Chat mode: llm, tools, or agent")),
 			mcp.WithString("folder", mcp.Description("Folder for grouping")),
-			mcp.WithString("agent_instance_id", mcp.Description("Agent instance ID (for mode=agent)")),
+			mcp.WithString("agent_id", mcp.Description("Agent ID (for mode=agent)")),
 			mcp.WithString("model", mcp.Description("LLM model name (for mode=llm)")),
 		),
 		s.handleConversationCreate(userID),
@@ -131,7 +131,7 @@ func (s *Server) handleConversationList(userID string) server.ToolHandlerFunc {
 				filter: { %s }
 				order_by: [{field: "updated_at", direction: DESC}]
 			) {
-				id title folder mode agent_instance_id model updated_at created_at
+				id title folder mode agent_id model updated_at created_at
 			} } }
 		}`, varDefs, filterParts)
 

@@ -30,30 +30,42 @@ CREATE TABLE IF NOT EXISTS agent_types (
   metadata JSONB DEFAULT '{}'
 );
 
--- Agent instances (running containers)
-CREATE TABLE IF NOT EXISTS agent_instances (
+-- Agents (identity only — runtime state lives in Hub Service memory)
+CREATE TABLE IF NOT EXISTS agents (
   id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL REFERENCES users(id),
   agent_type_id TEXT NOT NULL REFERENCES agent_types(id),
-  display_name TEXT,
-  container_id TEXT,
-  auth_token TEXT,
-  status TEXT DEFAULT 'creating',
-  started_at TIMESTAMPTZ DEFAULT now(),
-  last_activity_at TIMESTAMPTZ DEFAULT now(),
+  display_name TEXT NOT NULL,
+  description TEXT,
+  hugr_user_id TEXT NOT NULL,
+  hugr_user_name TEXT NOT NULL,
+  hugr_role TEXT NOT NULL DEFAULT 'agent',
+  last_activity_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT now(),
   metadata JSONB DEFAULT '{}'
 );
 
--- Conversations (persistent chat threads)
+-- User-Agent access (M:N with owner/member roles)
+CREATE TABLE IF NOT EXISTS user_agents (
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  role TEXT NOT NULL DEFAULT 'member',
+  created_at TIMESTAMPTZ DEFAULT now(),
+  PRIMARY KEY (user_id, agent_id)
+);
+
+-- Conversations (persistent chat threads with threading support)
 CREATE TABLE IF NOT EXISTS conversations (
   id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL REFERENCES users(id),
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   title TEXT NOT NULL DEFAULT 'New Chat',
   folder TEXT,
   mode TEXT NOT NULL DEFAULT 'tools',
   agent_type_id TEXT REFERENCES agent_types(id),
-  agent_instance_id TEXT REFERENCES agent_instances(id) ON DELETE SET NULL,
+  agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL,
   model TEXT,
+  parent_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+  branch_point_message_id TEXT,
+  branch_label TEXT,
   deleted_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
@@ -62,31 +74,43 @@ CREATE TABLE IF NOT EXISTS conversations (
 -- Agent sessions
 CREATE TABLE IF NOT EXISTS agent_sessions (
   id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL REFERENCES users(id),
-  instance_id TEXT REFERENCES agent_instances(id),
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL,
   started_at TIMESTAMPTZ DEFAULT now(),
   ended_at TIMESTAMPTZ,
   metadata JSONB DEFAULT '{}'
 );
 
--- Agent messages
+-- Agent messages (with summarization support)
 CREATE TABLE IF NOT EXISTS agent_messages (
   id TEXT PRIMARY KEY,
-  session_id TEXT REFERENCES agent_sessions(id),
-  conversation_id TEXT REFERENCES conversations(id),
+  session_id TEXT REFERENCES agent_sessions(id) ON DELETE SET NULL,
+  conversation_id TEXT REFERENCES conversations(id) ON DELETE CASCADE,
   role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system', 'tool')),
   content TEXT NOT NULL,
   tool_calls JSONB,
   tool_call_id TEXT,
   tokens_used INT,
   model TEXT,
+  summarized_by TEXT,
+  is_summary BOOLEAN DEFAULT false,
   created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Junction table for message summarization: links a summary message to the originals it covers.
+-- When is_summary=true on agent_messages, the originals are listed here.
+-- Symmetric reverse: agent_messages.summarized_by points back to the summary.
+CREATE TABLE IF NOT EXISTS message_summary_items (
+  summary_message_id  TEXT NOT NULL REFERENCES agent_messages(id) ON DELETE CASCADE,
+  original_message_id TEXT NOT NULL REFERENCES agent_messages(id) ON DELETE CASCADE,
+  position INT NOT NULL,
+  PRIMARY KEY (summary_message_id, original_message_id)
 );
 
 -- Agent memory (with vector search)
 CREATE TABLE IF NOT EXISTS agent_memory (
   id TEXT PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id TEXT NOT NULL REFERENCES users(id),
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   content TEXT NOT NULL,
   embedding VECTOR({{.VectorSize}}),
   category TEXT DEFAULT 'general',
@@ -97,7 +121,7 @@ CREATE TABLE IF NOT EXISTS agent_memory (
 -- Query registry
 CREATE TABLE IF NOT EXISTS query_registry (
   id TEXT PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id TEXT NOT NULL REFERENCES users(id),
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
   query TEXT NOT NULL,
   description TEXT,
@@ -110,7 +134,7 @@ CREATE TABLE IF NOT EXISTS query_registry (
 -- Tool calls (audit)
 CREATE TABLE IF NOT EXISTS tool_calls (
   id TEXT PRIMARY KEY DEFAULT gen_random_uuid(),
-  session_id TEXT REFERENCES agent_sessions(id),
+  session_id TEXT REFERENCES agent_sessions(id) ON DELETE SET NULL,
   user_id TEXT NOT NULL,
   tool_name TEXT NOT NULL,
   arguments JSONB,
@@ -138,7 +162,7 @@ CREATE TABLE IF NOT EXISTS llm_usage (
   id TEXT PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id TEXT NOT NULL,
   provider_id TEXT NOT NULL,
-  session_id TEXT REFERENCES agent_sessions(id),
+  session_id TEXT REFERENCES agent_sessions(id) ON DELETE SET NULL,
   tokens_in INT NOT NULL,
   tokens_out INT NOT NULL,
   duration_ms INT,
@@ -148,8 +172,12 @@ CREATE TABLE IF NOT EXISTS llm_usage (
 
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_conversations_user ON conversations(user_id, deleted_at);
+CREATE INDEX IF NOT EXISTS idx_conversations_parent ON conversations(parent_id);
 CREATE INDEX IF NOT EXISTS idx_agent_messages_conv ON agent_messages(conversation_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_agent_instances_user ON agent_instances(user_id);
+CREATE INDEX IF NOT EXISTS idx_messages_summarized ON agent_messages(summarized_by);
+CREATE INDEX IF NOT EXISTS idx_msi_original ON message_summary_items(original_message_id);
+CREATE INDEX IF NOT EXISTS idx_user_agents_user ON user_agents(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_agents_agent ON user_agents(agent_id);
 CREATE INDEX IF NOT EXISTS idx_agent_sessions_user ON agent_sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_agent_memory_user ON agent_memory(user_id);
 CREATE INDEX IF NOT EXISTS idx_agent_memory_category ON agent_memory(user_id, category);

@@ -22,15 +22,11 @@ data:
   {{- if .Values.hub.hugrTlsSkipVerify }}
   HUGR_TLS_SKIP_VERIFY: "true"
   {{- end }}
-  {{- with .Values.hub.admin.users }}
-  HUGR_ADMIN_USERS: {{ . | quote }}
-  {{- end }}
-  {{- with .Values.hub.admin.claim }}
-  HUGR_ADMIN_CLAIM: {{ . | quote }}
-  {{- end }}
-  {{- with .Values.hub.admin.values }}
-  HUGR_ADMIN_VALUES: {{ . | quote }}
-  {{- end }}
+  # Admin detection is driven by the hub:management.admin capability in
+  # Hugr core.role_permissions. Deployments grant it to a role via a
+  # one-time mutation (see pkg/hubapp/CAPABILITIES.md). The legacy
+  # HUGR_ADMIN_CLAIM / HUGR_ADMIN_VALUES / HUGR_ADMIN_USERS env vars
+  # have been removed (2026-04-10).
   {{- with .Values.hub.profiles.claim }}
   HUGR_PROFILE_CLAIM: {{ . | quote }}
   {{- end }}

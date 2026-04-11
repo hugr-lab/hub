@@ -2,7 +2,8 @@ package auth
 
 import (
 	"context"
-	"net/http"
+
+	"github.com/hugr-lab/query-engine/client"
 )
 
 type userContextKey struct{}
@@ -26,26 +27,8 @@ func UserFromContext(ctx context.Context) (UserInfo, bool) {
 	return u, ok
 }
 
-// UserTransport injects x-hugr-user-* headers from context into every request.
-type UserTransport struct {
-	Base http.RoundTripper
-}
-
-func (t *UserTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if u, ok := UserFromContext(req.Context()); ok {
-		if u.ID != "" {
-			req.Header.Set("x-hugr-user-id", u.ID)
-		}
-		if u.Name != "" {
-			req.Header.Set("x-hugr-user-name", u.Name)
-		}
-		if u.Role != "" {
-			req.Header.Set("x-hugr-role", u.Role)
-		}
-	}
-	base := t.Base
-	if base == nil {
-		base = http.DefaultTransport
-	}
-	return base.RoundTrip(req)
+// InjectIdentity wraps ctx with query-engine AsUser for Hugr calls.
+// Both client.Query() and client.Subscribe() respect this context.
+func InjectIdentity(ctx context.Context, u UserInfo) context.Context {
+	return client.AsUser(ctx, u.ID, u.Name, u.Role)
 }

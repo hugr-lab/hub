@@ -12,10 +12,9 @@ hub:
     tlsSkipVerify: false
   hugrTlsSkipVerify: false
   hugrSecretKey: ""                 # Management secret (optional, for Hub Service)
-  admin:
-    users: ""                       # Comma-separated admin usernames
-    claim: ""                       # OIDC claim for admin detection
-    values: "admin"                 # Claim values that grant admin
+  # Admin detection: driven by the hub:management.admin capability in Hugr
+  # core.role_permissions. See pkg/hubapp/CAPABILITIES.md for the one-time
+  # grant mutation. No role names or env vars configured here.
   profiles:
     claim: ""                       # OIDC claim for profile assignment
     roleClaim: "x-hugr-role"        # OIDC claim for Hugr role

@@ -23,15 +23,19 @@ import (
 
 const (
 	appName    = "hub"
-	appVersion = "0.1.0"
+	appVersion = "0.2.0"
 )
 
 type HubApp struct {
-	config Config
-	logger *slog.Logger
-	mux    *app.CatalogMux
-	client *client.Client
-	server *http.Server
+	config        Config
+	logger        *slog.Logger
+	mux           *app.CatalogMux
+	client        *client.Client
+	server        *http.Server
+	llmRouter     *llmrouter.Router
+	dockerRuntime *agentmgr.DockerRuntime
+	agentConnMgr  *agentconn.Manager
+	agentMgr      *agentmgr.Manager
 }
 
 func New(cfg Config, logger *slog.Logger, c *client.Client) *HubApp {
@@ -45,11 +49,10 @@ func New(cfg Config, logger *slog.Logger, c *client.Client) *HubApp {
 
 func (a *HubApp) Info() app.AppInfo {
 	return app.AppInfo{
-		Name:          appName,
-		Description:   "Analytics Hub — agent memory, query registry, workspace management",
-		Version:       appVersion,
-		URI:           fmt.Sprintf("grpc://localhost%s", a.config.FlightAddr),
-		DefaultSchema: "default",
+		Name:        appName,
+		Description: "Analytics Hub — agent memory, query registry, workspace management",
+		Version:     appVersion,
+		URI:         fmt.Sprintf("grpc://localhost%s", a.config.FlightAddr),
 	}
 }
 
@@ -58,6 +61,17 @@ func (a *HubApp) Listner() (net.Listener, error) {
 }
 
 func (a *HubApp) Catalog(ctx context.Context) (catalog.Catalog, error) {
+	// Initialize DockerRuntime early so catalog handlers can read state.
+	// Reconstruct() is called later in Init() once the Docker daemon is reachable.
+	if a.dockerRuntime == nil {
+		agentNetwork := envOrDefault("HUB_AGENT_NETWORK", "hub-dev-network")
+		rt, err := agentmgr.NewDockerRuntime(agentNetwork, a.config.StoragePath, a.config.InternalURL, a.logger)
+		if err != nil {
+			a.logger.Warn("Docker runtime unavailable", "error", err)
+		} else {
+			a.dockerRuntime = rt
+		}
+	}
 	if err := a.registerCatalog(); err != nil {
 		return nil, fmt.Errorf("register catalog: %w", err)
 	}
@@ -99,46 +113,39 @@ func (a *HubApp) Init(ctx context.Context) error {
 	// Seed default agent types
 	a.seedAgentTypes(ctx)
 
-	// Start HTTP server
+	// LLM router — graceful when no models configured
 	router := llmrouter.New(a.client, a.logger)
+	a.llmRouter = router
 	mcpSrv := mcpserver.New(a.client, router, a.logger, a.config.LogLevel == slog.LevelDebug)
 
 	// Agent connection manager (WebSocket for agent containers)
-	agentMgr := agentconn.NewManager(a.logger)
-	mcpSrv.SetAgentConn(agentMgr)
+	agentConnMgr := agentconn.NewManager(a.logger)
+	a.agentConnMgr = agentConnMgr
+	mcpSrv.SetAgentConn(agentConnMgr)
+
+	// REST surface is intentionally minimal — everything CRUD went to Hugr GraphQL
+	// (airport-go mutating + table functions in handlers_*.go). What remains is
+	// protocol-level transport that GraphQL is not suited for:
+	//   /health               liveness
+	//   /mcp/                 MCP JSON-RPC tool protocol
+	//   /v1/                  OpenAI-compatible chat completions for third-party clients
+	//   /agent/ws/{id}        WebSocket uplink from agent containers
+	//   /ws/{conversation_id} WebSocket stream to chat UI (registered below)
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/user/login", a.handleUserLogin)
-	mux.HandleFunc("/api/conversations/create", a.handleConversationCreate)
-	mux.HandleFunc("/api/conversations/list", a.handleConversationList)
-	mux.HandleFunc("/api/conversations/messages", a.handleConversationMessages)
-	mux.HandleFunc("/api/conversations/delete", a.handleConversationDelete)
-	mux.HandleFunc("/api/conversations/rename", a.handleConversationRename)
-	mux.HandleFunc("/api/conversations/move", a.handleConversationMove)
-	mux.HandleFunc("/api/models", a.handleModelList(router))
 	mux.Handle("/mcp/", mcpSrv.Handler())
 	mux.Handle("/v1/", router.OpenAICompatHandler()) // OpenAI-compatible for third-party agents
+	mux.Handle("/agent/ws/", agentConnMgr.Handler())
+	go agentConnMgr.StartHeartbeat(ctx)
 
-	mux.Handle("/agent/ws/", agentMgr.Handler())
-	mux.HandleFunc("/api/agent/instances", a.handleAgentInstances(agentMgr))
-	mux.HandleFunc("/api/agent/rename", a.handleAgentRename)
-	go agentMgr.StartHeartbeat(ctx)
-
-	// Agent management (Docker backend for now)
-	agentNetwork := envOrDefault("HUB_AGENT_NETWORK", "hub-dev-network")
-	dockerBackend, err := agentmgr.NewDockerBackend(agentNetwork)
-	if err != nil {
-		a.logger.Warn("Docker backend unavailable, agent management disabled", "error", err)
-	} else {
-		mgr := agentmgr.NewManager(dockerBackend, a.client, a.config.InternalURL, a.logger)
-		mux.HandleFunc("/api/agent/start", a.handleAgentStart(mgr))
-		mux.HandleFunc("/api/agent/stop", a.handleAgentStop(mgr))
-		mux.HandleFunc("/api/agent/status", a.handleAgentStatus(mgr))
-		mux.HandleFunc("/api/agent/delete", a.handleAgentDelete(mgr))
+	// Agent management — DockerRuntime is initialized in Catalog() (if Docker available).
+	if a.dockerRuntime != nil {
+		a.dockerRuntime.Reconstruct(ctx)
+		a.agentMgr = agentmgr.NewManager(a.dockerRuntime, a.client, a.logger)
 	}
+
 	// WebSocket gateway for chat UI — conversation-based routing
 	ws := wsgateway.New(wsgateway.Config{
-		Agent: func(ctx context.Context, instanceID, conversationID, userID string, messages []wsgateway.LLMMessage) (string, error) {
-			// Convert wsgateway.LLMMessage to agentconn.ChatMessage
+		AgentStream: func(ctx context.Context, agentID, conversationID, userID string, messages []wsgateway.LLMMessage, stream wsgateway.StreamCallback) (string, error) {
 			agentMsgs := make([]agentconn.ChatMessage, len(messages))
 			for i, m := range messages {
 				agentMsgs[i] = agentconn.ChatMessage{
@@ -146,25 +153,39 @@ func (a *HubApp) Init(ctx context.Context) error {
 					ToolCalls: m.ToolCalls, ToolCallID: m.ToolCallID,
 				}
 			}
-			return agentMgr.SendMessage(ctx, instanceID, conversationID, userID, agentMsgs)
+			return agentConnMgr.SendMessageStream(ctx, agentID, conversationID, userID, agentMsgs, func(msg agentconn.AgentMessage) {
+				stream(wsgateway.ChatMessage{
+					Type:       msg.Type,
+					Content:    msg.Content,
+					ToolCalls:  msg.ToolCalls,
+					ToolCallID: msg.ToolCallID,
+				})
+			})
 		},
 		Lookup: func(ctx context.Context, conversationID string) (*wsgateway.ConversationInfo, error) {
 			return a.lookupConversation(ctx, conversationID)
 		},
-		LLM: func(ctx context.Context, model string, messages []wsgateway.LLMMessage) (string, error) {
-			// Convert to llmrouter.Message
+		LLM: func(ctx context.Context, model string, messages []wsgateway.LLMMessage) (string, *wsgateway.UsageInfo, error) {
 			msgs := make([]llmrouter.Message, len(messages))
 			for i, m := range messages {
 				msgs[i] = llmrouter.Message{Role: m.Role, Content: m.Content}
 			}
+			// Inject identity for Hugr calls
+			if u, ok := auth.UserFromContext(ctx); ok {
+				ctx = auth.InjectIdentity(ctx, u)
+			}
 			resp, err := router.Complete(ctx, llmrouter.CompletionRequest{Messages: msgs})
 			if err != nil {
-				return "", err
+				return "", nil, err
 			}
-			return resp.Content, nil
+			usage := &wsgateway.UsageInfo{
+				TokensIn:  resp.TokensIn,
+				TokensOut: resp.TokensOut,
+				Model:     resp.Model,
+			}
+			return resp.Content, usage, nil
 		},
-		Tools: func(ctx context.Context, userID string, messages []wsgateway.LLMMessage, stream wsgateway.StreamCallback) (string, error) {
-			// Convert to llmrouter.Message
+		Tools: func(ctx context.Context, userID string, messages []wsgateway.LLMMessage, stream wsgateway.StreamCallback) (string, *wsgateway.UsageInfo, error) {
 			msgs := make([]llmrouter.Message, len(messages))
 			for i, m := range messages {
 				msgs[i] = llmrouter.Message{
@@ -175,12 +196,25 @@ func (a *HubApp) Init(ctx context.Context) error {
 					msgs[i].ToolCalls = toAnySlice(m.ToolCalls)
 				}
 			}
-			return mcpSrv.HandleUserMessage(ctx, userID, msgs, func(msgType, content string, toolCalls any, toolCallID string) {
+			// Inject identity for Hugr calls
+			if u, ok := auth.UserFromContext(ctx); ok {
+				ctx = auth.InjectIdentity(ctx, u)
+			}
+			text, chatUsage, err := mcpSrv.HandleUserMessage(ctx, userID, msgs, func(msgType, content string, toolCalls any, toolCallID string) {
 				stream(wsgateway.ChatMessage{
 					Type: msgType, Content: content,
 					ToolCalls: toolCalls, ToolCallID: toolCallID,
 				})
 			})
+			var usage *wsgateway.UsageInfo
+			if chatUsage != nil {
+				usage = &wsgateway.UsageInfo{
+					TokensIn:  chatUsage.TokensIn,
+					TokensOut: chatUsage.TokensOut,
+					Model:     chatUsage.Model,
+				}
+			}
+			return text, usage, err
 		},
 		Persist: func(ctx context.Context, conversationID, role, content string) {
 			a.persistMessage(ctx, conversationID, role, content)
@@ -231,11 +265,19 @@ func (a *HubApp) Init(ctx context.Context) error {
 	})
 
 	// Auth middleware — validates JWT, agent tokens, or secret key
-	// HugrURL may have /ipc suffix — strip for OIDC discovery
 	hugrBase := strings.TrimSuffix(a.config.HugrURL, "/ipc")
 	jwksProvider := auth.NewJWKSProvider(hugrBase)
 	jwtValidator := auth.NewJWTValidator(jwksProvider)
-	agentValidator := auth.NewAgentTokenValidator(a.client)
+
+	// Agent token validator — uses AgentRuntime.ValidateToken (O(1) in-memory)
+	var validateFunc func(string) (string, bool)
+	if a.dockerRuntime != nil {
+		validateFunc = a.dockerRuntime.ValidateToken
+	} else {
+		validateFunc = func(string) (string, bool) { return "", false }
+	}
+	agentValidator := auth.NewAgentTokenValidator(a.client, validateFunc)
+
 	handler := auth.Middleware(mux, auth.AuthConfig{
 		SecretKey:      a.config.HugrSecretKey,
 		JWTValidator:   jwtValidator,
@@ -259,7 +301,7 @@ func (a *HubApp) lookupConversation(ctx context.Context, conversationID string) 
 		`query($id: String!) { hub { db { conversations(
 			filter: { id: { eq: $id } }
 			limit: 1
-		) { id user_id mode agent_type_id agent_instance_id model } } } }`,
+		) { id user_id mode agent_type_id agent_id model } } } }`,
 		map[string]any{"id": conversationID},
 	)
 	if err != nil {
@@ -270,12 +312,12 @@ func (a *HubApp) lookupConversation(ctx context.Context, conversationID string) 
 		return nil, res.Err()
 	}
 	var convs []struct {
-		ID              string `json:"id"`
-		UserID          string `json:"user_id"`
-		Mode            string `json:"mode"`
-		AgentTypeID     string `json:"agent_type_id"`
-		AgentInstanceID string `json:"agent_instance_id"`
-		Model           string `json:"model"`
+		ID          string `json:"id"`
+		UserID      string `json:"user_id"`
+		Mode        string `json:"mode"`
+		AgentTypeID string `json:"agent_type_id"`
+		AgentID     string `json:"agent_id"`
+		Model       string `json:"model"`
 	}
 	if err := res.ScanData("hub.db.conversations", &convs); err != nil || len(convs) == 0 {
 		return nil, fmt.Errorf("conversation %s not found", conversationID)
@@ -283,13 +325,13 @@ func (a *HubApp) lookupConversation(ctx context.Context, conversationID string) 
 	c := convs[0]
 	info := &wsgateway.ConversationInfo{
 		ID: c.ID, UserID: c.UserID, Mode: c.Mode,
-		AgentInstanceID: c.AgentInstanceID, Model: c.Model,
+		AgentInstanceID: c.AgentID, Model: c.Model,
 	}
 
 	// Fetch agent display name if agent mode
 	if info.AgentInstanceID != "" {
 		agentRes, err := a.client.Query(ctx,
-			`query($id: String!) { hub { db { agent_instances(
+			`query($id: String!) { hub { db { agents(
 				filter: { id: { eq: $id } } limit: 1
 			) { display_name agent_type_id } } } }`,
 			map[string]any{"id": info.AgentInstanceID},
@@ -301,7 +343,7 @@ func (a *HubApp) lookupConversation(ctx context.Context, conversationID string) 
 					DisplayName string `json:"display_name"`
 					AgentTypeID string `json:"agent_type_id"`
 				}
-				if err := agentRes.ScanData("hub.db.agent_instances", &agents); err == nil && len(agents) > 0 {
+				if err := agentRes.ScanData("hub.db.agents", &agents); err == nil && len(agents) > 0 {
 					info.AgentName = agents[0].DisplayName
 					if info.AgentName == "" {
 						info.AgentName = agents[0].AgentTypeID
