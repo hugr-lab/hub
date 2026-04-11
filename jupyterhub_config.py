@@ -5,12 +5,16 @@ OIDC endpoints are auto-discovered from Hugr's /auth/config endpoint.
 Only three env vars required: HUGR_URL, OIDC_CLIENT_SECRET, HUB_BASE_URL.
 """
 
+import base64
+import json
+import logging
 import os
 import time
-import logging
 
 import httpx
 from oauthenticator.generic import GenericOAuthenticator
+from tornado import web
+from tornado.httpclient import HTTPClientError
 
 SPAWNER_TYPE = os.environ.get("HUGR_SPAWNER", "docker")
 
@@ -132,6 +136,132 @@ def discover_oidc(max_retries=30, initial_delay=2, max_delay=60):
 
 
 oidc = discover_oidc()
+
+# ===========================================================================
+# Proactive token refresh hook
+# ===========================================================================
+# OAuthenticator's stock refresh_user is *lazy*: it only triggers a real
+# Keycloak refresh after the current access_token has died (userinfo lookup
+# returns 401 → fallback to refresh_token branch). That leaves a "death
+# window" between exp and the next refresh where kernel requests fail with
+# 401, and — worse — refresh only happens at all when something hits JH with
+# user-cookie auth. The workspace's hugr_connection_service poller hits JH
+# with a server token (JUPYTERHUB_API_TOKEN), which still goes through
+# get_current_user → refresh_auth → refresh_user → this hook.
+#
+# Wiring: just `c.GenericOAuthenticator.refresh_user_hook = ...` plus a low
+# `auth_refresh_age` so refresh_auth doesn't dedupe across polls. No custom
+# Authenticator subclass, no custom routes.
+
+# Default refresh margin in seconds — the hook does a real KC refresh as
+# soon as the current access_token is closer than this margin to its exp.
+# Configurable via HUGR_TOKEN_REFRESH_MARGIN_SECONDS env (minimum 5).
+_REFRESH_MARGIN_SECONDS_DEFAULT = 30
+
+
+def _decode_jwt_exp(token):
+    """Decode the `exp` claim from a JWT without signature verification."""
+    if not token:
+        return None
+    try:
+        parts = token.split(".")
+        if len(parts) < 2:
+            return None
+        payload = parts[1] + "=" * (4 - len(parts[1]) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload))
+        exp = claims.get("exp")
+        return float(exp) if exp is not None else None
+    except Exception:
+        return None
+
+
+async def _proactive_refresh_hook(authenticator, user, auth_state):
+    """Proactive token refresh hook for GenericOAuthenticator.refresh_user_hook.
+
+    The default oauthenticator `refresh_user` flow is *lazy*: it only triggers
+    a real Keycloak refresh after the current access_token has actually died
+    (userinfo lookup returns 401 → fallback to refresh_token branch). That
+    creates a "death window" between exp and the next refresh where kernel
+    requests fail with 401.
+
+    This hook makes refresh *proactive*: as soon as the current access_token
+    is within `HUGR_TOKEN_REFRESH_MARGIN_SECONDS` of its exp, we directly
+    POST to Keycloak's /token endpoint with the refresh_token and return a
+    fresh auth_model. JupyterHub persists it via auth_to_user automatically.
+
+    Returns:
+      True       — current access_token is still safely valid; no refresh
+      False      — refresh_token is missing/invalid → fresh login required
+      auth_model — successful KC refresh, JH will save and use this
+      None       — transient failure (network, 5xx); fall back to default
+                   lazy refresh_user flow
+    """
+    if not auth_state:
+        return False
+    refresh_token = auth_state.get("refresh_token")
+    if not refresh_token:
+        return False
+
+    margin = _REFRESH_MARGIN_SECONDS_DEFAULT
+    try:
+        margin = max(int(os.environ.get("HUGR_TOKEN_REFRESH_MARGIN_SECONDS", margin)), 5)
+    except ValueError:
+        pass
+
+    # If current token still has plenty of life, skip the refresh.
+    exp = _decode_jwt_exp(auth_state.get("access_token", ""))
+    if exp is not None and exp - time.time() > margin:
+        return True
+
+    # Within margin (or already dead) — actively exchange refresh_token at KC.
+    try:
+        params = authenticator.build_refresh_token_request_params(refresh_token)
+        token_info = await authenticator.get_token_info(None, params)
+    except HTTPClientError as e:
+        if 400 <= e.code < 500:
+            authenticator.log.info(
+                "refresh_user_hook: invalid_grant for %s (HTTP %d). Requiring fresh login.",
+                user.name, e.code,
+            )
+            return False
+        authenticator.log.warning(
+            "refresh_user_hook: KC token endpoint returned %d for %s, falling back to lazy flow.",
+            e.code, user.name,
+        )
+        return None
+    except web.HTTPError as e:
+        # get_token_info raises HTTPError(403) on error_description responses
+        # (e.g. invalid_grant body without HTTP 4xx)
+        if 400 <= e.status_code < 500:
+            authenticator.log.info(
+                "refresh_user_hook: bad token response for %s (%s). Requiring fresh login.",
+                user.name, e.log_message,
+            )
+            return False
+        return None
+    except Exception as e:
+        authenticator.log.warning(
+            "refresh_user_hook: unexpected error refreshing %s: %s. Falling back.",
+            user.name, e,
+        )
+        return None
+
+    # KC may not return a new refresh_token (depends on rotation policy).
+    # Preserve the existing one in that case so we don't lose the ability
+    # to refresh next time.
+    if not token_info.get("refresh_token"):
+        token_info["refresh_token"] = refresh_token
+
+    try:
+        auth_model = await authenticator._token_to_auth_model(token_info)
+    except Exception as e:
+        authenticator.log.warning(
+            "refresh_user_hook: failed to build auth_model for %s: %s",
+            user.name, e,
+        )
+        return None
+    return auth_model
+
 
 # ===========================================================================
 # Authenticator
@@ -312,6 +442,7 @@ async def _post_auth_hook(authenticator, handler, authentication):
     return authentication
 
 c.GenericOAuthenticator.post_auth_hook = _post_auth_hook
+c.GenericOAuthenticator.refresh_user_hook = _proactive_refresh_hook
 c.GenericOAuthenticator.manage_groups = True
 
 # Override default auth_state_groups_key ("oauth_user.groups") which doesn't exist
@@ -332,7 +463,11 @@ c.GenericOAuthenticator.auth_state_groups_key = _groups_from_auth_state
 
 c.GenericOAuthenticator.enable_auth_state = True
 c.GenericOAuthenticator.refresh_pre_spawn = True
-c.GenericOAuthenticator.auth_refresh_age = 120
+# Low refresh age — we want refresh_user_hook to be called on (almost) every
+# authenticated request from the workspace's hub_token_provider poller, not
+# deduped by JH. The hook itself decides whether a real KC refresh is needed
+# based on the access_token's exp vs HUGR_TOKEN_REFRESH_MARGIN_SECONDS.
+c.GenericOAuthenticator.auth_refresh_age = 10
 c.GenericOAuthenticator.username_claim = os.environ.get(
     "OIDC_USERNAME_CLAIM", "preferred_username"
 )
