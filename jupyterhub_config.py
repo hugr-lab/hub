@@ -214,6 +214,10 @@ async def _proactive_refresh_hook(authenticator, user, auth_state):
         return True
 
     # Within margin (or already dead) — actively exchange refresh_token at KC.
+    # handler=None: get_token_info goes through self.httpfetch and never reads
+    # the handler arg for the token endpoint call (verified in oauthenticator
+    # 17.4.0). If a future version starts using it, this will surface as a
+    # clean AttributeError instead of a silent miss.
     try:
         params = authenticator.build_refresh_token_request_params(refresh_token)
         token_info = await authenticator.get_token_info(None, params)
@@ -260,6 +264,10 @@ async def _proactive_refresh_hook(authenticator, user, auth_state):
             user.name, e,
         )
         return None
+    # Returning auth_model — JH's BaseHandler.refresh_auth will persist it via
+    # auth_to_user(auth_model, user) automatically. We don't (and shouldn't)
+    # call user.save_auth_state ourselves; doing so here would race with JH's
+    # own save and could leak partial state.
     return auth_model
 
 
