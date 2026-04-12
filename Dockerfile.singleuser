@@ -9,6 +9,19 @@ ARG HUGR_KERNEL_VERSION=v0.2.20
 ARG DUCKDB_KERNEL_VERSION=v0.3.5
 
 # -----------------------------------------------------------------------------
+# Stage 0: Build hub-agent + MCP server binaries (Go)
+# -----------------------------------------------------------------------------
+FROM golang:1.26-alpine AS go-builder
+WORKDIR /build
+COPY go.mod go.sum ./
+RUN go mod download
+COPY cmd/ cmd/
+COPY pkg/ pkg/
+RUN CGO_ENABLED=0 go build -o /hub-agent ./cmd/hub-agent/ \
+    && go build -o /result-store-mcp ./cmd/result-store-mcp/ \
+    && go build -o /kernel-mcp ./cmd/kernel-mcp/
+
+# -----------------------------------------------------------------------------
 # Stage 1: Build Hub JupyterLab extensions (needs Node.js + Python)
 # -----------------------------------------------------------------------------
 FROM python:3.12-slim AS ext-builder
@@ -112,6 +125,18 @@ RUN pip install --no-cache-dir --break-system-packages \
 # Hub extensions (wheels from ext-builder stage)
 COPY --from=ext-builder /wheels/ /tmp/wheels/
 RUN pip install --no-cache-dir --break-system-packages /tmp/wheels/*.whl && rm -rf /tmp/wheels
+
+# Agent-bridge server extension (WS relay to local hub-agent)
+COPY extensions/agent-bridge/ /tmp/agent-bridge/
+RUN pip install --no-cache-dir --break-system-packages /tmp/agent-bridge/ && rm -rf /tmp/agent-bridge/
+
+# Hub-agent + MCP server binaries (from Go builder)
+COPY --from=go-builder /hub-agent /usr/local/bin/hub-agent
+COPY --from=go-builder /result-store-mcp /usr/local/bin/result-store-mcp
+COPY --from=go-builder /kernel-mcp /usr/local/bin/kernel-mcp
+
+# Skills catalog (built-in skill definitions)
+COPY system/skills/ /usr/local/share/hub-agent/skills/
 
 # Enable CPU and disk monitoring (RAM is enabled by default)
 RUN echo '{"ResourceUseDisplay":{"track_cpu_percent":true,"track_disk_usage":true}}' \
