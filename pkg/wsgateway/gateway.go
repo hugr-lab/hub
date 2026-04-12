@@ -39,12 +39,7 @@ type StreamCallback func(msg ChatMessage)
 // ConversationLookup resolves conversation info by ID.
 type ConversationLookup func(ctx context.Context, conversationID string) (*ConversationInfo, error)
 
-// ToolsHandler handles LLM + Hugr tools chat. Receives full history, streams
-// intermediate results, and returns the final response text together with
-// token usage so the caller can attach a `usage` block to the WS response.
-type ToolsHandler func(ctx context.Context, userID, conversationID string, messages []LLMMessage, stream StreamCallback) (string, *UsageInfo, error)
-
-// LLMHandler handles pure LLM chat (no tools). Receives full history.
+// LLMHandler handles pure LLM chat (no tools) for Quick Chat mode.
 type LLMHandler func(ctx context.Context, model string, messages []LLMMessage) (string, *UsageInfo, error)
 
 // AgentHandler sends messages to an agent container with full conversation history.
@@ -69,7 +64,6 @@ type TitleUpdater func(ctx context.Context, conversationID, title string)
 type Gateway struct {
 	lookup      ConversationLookup
 	llm         LLMHandler
-	tools       ToolsHandler
 	agent       AgentHandler
 	agentStream AgentStreamHandler
 	persist     MessagePersister
@@ -86,7 +80,6 @@ type Gateway struct {
 type Config struct {
 	Lookup      ConversationLookup
 	LLM         LLMHandler
-	Tools       ToolsHandler
 	Agent       AgentHandler
 	AgentStream AgentStreamHandler
 	Persist     MessagePersister
@@ -100,7 +93,6 @@ func New(cfg Config) *Gateway {
 	return &Gateway{
 		lookup:      cfg.Lookup,
 		llm:         cfg.LLM,
-		tools:       cfg.Tools,
 		agent:       cfg.Agent,
 		agentStream: cfg.AgentStream,
 		persist:     cfg.Persist,
@@ -320,51 +312,28 @@ func (g *Gateway) handleMessage(ctx context.Context, conn *websocket.Conn, userI
 
 	switch conv.Mode {
 	case "llm":
+		// Quick Chat — direct LLM completion, no agent
 		if g.llm != nil {
 			response, usage, err = g.llm(ctx, conv.Model, msg.Messages)
 		} else {
 			err = fmt.Errorf("LLM mode not configured")
 		}
 
-	case "tools":
-		if g.tools != nil {
-			// Spec F: frontend no longer sends full history — just content.
-			// Pass the current user message so HandleUserMessage can append
-			// it to whatever it loads from DB (or use it as sole message
-			// for a brand-new conversation).
-			msgs := msg.Messages
-			if len(msgs) == 0 && msg.Content != "" {
-				msgs = []LLMMessage{{Role: "user", Content: msg.Content}}
-			}
-			response, usage, err = g.tools(ctx, userID, conversationID, msgs, stream)
-		} else {
-			err = fmt.Errorf("tools mode not configured")
-		}
-
-	case "agent":
-		agentID := conv.AgentInstanceID
-		if g.agentStream != nil && agentID != "" {
-			response, err = g.agentStream(ctx, agentID, conversationID, userID, msg.Messages, stream)
-		} else if g.agent != nil && agentID != "" {
-			response, err = g.agent(ctx, agentID, conversationID, userID, msg.Messages)
-		}
-		if (g.agent == nil && g.agentStream == nil) || agentID == "" || err != nil {
-			if agentID == "" {
-				g.logger.Info("agent mode but no instance linked, falling back to tools", "conversation", conversationID)
-			}
-			if err != nil {
-				g.logger.Warn("agent unavailable, falling back to tools", "instance", agentID, "error", err)
-			}
-			stream(ChatMessage{Type: "status", Content: "agent offline, using tools mode"})
-			if g.tools != nil {
-				response, usage, err = g.tools(ctx, userID, conversationID, msg.Messages, stream)
-			} else {
-				err = fmt.Errorf("no handler available")
-			}
-		}
-
 	default:
-		err = fmt.Errorf("unknown mode: %s", conv.Mode)
+		// All other modes (agent, tools, legacy) route to the agent.
+		// For mode=tools (legacy), fall through to agent with personal agent fallback.
+		agentID := conv.AgentInstanceID
+		if agentID == "" {
+			// Legacy conversation or no agent linked — use personal agent
+			agentID = "agent-personal-" + userID
+		}
+		if g.agentStream != nil {
+			response, err = g.agentStream(ctx, agentID, conversationID, userID, msg.Messages, stream)
+		} else if g.agent != nil {
+			response, err = g.agent(ctx, agentID, conversationID, userID, msg.Messages)
+		} else {
+			err = fmt.Errorf("no agent handler configured")
+		}
 	}
 
 	if err != nil {
