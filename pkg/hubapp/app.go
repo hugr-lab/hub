@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -23,7 +24,7 @@ import (
 
 const (
 	appName    = "hub"
-	appVersion = "0.2.0"
+	appVersion = "0.2.2"
 )
 
 type HubApp struct {
@@ -107,14 +108,48 @@ func (a *HubApp) InitDBSchemaTemplate(ctx context.Context, name string) (string,
 	return "", fmt.Errorf("unknown data source: %s", name)
 }
 
+// MigrateDBSchemaTemplate implements [app.ApplicationDBMigrator].
+// Hugr calls this when the stored schema version differs from appVersion.
+// fromVersion is the version currently in the database.
+func (a *HubApp) MigrateDBSchemaTemplate(ctx context.Context, name, fromVersion string) (string, error) {
+	if name != "db" {
+		return "", fmt.Errorf("unknown data source: %s", name)
+	}
+	sql, ok := migrations[fromVersion]
+	if !ok {
+		return "", fmt.Errorf("no migration path from version %s to %s", fromVersion, appVersion)
+	}
+	return sql, nil
+}
+
 func (a *HubApp) Init(ctx context.Context) error {
 	a.logger.Info("hub app initialized — DB provisioned, starting services")
+
+	// Ensure conversation state directory exists on the persistent volume.
+	// Agent processes and hub-service itself write per-turn checkpoints here.
+	if a.config.StoragePath != "" {
+		convDir := a.config.StoragePath + "/conversations"
+		if err := os.MkdirAll(convDir, 0o755); err != nil {
+			a.logger.Warn("failed to create conversations state dir", "path", convDir, "error", err)
+		}
+	}
 
 	// Seed default agent types
 	a.seedAgentTypes(ctx)
 
 	// LLM router — graceful when no models configured
 	router := llmrouter.New(a.client, a.logger)
+	// Intent routing from LLM_ROUTING_* env vars (Spec F / US4).
+	if intentMap := LoadRoutingConfig(); intentMap != nil {
+		def := intentMap["default"]
+		delete(intentMap, "default")
+		router.SetRoutingConfig(&llmrouter.RoutingConfig{
+			Default:   def,
+			IntentMap: intentMap,
+			Fallback:  os.Getenv("LLM_ROUTING_FALLBACK"),
+		})
+		a.logger.Info("LLM intent routing configured", "default", def, "intents", len(intentMap))
+	}
 	a.llmRouter = router
 	mcpSrv := mcpserver.New(a.client, router, a.logger, a.config.LogLevel == slog.LevelDebug)
 
@@ -132,7 +167,11 @@ func (a *HubApp) Init(ctx context.Context) error {
 	//   /agent/ws/{id}        WebSocket uplink from agent containers
 	//   /ws/{conversation_id} WebSocket stream to chat UI (registered below)
 	mux := http.NewServeMux()
-	mux.Handle("/mcp/", mcpSrv.Handler())
+	mux.Handle("/mcp", mcpSrv.Handler())
+	// Legacy /mcp/{user_id} redirect — 307 to /mcp for backward compat.
+	mux.HandleFunc("/mcp/", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/mcp", http.StatusTemporaryRedirect)
+	})
 	mux.Handle("/v1/", router.OpenAICompatHandler()) // OpenAI-compatible for third-party agents
 	mux.Handle("/agent/ws/", agentConnMgr.Handler())
 	go agentConnMgr.StartHeartbeat(ctx)
@@ -185,7 +224,7 @@ func (a *HubApp) Init(ctx context.Context) error {
 			}
 			return resp.Content, usage, nil
 		},
-		Tools: func(ctx context.Context, userID string, messages []wsgateway.LLMMessage, stream wsgateway.StreamCallback) (string, *wsgateway.UsageInfo, error) {
+		Tools: func(ctx context.Context, userID, conversationID string, messages []wsgateway.LLMMessage, stream wsgateway.StreamCallback) (string, *wsgateway.UsageInfo, error) {
 			msgs := make([]llmrouter.Message, len(messages))
 			for i, m := range messages {
 				msgs[i] = llmrouter.Message{
@@ -205,7 +244,7 @@ func (a *HubApp) Init(ctx context.Context) error {
 					Type: msgType, Content: content,
 					ToolCalls: toolCalls, ToolCallID: toolCallID,
 				})
-			})
+			}, conversationID)
 			var usage *wsgateway.UsageInfo
 			if chatUsage != nil {
 				usage = &wsgateway.UsageInfo{
@@ -219,8 +258,8 @@ func (a *HubApp) Init(ctx context.Context) error {
 		Persist: func(ctx context.Context, conversationID, role, content string) {
 			a.persistMessage(ctx, conversationID, role, content)
 		},
-		PersistFull: func(ctx context.Context, conversationID, role, content string, toolCalls any, toolCallID string) {
-			a.persistMessageFull(ctx, conversationID, role, content, toolCalls, toolCallID)
+		PersistFull: func(ctx context.Context, conversationID, role, content string, toolCalls any, toolCallID string, channel string, tokenCount int, modelUsed string) {
+			a.persistMessageFull(ctx, conversationID, role, content, toolCalls, toolCallID, channel, tokenCount, modelUsed)
 		},
 		GenTitle: func(ctx context.Context, userMessage string) string {
 			resp, err := router.Complete(ctx, llmrouter.CompletionRequest{
@@ -228,6 +267,7 @@ func (a *HubApp) Init(ctx context.Context) error {
 					{Role: "system", Content: "Generate a very short title (3-6 words, no quotes) for a chat that starts with this message. Reply with ONLY the title, nothing else."},
 					{Role: "user", Content: userMessage},
 				},
+				Intent: "classification",
 			})
 			if err != nil {
 				return ""
@@ -364,10 +404,10 @@ func toAnySlice(v any) []any {
 }
 
 func (a *HubApp) persistMessage(ctx context.Context, conversationID, role, content string) {
-	a.persistMessageFull(ctx, conversationID, role, content, nil, "")
+	a.persistMessageFull(ctx, conversationID, role, content, nil, "", "final", 0, "")
 }
 
-func (a *HubApp) persistMessageFull(ctx context.Context, conversationID, role, content string, toolCalls any, toolCallID string) {
+func (a *HubApp) persistMessageFull(ctx context.Context, conversationID, role, content string, toolCalls any, toolCallID string, channel string, tokenCount int, modelUsed string) {
 	msgID := fmt.Sprintf("msg-%d", time.Now().UnixNano())
 	vars := map[string]any{"id": msgID, "cid": conversationID, "role": role, "content": content}
 	dataFields := `id: $id, conversation_id: $cid, role: $role, content: $content`
@@ -385,6 +425,23 @@ func (a *HubApp) persistMessageFull(ctx context.Context, conversationID, role, c
 		vars["tc"] = json.RawMessage(tcJSON)
 	}
 
+	// Channel protocol metadata
+	if channel != "" {
+		varDefs += `, $ch: String`
+		dataFields += `, channel: $ch`
+		vars["ch"] = channel
+	}
+	if tokenCount > 0 {
+		varDefs += `, $tc_count: Int`
+		dataFields += `, token_count: $tc_count`
+		vars["tc_count"] = tokenCount
+	}
+	if modelUsed != "" {
+		varDefs += `, $mu: String`
+		dataFields += `, model_used: $mu`
+		vars["mu"] = modelUsed
+	}
+
 	gql := fmt.Sprintf(`mutation(%s) {
 		hub { db { insert_agent_messages(data: { %s }) { id } } }
 	}`, varDefs, dataFields)
@@ -397,19 +454,6 @@ func (a *HubApp) persistMessageFull(ctx context.Context, conversationID, role, c
 	defer res.Close()
 	if res.Err() != nil {
 		a.logger.Warn("persist message query error", "conversation", conversationID, "role", role, "error", res.Err())
-	}
-}
-
-func (a *HubApp) handleModelList(router *llmrouter.Router) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		models, err := router.ListModels(r.Context())
-		if err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode([]any{})
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(models)
 	}
 }
 

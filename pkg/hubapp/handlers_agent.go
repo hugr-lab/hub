@@ -160,6 +160,8 @@ func (a *HubApp) handleDeleteAgent(w *app.Result, r *app.Request) error {
 	}
 
 	// Delete user_agents grants
+	// Note: conversations.agent_id FK is ON DELETE SET NULL — no need to
+	// detach conversations manually, the DB nullifies them on agent delete.
 	if accessRes, err := a.client.Query(ctx,
 		`mutation($aid: String!) { hub { db { delete_user_agents(
 			filter: { agent_id: { eq: $aid } }

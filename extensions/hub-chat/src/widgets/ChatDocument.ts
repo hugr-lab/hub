@@ -8,7 +8,7 @@ import { getWsBaseUrl, connectWebSocket, sendCancel, WsMessage } from '../api.js
 import {
   loadMessages, loadMessagesWithSummaries, summarizeMessages, branchConversation,
 } from '../convApiGraphQL.js';
-import { MessageRenderer } from './MessageRenderer.js';
+import { MessageRenderer, normalizeFrame } from './MessageRenderer.js';
 
 interface HistoryMessage {
   role: string;
@@ -296,14 +296,17 @@ export class ChatDocumentWidget extends Widget {
     // response duration to the assistant footer ("HH:MM · 1.4s · ...").
     this.sendStartedAt = Date.now();
 
+    // Spec F: send only new message content — server loads history from DB.
+    // The chatHistory array is kept locally for instant rendering but is no
+    // longer the source of truth.
     this.ws.send(JSON.stringify({
       type: 'message',
       content: text,
-      messages: this.chatHistory,
     }));
   }
 
   private async onWsMessage(msg: WsMessage): Promise<void> {
+    msg = normalizeFrame(msg); // channel → type shim (Spec F migration)
     switch (msg.type) {
       case 'token':
         // First token after a thinking block — collapse the thinking block

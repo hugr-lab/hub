@@ -16,6 +16,8 @@ package hubapp
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/hugr-lab/hub/pkg/llmrouter"
@@ -71,6 +73,16 @@ func branchConversationInputType() app.Type {
 		Field("branch_point_message_id", app.String).
 		FieldNullable("branch_label", app.String).
 		FieldNullable("title", app.String).
+		AsType()
+}
+
+// branchConversationAtInputType is the InputStruct for branch_conversation_at.
+// Simpler than branch_conversation — caller provides just a message_id and we
+// derive parent_id and branch_point_message_id from the message's conversation.
+func branchConversationAtInputType() app.Type {
+	return app.InputStruct("branch_conversation_at_input").
+		Field("message_id", app.String).
+		FieldNullable("label", app.String).
 		AsType()
 }
 
@@ -144,6 +156,20 @@ func (a *HubApp) registerConversationMutations() error {
 		app.Return(conversationHandleType()),
 		app.Mutation(),
 		app.Desc("Create a branch (child conversation) from a parent message. Validates depth <= 3 and ownership of parent. Returns the new conversation handle."),
+	); err != nil {
+		return err
+	}
+
+	// branch_conversation_at — convenience wrapper: takes message_id, derives parent
+	if err := a.mux.HandleFunc("default", "branch_conversation_at", a.handleBranchConversationAt,
+		app.Arg("input", branchConversationAtInputType()),
+		app.ArgFromContext("user_id", app.String, app.AuthUserID),
+		app.ArgFromContext("user_name", app.String, app.AuthUserName),
+		app.ArgFromContext("role", app.String, app.AuthRole),
+		app.ArgFromContext("auth_type", app.String, app.AuthType),
+		app.Return(conversationHandleType()),
+		app.Mutation(),
+		app.Desc("Create a branch from a message. Looks up the conversation from the message, clones context snapshot, and creates a child conversation."),
 	); err != nil {
 		return err
 	}
@@ -569,6 +595,7 @@ func (a *HubApp) handleSummarizeConversation(w *app.Result, r *app.Request) erro
 			{Role: "system", Content: "Summarize the following conversation concisely, preserving key facts, decisions, and context. Reply with ONLY the summary, nothing else."},
 			{Role: "user", Content: history},
 		},
+		Intent: "summarization",
 	})
 	if err != nil {
 		return fmt.Errorf("generate summary: %w", err)
@@ -617,4 +644,180 @@ func (a *HubApp) handleSummarizeConversation(w *app.Result, r *app.Request) erro
 		"summary_text":  resp.Content,
 		"message_count": int64(len(msgIDs)),
 	})
+}
+
+// handleBranchConversationAt creates a branch from a message_id.
+// It looks up the conversation that owns the message, verifies ownership,
+// clones the context snapshot, and creates a child conversation.
+func (a *HubApp) handleBranchConversationAt(w *app.Result, r *app.Request) error {
+	u := userFromArgs(r)
+	if err := requireUser(u); err != nil {
+		return err
+	}
+
+	var input struct {
+		MessageID string  `json:"message_id"`
+		Label     *string `json:"label"`
+	}
+	if err := r.JSON("input", &input); err != nil {
+		return fmt.Errorf("parse input: %w", err)
+	}
+	if input.MessageID == "" {
+		return fmt.Errorf("message_id is required")
+	}
+
+	ctx := withIdentity(r.Context(), u)
+
+	// Look up the message to find its conversation and context_snapshot_ref.
+	msgRes, err := a.client.Query(ctx,
+		`query($mid: String!) { hub { db { agent_messages(
+			filter: { id: { eq: $mid } } limit: 1
+		) { conversation_id context_snapshot_ref } } } }`,
+		map[string]any{"mid": input.MessageID},
+	)
+	if err != nil {
+		return fmt.Errorf("lookup message: %w", err)
+	}
+	defer msgRes.Close()
+	if msgRes.Err() != nil {
+		return fmt.Errorf("lookup message: %w", msgRes.Err())
+	}
+	var msgs []struct {
+		ConversationID     string  `json:"conversation_id"`
+		ContextSnapshotRef *string `json:"context_snapshot_ref"`
+	}
+	if err := msgRes.ScanData("hub.db.agent_messages", &msgs); err != nil || len(msgs) == 0 {
+		return fmt.Errorf("message not found")
+	}
+	parentID := msgs[0].ConversationID
+	snapshotRef := msgs[0].ContextSnapshotRef
+
+	// Verify ownership of parent conversation.
+	if err := a.verifyConversationOwner(ctx, parentID, u.ID); err != nil {
+		return fmt.Errorf("parent conversation not accessible: %w", err)
+	}
+
+	// Check branch depth.
+	depth, err := a.getConversationDepth(ctx, parentID)
+	if err != nil {
+		return fmt.Errorf("check depth: %w", err)
+	}
+	if depth >= 3 {
+		return fmt.Errorf("maximum branch depth (3) reached")
+	}
+
+	// Fetch parent fields to copy.
+	parentRes, err := a.client.Query(ctx,
+		`query($id: String!) { hub { db { conversations(
+			filter: { id: { eq: $id } } limit: 1
+		) { mode agent_type_id agent_id model } } } }`,
+		map[string]any{"id": parentID},
+	)
+	if err != nil {
+		return fmt.Errorf("lookup parent: %w", err)
+	}
+	defer parentRes.Close()
+	if parentRes.Err() != nil {
+		return fmt.Errorf("lookup parent: %w", parentRes.Err())
+	}
+	var parents []struct {
+		Mode        string `json:"mode"`
+		AgentTypeID string `json:"agent_type_id"`
+		AgentID     string `json:"agent_id"`
+		Model       string `json:"model"`
+	}
+	if err := parentRes.ScanData("hub.db.conversations", &parents); err != nil || len(parents) == 0 {
+		return fmt.Errorf("parent conversation not found")
+	}
+	parent := parents[0]
+
+	// Create child conversation.
+	convID := fmt.Sprintf("conv-%d", time.Now().UnixNano())
+	title := "New Thread"
+	if input.Label != nil && *input.Label != "" {
+		title = *input.Label
+	}
+
+	vars := map[string]any{
+		"id": convID, "uid": u.ID, "title": title,
+		"mode": parent.Mode, "parent_id": parentID, "branch_msg": input.MessageID,
+	}
+	varDefs := `$id: String!, $uid: String!, $title: String!, $mode: String!, $parent_id: String!, $branch_msg: String!`
+	dataFields := `id: $id, user_id: $uid, title: $title, mode: $mode, parent_id: $parent_id, branch_point_message_id: $branch_msg`
+	if input.Label != nil && *input.Label != "" {
+		varDefs += `, $label: String`
+		dataFields += `, branch_label: $label`
+		vars["label"] = *input.Label
+	}
+	if parent.AgentTypeID != "" {
+		varDefs += `, $atid: String`
+		dataFields += `, agent_type_id: $atid`
+		vars["atid"] = parent.AgentTypeID
+	}
+	if parent.AgentID != "" {
+		varDefs += `, $aid: String`
+		dataFields += `, agent_id: $aid`
+		vars["aid"] = parent.AgentID
+	}
+	if parent.Model != "" {
+		varDefs += `, $model: String`
+		dataFields += `, model: $model`
+		vars["model"] = parent.Model
+	}
+
+	gql := fmt.Sprintf(`mutation(%s) {
+		hub { db { insert_conversations(data: { %s }) { id } } }
+	}`, varDefs, dataFields)
+
+	res, err := a.client.Query(ctx, gql, vars)
+	if err != nil {
+		return fmt.Errorf("create branch: %w", err)
+	}
+	defer res.Close()
+	if res.Err() != nil {
+		return fmt.Errorf("create branch: %w", res.Err())
+	}
+
+	// Clone context snapshot (T028) — copy checkpoint to new conversation dir.
+	a.cloneContextSnapshot(convID, snapshotRef)
+
+	a.logger.Info("conversation branched at message", "parent", parentID, "branch", convID, "message", input.MessageID, "by", u.ID)
+	return w.SetJSON(map[string]any{
+		"id":                      convID,
+		"title":                   title,
+		"mode":                    parent.Mode,
+		"parent_id":               parentID,
+		"branch_point_message_id": input.MessageID,
+	})
+}
+
+// cloneContextSnapshot copies an L2 checkpoint from the source conversation
+// to a new conversation's context.jsonl for branch resume. If there is no
+// snapshot to clone the branch starts with an empty disk state — the
+// conversation_context view still provides full history from DB.
+func (a *HubApp) cloneContextSnapshot(dstConvID string, snapshotRef *string) {
+	if a.config.StoragePath == "" {
+		return
+	}
+
+	dstDir := filepath.Join(a.config.StoragePath, "conversations", dstConvID)
+	os.MkdirAll(filepath.Join(dstDir, "turns"), 0o755)
+	os.MkdirAll(filepath.Join(dstDir, "checkpoints"), 0o755)
+
+	if snapshotRef == nil || *snapshotRef == "" {
+		return
+	}
+
+	// snapshotRef is relative to StoragePath (e.g. conversations/<id>/checkpoints/<run>.bin)
+	srcPath := filepath.Join(a.config.StoragePath, *snapshotRef)
+	data, err := os.ReadFile(srcPath)
+	if err != nil {
+		a.logger.Warn("snapshot clone: cannot read source", "path", srcPath, "error", err)
+		return
+	}
+
+	dstContext := filepath.Join(dstDir, "context.jsonl")
+	if err := os.WriteFile(dstContext, data, 0o644); err != nil {
+		a.logger.Warn("snapshot clone: cannot write dest", "path", dstContext, "error", err)
+	}
 }

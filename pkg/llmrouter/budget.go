@@ -62,24 +62,30 @@ func (b *BudgetChecker) Check(ctx context.Context, userID, providerID string) er
 }
 
 // RecordUsage writes usage to hub.llm_usage via Hugr GraphQL.
-func (b *BudgetChecker) RecordUsage(ctx context.Context, userID, providerID string, tokensIn, tokensOut int) {
+// intent and resolvedModel are optional Spec F metadata columns.
+func (b *BudgetChecker) RecordUsage(ctx context.Context, userID, providerID string, tokensIn, tokensOut int, intent, resolvedModel string) {
 	periodKey := currentPeriodKey("hour")
 
 	usageID := fmt.Sprintf("usage-%d", time.Now().UnixNano())
+	data := map[string]any{
+		"id":          usageID,
+		"user_id":     userID,
+		"provider_id": providerID,
+		"tokens_in":   tokensIn,
+		"tokens_out":  tokensOut,
+		"period_key":  periodKey,
+	}
+	if intent != "" {
+		data["intent"] = intent
+	}
+	if resolvedModel != "" {
+		data["resolved_model"] = resolvedModel
+	}
 	res, err := b.hugrClient.Query(ctx,
 		`mutation($data: hub_db_llm_usage_mut_input_data!) {
 			hub { db { insert_llm_usage(data: $data) { id } } }
 		}`,
-		map[string]any{
-			"data": map[string]any{
-				"id":           usageID,
-				"user_id":      userID,
-				"provider_id":  providerID,
-				"tokens_in":    tokensIn,
-				"tokens_out":   tokensOut,
-				"period_key":   periodKey,
-			},
-		},
+		map[string]any{"data": data},
 	)
 	if err != nil {
 		b.logger.Warn("failed to record LLM usage", "user", userID, "error", err)

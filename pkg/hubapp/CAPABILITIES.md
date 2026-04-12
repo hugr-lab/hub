@@ -20,24 +20,18 @@ Adding a new capability: add a constant in `pkg/hubapp/capabilities.go`, use
 
 1. A handler calls `a.requireAdmin(ctx, u)` or `a.checkAgentAccess(ctx, u, ...)`.
 2. That delegates to `a.hasCapability(ctx, u, CapManagementAdmin)`.
-3. `hasCapability` calls `function.core.auth.my_permissions` via
+3. `hasCapability` calls `function.core.auth.check_access(type_name, fields)` via
    `withIdentity(ctx, u)` — hub-service propagates the caller's identity using
    the `x-hugr-impersonated-*` headers on top of the service secret key.
 4. Hugr validates impersonation (requires the service's role to have
-   `can_impersonate=true`), loads the target role's `core.role_permissions`.
-5. Hub-service walks the returned permission list and matches on
-   `{Object: "hub:management", Field: <capability>}`. **Explicit allow only** —
-   absence of a rule means NOT granted.
+   `can_impersonate=true`), evaluates `check_access` against
+   `core.role_permissions` for the impersonated role.
+5. Hub-service reads the `enabled` flag from the returned row. **Explicit
+   allow only** — absence of a rule means NOT granted.
 
 JupyterHub's `_post_auth_hook` follows the exact same pattern from Python
 (`_has_hub_management_admin` in `jupyterhub_config.py`) to set `user.admin`
-at login time.
-
-> **Note on `function.core.auth.check_access`.** In the current query-engine
-> build, `check_access` disagrees with `my_permissions` for virtual types like
-> `hub:management` (different DuckDB-function context propagation). Until that
-> is fixed, both hub-service and the JupyterHub hook evaluate the rule by
-> walking the `my_permissions` response.
+at login time — calling `check_access` with the same impersonation headers.
 
 ## Built-in Hugr roles
 

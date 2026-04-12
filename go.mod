@@ -7,9 +7,9 @@ require (
 	github.com/docker/docker v28.5.2+incompatible
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/hugr-lab/airport-go v0.2.1
-	github.com/hugr-lab/query-engine v0.3.24
-	github.com/hugr-lab/query-engine/client v0.3.24
-	github.com/hugr-lab/query-engine/types v0.3.24
+	github.com/hugr-lab/query-engine v0.3.25
+	github.com/hugr-lab/query-engine/client v0.3.25
+	github.com/hugr-lab/query-engine/types v0.3.25
 	github.com/mark3labs/mcp-go v0.47.0
 	nhooyr.io/websocket v1.8.17
 )

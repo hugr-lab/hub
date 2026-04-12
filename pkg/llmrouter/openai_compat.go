@@ -45,7 +45,8 @@ func (r *Router) handleChatCompletions(w http.ResponseWriter, req *http.Request)
 			Role    string `json:"role"`
 			Content string `json:"content"`
 		} `json:"messages"`
-		MaxTokens int `json:"max_tokens"`
+		MaxTokens int    `json:"max_tokens"`
+		Intent    string `json:"intent"` // Spec F: routing hint
 	}
 	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":{"message":"invalid request: %v"}}`, err), http.StatusBadRequest)
@@ -57,11 +58,18 @@ func (r *Router) handleChatCompletions(w http.ResponseWriter, req *http.Request)
 		messages = append(messages, Message{Role: m.Role, Content: m.Content})
 	}
 
+	// Intent: body field takes precedence, then X-LLM-Intent header.
+	intent := body.Intent
+	if intent == "" {
+		intent = req.Header.Get("X-LLM-Intent")
+	}
+
 	resp, err := r.Complete(req.Context(), CompletionRequest{
 		Model:     body.Model,
 		Messages:  messages,
 		MaxTokens: body.MaxTokens,
 		UserID:    userID,
+		Intent:    intent,
 	})
 	if err != nil {
 		status := http.StatusInternalServerError

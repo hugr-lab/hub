@@ -3,6 +3,28 @@
  * Supports streaming tokens, collapsible thinking/tool sections, and summary blocks.
  */
 import { IRenderMimeRegistry } from '@jupyterlab/rendermime';
+import type { WsMessage } from '../api.js';
+
+/**
+ * Normalize a WebSocket frame: if the new `channel` field is present but
+ * `type` is missing, derive `type` from `channel` so existing rendering
+ * logic works unchanged. This shim will be removed when the renderer is
+ * rewritten for channels (Spec H).
+ */
+export function normalizeFrame(msg: WsMessage): WsMessage {
+  if (msg.channel && !msg.type) {
+    switch (msg.channel) {
+      case 'final':       msg.type = msg.content ? 'response' : 'token'; break;
+      case 'analysis':    msg.type = 'thinking'; break;
+      case 'tool_call':   msg.type = 'tool_call'; break;
+      case 'tool_result': msg.type = 'tool_result'; break;
+      case 'status':      msg.type = 'status'; break;
+      case 'error':       msg.type = 'error'; break;
+      default:            msg.type = 'status'; break;
+    }
+  }
+  return msg;
+}
 
 export class MessageRenderer {
   constructor(private rendermime: IRenderMimeRegistry) {}

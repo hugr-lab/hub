@@ -113,7 +113,7 @@ func (rt *DockerRuntime) Start(ctx context.Context, agent AgentIdentity) error {
 		fmt.Sprintf("AGENT_TOKEN=%s", token),
 		fmt.Sprintf("AGENT_ROLE=%s", agent.HugrRole),
 		fmt.Sprintf("AGENT_INSTANCE_ID=%s", agent.ID),
-		fmt.Sprintf("HUB_SERVICE_MCP_URL=%s/mcp/%s", rt.hubURL, agent.HugrUserID),
+		fmt.Sprintf("HUB_SERVICE_MCP_URL=%s/mcp", rt.hubURL),
 		fmt.Sprintf("HUB_SERVICE_AGENT_WS=%s", agentWSURL),
 	}
 
