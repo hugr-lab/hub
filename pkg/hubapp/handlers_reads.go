@@ -298,6 +298,9 @@ func (a *HubApp) handleMyAgentInstances(w *app.Result, r *app.Request) error {
 	}
 	ctx := withIdentity(r.Context(), u)
 
+	// Ensure personal agent exists for this user (lazy creation).
+	a.ensurePersonalAgent(ctx, u.ID, u.Name, u.Role)
+
 	type row struct {
 		id, agentTypeID, displayName, hugrRole, accessRole string
 	}

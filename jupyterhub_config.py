@@ -745,6 +745,17 @@ async def pre_spawn_hook(spawner, auth_state):
     if access_token:
         spawner.environment["HUGR_INITIAL_ACCESS_TOKEN"] = access_token
 
+    # 9. Local agent configuration (Spec G) — workspace agent starts via
+    #    hub-agent binary with local context. The agent-bridge extension
+    #    relays browser WS to localhost:18888.
+    user_id = (auth_state or {}).get("oauth_user", {}).get("sub", spawner.user.name)
+    spawner.environment["HUB_AGENT_CONTEXT"] = "local"
+    spawner.environment["HUB_AGENT_LISTEN"] = "localhost:18888"
+    spawner.environment["HUB_AGENT_ID"] = f"agent-personal-{user_id}"
+    spawner.environment["HUB_AGENT_HOME"] = "/home/jovyan/.agent"
+    if HUB_SERVICE_URL:
+        spawner.environment["HUB_SERVICE_MCP_URL"] = f"{HUB_SERVICE_URL}/mcp"
+
 
 c.Spawner.auth_state_hook = pre_spawn_hook
 

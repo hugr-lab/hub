@@ -31,6 +31,8 @@ func main() {
 	}
 
 	authToken := os.Getenv("AGENT_TOKEN")
+	agentContext := os.Getenv("HUB_AGENT_CONTEXT") // "local" or "remote"
+	listenAddr := os.Getenv("HUB_AGENT_LISTEN")    // e.g. "localhost:18888"
 
 	cfg, err := agent.LoadConfig(configPath)
 	if err != nil {
@@ -43,27 +45,35 @@ func main() {
 
 	a := agent.New(mcpURL, authToken, skillsDir, cfg, logger)
 
-	// WebSocket mode: connect to Hub Service for message routing
-	wsURL := os.Getenv("HUB_SERVICE_AGENT_WS")
-	instanceID := os.Getenv("AGENT_INSTANCE_ID")
-
 	logger.Info("hub-agent starting",
 		"mcp_url", mcpURL,
 		"skills_dir", skillsDir,
 		"config", configPath,
+		"context", agentContext,
+		"listen", listenAddr,
 		"mcp_servers", len(cfg.MCPServers),
 		"max_turns", cfg.MaxTurns,
-		"ws_mode", wsURL != "",
 	)
 
-	if wsURL != "" && instanceID != "" {
-		// WebSocket mode — receive messages from Hub Service
+	switch {
+	case agentContext == "local" && listenAddr != "":
+		// Local mode: listen for WebSocket connections from agent-bridge
+		if err := a.RunLocal(ctx, listenAddr); err != nil {
+			logger.Error("agent local server failed", "error", err)
+			os.Exit(1)
+		}
+
+	case os.Getenv("HUB_SERVICE_AGENT_WS") != "" && os.Getenv("AGENT_INSTANCE_ID") != "":
+		// Remote mode: connect to Hub Service via WebSocket
+		wsURL := os.Getenv("HUB_SERVICE_AGENT_WS")
+		instanceID := os.Getenv("AGENT_INSTANCE_ID")
 		if err := a.RunWebSocket(ctx, wsURL, instanceID); err != nil {
 			logger.Error("agent WebSocket failed", "error", err)
 			os.Exit(1)
 		}
-	} else {
-		// Stdin mode — for development and testing
+
+	default:
+		// Stdin mode: for development and testing
 		if err := a.Run(ctx); err != nil {
 			logger.Error("agent failed", "error", err)
 			os.Exit(1)
