@@ -45,6 +45,17 @@ func main() {
 
 	a := agent.New(mcpURL, authToken, skillsDir, cfg, logger)
 
+	// Workspace context: read OIDC token from connections.json
+	// (written by hugr_connection_service hub_token_provider)
+	if agentContext == "local" {
+		configPath := os.Getenv("HUGR_CONFIG_PATH")
+		connName := os.Getenv("HUGR_CONNECTION_NAME")
+		ts := agent.NewTokenSource(configPath, connName)
+		ts.Start()
+		defer ts.Stop()
+		a.SetTokenSource(ts)
+	}
+
 	logger.Info("hub-agent starting",
 		"mcp_url", mcpURL,
 		"skills_dir", skillsDir,

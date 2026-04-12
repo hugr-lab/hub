@@ -170,6 +170,7 @@ func (a *HubApp) Init(ctx context.Context) error {
 	//   /ws/{conversation_id} WebSocket stream to chat UI (registered below)
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", mcpSrv.Handler())
+	mux.HandleFunc("/hugr", a.hugrProxyHandler())
 	// Legacy /mcp/{user_id} redirect — 307 to /mcp for backward compat.
 	mux.HandleFunc("/mcp/", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/mcp", http.StatusTemporaryRedirect)

@@ -24,7 +24,8 @@ import (
 // collects tools into a unified registry, and runs multi-turn LLM reasoning.
 type Agent struct {
 	hubURL      string
-	authToken   string // AGENT_TOKEN for hub-service authentication
+	authToken   string       // static AGENT_TOKEN (remote context)
+	tokenSource *TokenSource // dynamic OIDC token (workspace context)
 	hubClient   *mcpclient.Client
 	mcpManager  *MCPServerManager
 	registry    *ToolRegistry
@@ -50,13 +51,31 @@ func New(hubURL, authToken, skillsDir string, config *AgentConfig, logger *slog.
 	return a
 }
 
+// SetTokenSource sets a dynamic token source (for workspace context).
+// When set, CurrentToken() returns the refreshed token instead of static authToken.
+func (a *Agent) SetTokenSource(ts *TokenSource) {
+	a.tokenSource = ts
+}
+
+// CurrentToken returns the current auth token — dynamic from TokenSource
+// if set (workspace), otherwise static authToken (remote).
+func (a *Agent) CurrentToken() string {
+	if a.tokenSource != nil {
+		if t := a.tokenSource.Token(); t != "" {
+			return t
+		}
+	}
+	return a.authToken
+}
+
 // Connect establishes all MCP connections and builds the tool registry.
 func (a *Agent) Connect(ctx context.Context) error {
 	// 1. Connect to Hub Service MCP (HTTP transport)
 	var opts []transport.StreamableHTTPCOption
-	if a.authToken != "" {
+	token := a.CurrentToken()
+	if token != "" {
 		opts = append(opts, transport.WithHTTPHeaders(map[string]string{
-			"Authorization": "Bearer " + a.authToken,
+			"Authorization": "Bearer " + token,
 		}))
 	}
 	client, err := mcpclient.NewStreamableHttpClient(a.hubURL, opts...)
