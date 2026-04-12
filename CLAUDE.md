@@ -64,6 +64,8 @@ Three-layer architecture: **Control Plane** (JupyterHub + Hub Service) → **Use
 - PostgreSQL 16 + pgvector (via Hugr App framework — all access through Hugr GraphQL, never direct DB) (006-streaming-impersonation)
 - Go 1.26.1 (hub-service, hub-agent), Python 3.12+ (JupyterHub config), TypeScript (JupyterLab extensions) + `airport-go` (Arrow Flight), `query-engine/client` (Hugr GraphQL), `nhooyr.io/websocket`, `@jupyterlab/apputils`, `@lumino/widgets` (007-spec-f-foundation)
 - PostgreSQL + pgvector via Hugr (all DB access through Hugr GraphQL, never direct — Constitution I), persistent disk volumes for agent state (`$HUB_STORAGE_PATH`) (007-spec-f-foundation)
+- Go 1.26.1 (hub-service, hub-agent, kernel-mcp, result-store-mcp), Python 3.12+ (agent-bridge, jupyterhub config), TypeScript (hub-chat extension) + `airport-go`, `query-engine/client` v0.3.25, `mcp-go` v0.47.0, `nhooyr.io/websocket`, `apache/arrow-go/v18`, DuckDB (embedded, for result.query) (008-spec-g-unified-runtime)
+- PostgreSQL + pgvector via Hugr (all DB access through Hugr GraphQL — HC1), persistent disk (`$HUB_STORAGE_PATH`) for results/skills/checkpoints (008-spec-g-unified-runtime)
 
 ## Recent Changes
 - 001-jupyterhub-oidc-workspace: Added Python 3.12+ (JupyterHub config, connection service), Go 1.26.1 (kernel changes in hugr-kernel repo) + jupyterhub 4.x, oauthenticator, dockerspawner, httpx (Hub); hugr_connection_service (workspace)

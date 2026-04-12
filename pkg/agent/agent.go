@@ -28,7 +28,7 @@ type Agent struct {
 	hubClient  *mcpclient.Client
 	mcpManager *MCPServerManager
 	registry   *ToolRegistry
-	skills     *SkillsEngine
+	skills     *SkillCatalog
 	learner    *Learner
 	config     *AgentConfig
 	logger     *slog.Logger
@@ -39,7 +39,7 @@ func New(hubURL, authToken, skillsDir string, config *AgentConfig, logger *slog.
 		hubURL:    hubURL,
 		authToken: authToken,
 		registry:  NewToolRegistry(),
-		skills:    NewSkillsEngine(skillsDir, logger),
+		skills:    NewSkillCatalog(skillsDir, logger),
 		config:    config,
 		logger:    logger,
 	}

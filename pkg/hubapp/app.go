@@ -24,7 +24,7 @@ import (
 
 const (
 	appName    = "hub"
-	appVersion = "0.2.2"
+	appVersion = "0.3.0"
 )
 
 type HubApp struct {
@@ -128,9 +128,11 @@ func (a *HubApp) Init(ctx context.Context) error {
 	// Ensure conversation state directory exists on the persistent volume.
 	// Agent processes and hub-service itself write per-turn checkpoints here.
 	if a.config.StoragePath != "" {
-		convDir := a.config.StoragePath + "/conversations"
-		if err := os.MkdirAll(convDir, 0o755); err != nil {
-			a.logger.Warn("failed to create conversations state dir", "path", convDir, "error", err)
+		for _, dir := range []string{"/conversations", "/system/skills"} {
+			p := a.config.StoragePath + dir
+			if err := os.MkdirAll(p, 0o755); err != nil {
+				a.logger.Warn("failed to create state dir", "path", p, "error", err)
+			}
 		}
 	}
 
