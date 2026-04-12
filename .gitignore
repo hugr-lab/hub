@@ -38,7 +38,7 @@ extensions/*/.venv/
 
 # Docker
 hub-data/
-hugr-data/
+/hugr-data/
 hub-db-data/
 hub-storage/
 

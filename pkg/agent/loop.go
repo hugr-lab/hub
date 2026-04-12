@@ -4,9 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/hugr-lab/hub/pkg/llmrouter"
 )
+
+// lastUserMessage extracts the last user message from history for routing.
+func lastUserMessage(history []llmrouter.Message) string {
+	for i := len(history) - 1; i >= 0; i-- {
+		if history[i].Role == "user" {
+			return history[i].Content
+		}
+	}
+	return ""
+}
 
 // ToolCall represents a parsed tool call from LLM response.
 type ToolCall struct {
@@ -26,16 +37,9 @@ type LLMResponse struct {
 
 // RunLoop executes the multi-turn agentic loop with a single user message.
 func (a *Agent) RunLoop(ctx context.Context, userMessage string) (string, error) {
-	// 1. Retrieve learned context
 	learnedContext := a.learner.RetrieveContext(ctx, userMessage)
+	systemPrompt := a.buildSystemPrompt(userMessage, learnedContext)
 
-	// 2. Build system prompt
-	systemPrompt := a.skills.SystemPrompt()
-	if learnedContext != "" {
-		systemPrompt += "\n\n" + learnedContext
-	}
-
-	// 3. Initialize message history
 	history := []llmrouter.Message{
 		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: userMessage},
@@ -44,45 +48,56 @@ func (a *Agent) RunLoop(ctx context.Context, userMessage string) (string, error)
 	return a.runAgenticLoop(ctx, history)
 }
 
+// buildSystemPrompt routes the user message through the skill router and
+// assembles a per-turn system prompt from matching skills.
+func (a *Agent) buildSystemPrompt(userMessage, learnedContext string) string {
+	available := a.skills.All()
+	selectedIDs := a.skillRouter.Route(userMessage, available)
+
+	var parts []string
+	for _, id := range selectedIDs {
+		full, err := a.skills.LoadFull(id)
+		if err != nil {
+			a.logger.Warn("failed to load skill", "id", id, "error", err)
+			continue
+		}
+		if full.SystemPrompt != "" {
+			parts = append(parts, full.SystemPrompt)
+		}
+	}
+
+	if len(parts) == 0 {
+		parts = append(parts, "You are a data analysis assistant. Help users explore and query data.")
+	}
+
+	prompt := strings.Join(parts, "\n\n")
+	if learnedContext != "" {
+		prompt += "\n\n" + learnedContext
+	}
+
+	a.logger.Debug("skill routing", "message_preview", truncate(userMessage, 50), "selected", selectedIDs)
+	return prompt
+}
+
+
 // RunLoopWithHistory executes the multi-turn agentic loop with full conversation history.
 // The history is used as-is (client owns it), with learned context prepended if missing system prompt.
 func (a *Agent) RunLoopWithHistory(ctx context.Context, history []llmrouter.Message) (string, error) {
-	// If no system prompt in history, prepend one
 	if len(history) == 0 || history[0].Role != "system" {
-		// Retrieve context from last user message
-		var lastUserMsg string
-		for i := len(history) - 1; i >= 0; i-- {
-			if history[i].Role == "user" {
-				lastUserMsg = history[i].Content
-				break
-			}
-		}
+		lastUserMsg := lastUserMessage(history)
 		learnedContext := a.learner.RetrieveContext(ctx, lastUserMsg)
-		systemPrompt := a.skills.SystemPrompt()
-		if learnedContext != "" {
-			systemPrompt += "\n\n" + learnedContext
-		}
+		systemPrompt := a.buildSystemPrompt(lastUserMsg, learnedContext)
 		history = append([]llmrouter.Message{{Role: "system", Content: systemPrompt}}, history...)
 	}
-
 	return a.runAgenticLoop(ctx, history)
 }
 
 // runAgenticLoopWithStream is the multi-turn loop with streaming callbacks.
 func (a *Agent) runAgenticLoopWithStream(ctx context.Context, history []llmrouter.Message, stream AgentStreamCallback) (string, error) {
 	if len(history) == 0 || history[0].Role != "system" {
-		var lastUserMsg string
-		for i := len(history) - 1; i >= 0; i-- {
-			if history[i].Role == "user" {
-				lastUserMsg = history[i].Content
-				break
-			}
-		}
+		lastUserMsg := lastUserMessage(history)
 		learnedContext := a.learner.RetrieveContext(ctx, lastUserMsg)
-		systemPrompt := a.skills.SystemPrompt()
-		if learnedContext != "" {
-			systemPrompt += "\n\n" + learnedContext
-		}
+		systemPrompt := a.buildSystemPrompt(lastUserMsg, learnedContext)
 		history = append([]llmrouter.Message{{Role: "system", Content: systemPrompt}}, history...)
 	}
 

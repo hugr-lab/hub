@@ -23,25 +23,27 @@ import (
 // Agent is the main runtime. Connects to Hub Service MCP and local MCP servers,
 // collects tools into a unified registry, and runs multi-turn LLM reasoning.
 type Agent struct {
-	hubURL     string
-	authToken  string // AGENT_TOKEN for hub-service authentication
-	hubClient  *mcpclient.Client
-	mcpManager *MCPServerManager
-	registry   *ToolRegistry
-	skills     *SkillCatalog
-	learner    *Learner
-	config     *AgentConfig
-	logger     *slog.Logger
+	hubURL      string
+	authToken   string // AGENT_TOKEN for hub-service authentication
+	hubClient   *mcpclient.Client
+	mcpManager  *MCPServerManager
+	registry    *ToolRegistry
+	skills      *SkillCatalog
+	skillRouter *SkillRouter
+	learner     *Learner
+	config      *AgentConfig
+	logger      *slog.Logger
 }
 
 func New(hubURL, authToken, skillsDir string, config *AgentConfig, logger *slog.Logger) *Agent {
 	a := &Agent{
-		hubURL:    hubURL,
-		authToken: authToken,
-		registry:  NewToolRegistry(),
-		skills:    NewSkillCatalog(skillsDir, logger),
-		config:    config,
-		logger:    logger,
+		hubURL:      hubURL,
+		authToken:   authToken,
+		registry:    NewToolRegistry(),
+		skills:      NewSkillCatalog(skillsDir, logger),
+		skillRouter: NewSkillRouter(),
+		config:      config,
+		logger:      logger,
 	}
 	a.learner = NewLearner(a)
 	a.mcpManager = NewMCPServerManager(config.MCPServers, logger)

@@ -6,6 +6,7 @@ func (a *HubApp) seedAgentTypes(ctx context.Context) {
 	types := []struct {
 		ID, DisplayName, Description, Image string
 	}{
+		{"personal-assistant", "Personal Assistant", "Default workspace agent with data exploration, memory, query registry, result store, and kernel access", "hub-agent:latest"},
 		{"data-analyst", "Data Analyst", "Hugr data exploration agent with discovery, query, and visualization skills", "hub-agent:latest"},
 		{"openclaw", "OpenClaw Agent", "Third-party OpenClaw agent runtime using Hub Service OpenAI-compatible endpoint", "openclaw/agent:latest"},
 	}
