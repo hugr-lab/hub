@@ -46,6 +46,29 @@ func LoadConfig() Config {
 	return cfg
 }
 
+// LoadRoutingConfig builds an LLM intent routing config from LLM_ROUTING_* env vars.
+// Returns nil if no routing env vars are set (= auto-resolve for all intents).
+func LoadRoutingConfig() map[string]string {
+	intents := map[string]string{
+		"default":        os.Getenv("LLM_ROUTING_DEFAULT"),
+		"planning":       os.Getenv("LLM_ROUTING_PLANNING"),
+		"tool_calling":   os.Getenv("LLM_ROUTING_TOOL_CALLING"),
+		"summarization":  os.Getenv("LLM_ROUTING_SUMMARIZATION"),
+		"classification": os.Getenv("LLM_ROUTING_CLASSIFICATION"),
+	}
+	// Filter empty entries.
+	result := make(map[string]string)
+	for k, v := range intents {
+		if v != "" {
+			result[k] = v
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
 func envOrDefault(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v

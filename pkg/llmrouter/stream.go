@@ -25,7 +25,10 @@ type StreamCallback func(chunk StreamChunk)
 
 // Stream executes chat_completion as a Hugr subscription for token streaming.
 func (r *Router) Stream(ctx context.Context, req CompletionRequest, cb StreamCallback) error {
-	// 0. Resolve model
+	// 0. Resolve model via intent routing, then auto-resolve
+	if req.Model == "" && req.Intent != "" {
+		req.Model = r.routing.ResolveModel(req.Intent)
+	}
 	if req.Model == "" {
 		models, err := r.ListModels(ctx)
 		if err != nil {
@@ -199,6 +202,11 @@ func (r *Router) Stream(ctx context.Context, req CompletionRequest, cb StreamCal
 	// upstream subscription errors that the client only logs at debug level
 	// and would otherwise turn into a mysterious blank LLM response.
 	if totalChunks == 0 {
+		// Check if the subscription reported an error (e.g. invalid model, missing args).
+		if subErr := sub.Err(); subErr != nil {
+			cb(StreamChunk{Type: "error", Content: subErr.Error()})
+			return fmt.Errorf("LLM subscription error: %w", subErr)
+		}
 		err := fmt.Errorf("LLM stream returned no events (subscription closed without data)")
 		cb(StreamChunk{Type: "error", Content: err.Error()})
 		return err
@@ -217,12 +225,13 @@ func (r *Router) Stream(ctx context.Context, req CompletionRequest, cb StreamCal
 		TokensOut:    totalOut,
 	})
 
-	// 8. Record budget usage
-	r.budget.RecordUsage(ctx, req.UserID, req.Model, totalIn, totalOut)
+	// 8. Record budget usage with intent metadata
+	r.budget.RecordUsage(ctx, req.UserID, req.Model, totalIn, totalOut, req.Intent, lastModel)
 
 	r.logger.Info("llm stream complete",
 		"user", req.UserID,
 		"model", lastModel,
+		"intent", req.Intent,
 		"tokens_in", totalIn,
 		"tokens_out", totalOut,
 	)

@@ -32,6 +32,30 @@ type CompletionRequest struct {
 	ToolChoice string    `json:"tool_choice,omitempty"`
 	MaxTokens  int       `json:"max_tokens,omitempty"`
 	UserID     string    `json:"user_id"`
+	Intent     string    `json:"intent,omitempty"` // routing hint: default, planning, tool_calling, summarization, classification
+}
+
+// RoutingConfig maps intent hints to model names for cost-efficient routing.
+// If a model for a given intent is not configured, Default is used.
+// If Default is empty, auto-resolve picks the first available LLM.
+type RoutingConfig struct {
+	Default   string            // model for unspecified or unknown intent
+	IntentMap map[string]string // intent → model name
+	Fallback  string            // model to try on error (empty = no fallback)
+}
+
+// ResolveModel returns the model name for a given intent.
+// Falls back: IntentMap[intent] → Default → "" (auto-resolve).
+func (rc *RoutingConfig) ResolveModel(intent string) string {
+	if rc == nil {
+		return ""
+	}
+	if intent != "" && rc.IntentMap != nil {
+		if m, ok := rc.IntentMap[intent]; ok && m != "" {
+			return m
+		}
+	}
+	return rc.Default
 }
 
 // CompletionResponse is the LLM output.
@@ -51,6 +75,7 @@ type CompletionResponse struct {
 type Router struct {
 	hugrClient *client.Client
 	budget     *BudgetChecker
+	routing    *RoutingConfig
 	logger     *slog.Logger
 }
 
@@ -62,9 +87,18 @@ func New(hugrClient *client.Client, logger *slog.Logger) *Router {
 	}
 }
 
+// SetRoutingConfig installs intent→model routing. Safe to call before any
+// Complete/Stream call. Nil config = all intents auto-resolve.
+func (r *Router) SetRoutingConfig(rc *RoutingConfig) {
+	r.routing = rc
+}
+
 // Complete routes a request through Hugr's core.models.chat_completion.
 func (r *Router) Complete(ctx context.Context, req CompletionRequest) (CompletionResponse, error) {
-	// 0. Resolve model: if empty, pick first available
+	// 0. Resolve model via intent routing, then auto-resolve if still empty
+	if req.Model == "" && req.Intent != "" {
+		req.Model = r.routing.ResolveModel(req.Intent)
+	}
 	if req.Model == "" {
 		models, err := r.ListModels(ctx)
 		if err != nil {
@@ -182,12 +216,14 @@ func (r *Router) Complete(ctx context.Context, req CompletionRequest) (Completio
 		ToolCalls:    result.ToolCalls,
 	}
 
-	// 5. Record usage
-	r.budget.RecordUsage(ctx, req.UserID, req.Model, resp.TokensIn, resp.TokensOut)
+	// 5. Record usage with intent metadata
+	r.budget.RecordUsage(ctx, req.UserID, req.Model, resp.TokensIn, resp.TokensOut, req.Intent, resp.Model)
 
 	r.logger.Info("llm completion",
 		"user", req.UserID,
 		"model", req.Model,
+		"intent", req.Intent,
+		"resolved_model", resp.Model,
 		"provider", resp.Provider,
 		"tokens_in", resp.TokensIn,
 		"tokens_out", resp.TokensOut,

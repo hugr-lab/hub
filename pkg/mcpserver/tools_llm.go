@@ -19,6 +19,7 @@ func (s *Server) registerLLMTools(mcpSrv *server.MCPServer, userID string) {
 			mcp.WithNumber("max_tokens", mcp.Description("Max output tokens")),
 			mcp.WithObject("tools", mcp.Description("Array of {name, description, parameters} tool definitions for LLM")),
 			mcp.WithString("tool_choice", mcp.Description("Tool choice: auto, none, or tool name")),
+			mcp.WithString("intent", mcp.Description("Routing hint for model selection: default, planning, tool_calling, summarization, classification")),
 		),
 		s.handleLLMComplete(userID),
 	)
@@ -60,9 +61,10 @@ func (s *Server) handleLLMComplete(userID string) server.ToolHandlerFunc {
 			json.Unmarshal(data, &tools)
 		}
 		toolChoice, _ := args["tool_choice"].(string)
+		intent, _ := args["intent"].(string)
 
 		s.logger.Debug("llm-complete request",
-			"user", userID, "model", model,
+			"user", userID, "model", model, "intent", intent,
 			"messages", len(messages), "tools", len(tools),
 			"tool_choice", toolChoice, "max_tokens", maxTokens,
 		)
@@ -74,6 +76,7 @@ func (s *Server) handleLLMComplete(userID string) server.ToolHandlerFunc {
 			ToolChoice: toolChoice,
 			MaxTokens:  maxTokens,
 			UserID:     userID,
+			Intent:     intent,
 		})
 		if err != nil {
 			return toolError(fmt.Sprintf("LLM error: %v", err)), nil

@@ -34,3 +34,17 @@ CREATE INDEX IF NOT EXISTS idx_agent_runs_status ON agent_runs(status) WHERE sta
 ALTER TABLE llm_usage
   ADD COLUMN IF NOT EXISTS intent TEXT,
   ADD COLUMN IF NOT EXISTS resolved_model TEXT;
+
+-- Fix FK constraints from migration 001 that may not have been applied.
+-- Ensures agent deletion cascades properly.
+ALTER TABLE conversations
+  DROP CONSTRAINT IF EXISTS conversations_agent_id_fkey;
+ALTER TABLE conversations
+  ADD CONSTRAINT conversations_agent_id_fkey
+  FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE SET NULL;
+
+ALTER TABLE agent_sessions
+  DROP CONSTRAINT IF EXISTS agent_sessions_agent_id_fkey;
+ALTER TABLE agent_sessions
+  ADD CONSTRAINT agent_sessions_agent_id_fkey
+  FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE SET NULL;

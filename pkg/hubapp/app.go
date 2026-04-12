@@ -24,7 +24,7 @@ import (
 
 const (
 	appName    = "hub"
-	appVersion = "0.2.1"
+	appVersion = "0.2.2"
 )
 
 type HubApp struct {
@@ -139,6 +139,17 @@ func (a *HubApp) Init(ctx context.Context) error {
 
 	// LLM router — graceful when no models configured
 	router := llmrouter.New(a.client, a.logger)
+	// Intent routing from LLM_ROUTING_* env vars (Spec F / US4).
+	if intentMap := LoadRoutingConfig(); intentMap != nil {
+		def := intentMap["default"]
+		delete(intentMap, "default")
+		router.SetRoutingConfig(&llmrouter.RoutingConfig{
+			Default:   def,
+			IntentMap: intentMap,
+			Fallback:  os.Getenv("LLM_ROUTING_FALLBACK"),
+		})
+		a.logger.Info("LLM intent routing configured", "default", def, "intents", len(intentMap))
+	}
 	a.llmRouter = router
 	mcpSrv := mcpserver.New(a.client, router, a.logger, a.config.LogLevel == slog.LevelDebug)
 
@@ -156,7 +167,11 @@ func (a *HubApp) Init(ctx context.Context) error {
 	//   /agent/ws/{id}        WebSocket uplink from agent containers
 	//   /ws/{conversation_id} WebSocket stream to chat UI (registered below)
 	mux := http.NewServeMux()
-	mux.Handle("/mcp/", mcpSrv.Handler())
+	mux.Handle("/mcp", mcpSrv.Handler())
+	// Legacy /mcp/{user_id} redirect — 307 to /mcp for backward compat.
+	mux.HandleFunc("/mcp/", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/mcp", http.StatusTemporaryRedirect)
+	})
 	mux.Handle("/v1/", router.OpenAICompatHandler()) // OpenAI-compatible for third-party agents
 	mux.Handle("/agent/ws/", agentConnMgr.Handler())
 	go agentConnMgr.StartHeartbeat(ctx)

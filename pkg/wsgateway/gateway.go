@@ -328,7 +328,15 @@ func (g *Gateway) handleMessage(ctx context.Context, conn *websocket.Conn, userI
 
 	case "tools":
 		if g.tools != nil {
-			response, usage, err = g.tools(ctx, userID, conversationID, msg.Messages, stream)
+			// Spec F: frontend no longer sends full history — just content.
+			// Pass the current user message so HandleUserMessage can append
+			// it to whatever it loads from DB (or use it as sole message
+			// for a brand-new conversation).
+			msgs := msg.Messages
+			if len(msgs) == 0 && msg.Content != "" {
+				msgs = []LLMMessage{{Role: "user", Content: msg.Content}}
+			}
+			response, usage, err = g.tools(ctx, userID, conversationID, msgs, stream)
 		} else {
 			err = fmt.Errorf("tools mode not configured")
 		}

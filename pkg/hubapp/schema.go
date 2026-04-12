@@ -19,4 +19,5 @@ var migration002 string
 var migrations = map[string]string{
 	"0.1.0": migration001 + "\n" + migration002, // fresh → current via both migrations
 	"0.2.0": migration002,                        // A+ → current via channel protocol only
+	"0.2.1": migration002,                        // re-run 002 to fix FK constraints
 }

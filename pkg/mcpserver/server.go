@@ -51,28 +51,16 @@ func (s *Server) SetAgentConn(mgr *agentconn.Manager) {
 	s.agentConn = mgr
 }
 
-// Handler returns an http.Handler for /mcp/{user_id} endpoints.
+// Handler returns an http.Handler for /mcp endpoints.
+// Identity is resolved from the auth middleware (bearer token), not from URL path.
 func (s *Server) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		parts := strings.SplitN(strings.TrimPrefix(r.URL.Path, "/mcp/"), "/", 2)
-		if len(parts) == 0 || parts[0] == "" {
-			http.Error(w, "user_id required in path", http.StatusBadRequest)
+		authUser, ok := auth.UserFromContext(r.Context())
+		if !ok || authUser.ID == "" {
+			http.Error(w, "unauthorized: user identity required", http.StatusUnauthorized)
 			return
 		}
-		userID := parts[0]
-
-		// Verify auth context matches path user
-		if authUser, ok := auth.UserFromContext(r.Context()); ok {
-			if authUser.AuthType == "jwt" && authUser.ID != userID {
-				http.Error(w, "forbidden: user mismatch", http.StatusForbidden)
-				return
-			}
-			// For agent/management: allow access to path user's MCP
-		}
-
-		// Inject user identity into context — UserTransport adds headers to Hugr requests
-		ctx := auth.ContextWithUser(r.Context(), auth.UserInfo{ID: userID})
-		r = r.WithContext(ctx)
+		userID := authUser.ID
 
 		// Create MCP server with Hub tools, then pass to query-engine mcp.New
 		// which adds all Hugr discovery/schema/data tools on top
@@ -120,13 +108,11 @@ func (s *Server) HandleUserMessage(ctx context.Context, userID string, clientMes
 
 	tools := s.getToolsForLLM()
 
-	// Stateful sessions (Spec F): if client sent no history, load from DB.
-	// This enables tab-close resilience and cross-device resume.
+	// Stateful sessions (Spec F): load history from DB and append the
+	// current user message. clientMessages carries only the new user
+	// message (the frontend no longer sends full history).
 	var history []llmrouter.Message
-	if len(clientMessages) > 0 {
-		history = make([]llmrouter.Message, len(clientMessages))
-		copy(history, clientMessages)
-	} else if conversationID != "" {
+	if conversationID != "" {
 		loaded, err := s.loadConversationHistory(ctx, conversationID)
 		if err != nil {
 			s.logger.Warn("failed to load conversation history from DB, proceeding empty", "conversation", conversationID, "error", err)
@@ -134,6 +120,8 @@ func (s *Server) HandleUserMessage(ctx context.Context, userID string, clientMes
 			history = loaded
 		}
 	}
+	// Append the current user message(s) from the client.
+	history = append(history, clientMessages...)
 
 	// Aggregate usage across turns. The model name comes from the last
 	// `done` event we observed (all turns of one chat message hit the same
@@ -174,6 +162,7 @@ func (s *Server) HandleUserMessage(ctx context.Context, userID string, clientMes
 			Messages: history,
 			Tools:    tools,
 			UserID:   userID,
+			Intent:   "default",
 		}, func(chunk llmrouter.StreamChunk) {
 			switch chunk.Type {
 			case "token":
@@ -267,10 +256,17 @@ func (s *Server) HandleUserMessage(ctx context.Context, userID string, clientMes
 // GraphQL. For branched conversations this uses the conversation_context view
 // which walks the parent chain. Returns messages ordered by created_at.
 func (s *Server) loadConversationHistory(ctx context.Context, conversationID string) ([]llmrouter.Message, error) {
+	// Load messages directly from agent_messages for this conversation.
+	// The conversation_context recursive view is defined in hub.graphql but
+	// its raw SQL references hub.db.* paths that DuckDB cannot resolve at
+	// query time. Until Hugr supports parameterised views natively, we fall
+	// back to a flat query. Branched conversations will get only their own
+	// messages — full parent-chain resolution is deferred to Spec G.
 	res, err := s.hugrClient.Query(ctx,
-		`query($cid: String!) { hub { db { conversation_context(
-			conversation_id: $cid
-		) { role content tool_calls tool_call_id } } } }`,
+		`query($cid: String!) { hub { db { agent_messages(
+			filter: { conversation_id: { eq: $cid } }
+			order_by: [{ field: "created_at", direction: ASC }]
+		) { role content tool_calls tool_call_id created_at } } } }`,
 		map[string]any{"cid": conversationID},
 	)
 	if err != nil {
@@ -287,7 +283,7 @@ func (s *Server) loadConversationHistory(ctx context.Context, conversationID str
 		ToolCalls  any    `json:"tool_calls"`
 		ToolCallID string `json:"tool_call_id"`
 	}
-	if err := res.ScanData("hub.db.conversation_context", &rows); err != nil {
+	if err := res.ScanData("hub.db.agent_messages", &rows); err != nil {
 		return nil, fmt.Errorf("scan conversation history: %w", err)
 	}
 
@@ -311,12 +307,12 @@ func (s *Server) loadConversationHistory(ctx context.Context, conversationID str
 // insertAgentRun creates an agent_runs row with status=running.
 func (s *Server) insertAgentRun(ctx context.Context, runID, conversationID string) {
 	res, err := s.hugrClient.Query(ctx,
-		`mutation($id: String!, $cid: String!) {
+		`mutation($id: String!, $cid: String!, $ts: Timestamp!) {
 			hub { db { insert_agent_runs(data: {
-				id: $id, conversation_id: $cid, turn_index: 0, status: "running"
+				id: $id, conversation_id: $cid, turn_index: 0, status: "running", started_at: $ts
 			}) { id } } }
 		}`,
-		map[string]any{"id": runID, "cid": conversationID},
+		map[string]any{"id": runID, "cid": conversationID, "ts": time.Now().UTC().Format(time.RFC3339)},
 	)
 	if err != nil {
 		s.logger.Warn("failed to insert agent_run", "run", runID, "error", err)
