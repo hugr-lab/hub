@@ -81,7 +81,7 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
   metadata JSONB DEFAULT '{}'
 );
 
--- Agent messages (with summarization support)
+-- Agent messages (with summarization + channel protocol support)
 CREATE TABLE IF NOT EXISTS agent_messages (
   id TEXT PRIMARY KEY,
   session_id TEXT REFERENCES agent_sessions(id) ON DELETE SET NULL,
@@ -94,6 +94,11 @@ CREATE TABLE IF NOT EXISTS agent_messages (
   model TEXT,
   summarized_by TEXT,
   is_summary BOOLEAN DEFAULT false,
+  channel TEXT DEFAULT 'final',
+  payload JSONB,
+  token_count INT,
+  model_used TEXT,
+  context_snapshot_ref TEXT,
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
@@ -145,6 +150,22 @@ CREATE TABLE IF NOT EXISTS tool_calls (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
+-- Agent runs (one row per conversation turn, lightweight index — payloads on disk)
+CREATE TABLE IF NOT EXISTS agent_runs (
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  turn_index INT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'running',
+  started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  finished_at TIMESTAMPTZ,
+  tokens_in INT DEFAULT 0,
+  tokens_out INT DEFAULT 0,
+  model_breakdown JSONB,
+  context_ref TEXT,
+  error TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
 -- LLM budgets (provider_id references Hugr data source name, no FK)
 CREATE TABLE IF NOT EXISTS llm_budgets (
   id TEXT PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -167,6 +188,8 @@ CREATE TABLE IF NOT EXISTS llm_usage (
   tokens_out INT NOT NULL,
   duration_ms INT,
   period_key TEXT NOT NULL,
+  intent TEXT,
+  resolved_model TEXT,
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
@@ -183,4 +206,6 @@ CREATE INDEX IF NOT EXISTS idx_agent_memory_user ON agent_memory(user_id);
 CREATE INDEX IF NOT EXISTS idx_agent_memory_category ON agent_memory(user_id, category);
 CREATE INDEX IF NOT EXISTS idx_query_registry_user ON query_registry(user_id);
 CREATE INDEX IF NOT EXISTS idx_tool_calls_session ON tool_calls(session_id);
+CREATE INDEX IF NOT EXISTS idx_agent_runs_conv ON agent_runs(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_agent_runs_status ON agent_runs(status) WHERE status = 'running';
 CREATE INDEX IF NOT EXISTS idx_llm_usage_period ON llm_usage(user_id, provider_id, period_key);

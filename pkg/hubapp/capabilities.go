@@ -40,14 +40,8 @@ const (
 )
 
 // hasCapability returns true if the caller's role has the given capability
-// enabled. Looks up via `function.core.auth.my_permissions` (which returns the
-// caller's full role permission list) and matches locally.
-//
-// NOTE: we deliberately avoid `function.core.auth.check_access` here because
-// in the current query-engine build it returns a different result than
-// `my_permissions` in the same request (scalar vs table function context
-// propagation issue). Matching the raw permission list ourselves is
-// consistent with what the planner itself evaluates on mutation gating.
+// enabled. Uses function.core.auth.check_access to evaluate against
+// core.role_permissions — no local matching logic.
 //
 // Management auth always has every capability (engine-internal bus).
 func (a *HubApp) hasCapability(ctx context.Context, u auth.UserInfo, capability string) (bool, error) {
@@ -58,46 +52,31 @@ func (a *HubApp) hasCapability(ctx context.Context, u auth.UserInfo, capability 
 	// real role, not hub-service's service identity.
 	q := withIdentity(ctx, u)
 	res, err := a.client.Query(q,
-		`{ function { core { auth { my_permissions {
-			role_name disabled permissions { object field hidden disabled }
-		} } } } }`, nil,
+		`query($ns: String!, $f: String!) {
+			function { core { auth { check_access(
+				type_name: $ns, fields: $f
+			) { field enabled } } } }
+		}`,
+		map[string]any{"ns": CapManagementNamespace, "f": capability},
 	)
 	if err != nil {
-		return false, fmt.Errorf("my_permissions: %w", err)
+		return false, fmt.Errorf("check_access: %w", err)
 	}
 	defer res.Close()
 	if res.Err() != nil {
-		return false, fmt.Errorf("my_permissions: %w", res.Err())
+		return false, fmt.Errorf("check_access: %w", res.Err())
 	}
 
-	var perms struct {
-		RoleName    string `json:"role_name"`
-		Disabled    bool   `json:"disabled"`
-		Permissions []struct {
-			Object   string `json:"object"`
-			Field    string `json:"field"`
-			Hidden   bool   `json:"hidden"`
-			Disabled bool   `json:"disabled"`
-		} `json:"permissions"`
+	var entries []struct {
+		Field   string `json:"field"`
+		Enabled bool   `json:"enabled"`
 	}
-	if err := res.ScanData("function.core.auth.my_permissions", &perms); err != nil {
-		return false, fmt.Errorf("scan my_permissions: %w", err)
+	if err := res.ScanData("function.core.auth.check_access", &entries); err != nil {
+		return false, fmt.Errorf("scan check_access: %w", err)
 	}
-	if perms.Disabled {
-		return false, nil
-	}
-
-	// Match against the caller's role permission list, mirroring query-engine's
-	// own checkObjectField logic: specific (object,field) match wins, wildcard
-	// rules set the baseline, absence of a rule falls through to default-allow.
-	//
-	// For hub-service capabilities we want "explicit allow only": absence of a
-	// rule means NOT granted. This is safer than Hugr's default because
-	// capability points are always in the "hub:management" namespace, where
-	// there are no schema-level defaults to fall back on.
-	for _, p := range perms.Permissions {
-		if p.Object == CapManagementNamespace && p.Field == capability {
-			return !p.Disabled, nil
+	for _, e := range entries {
+		if e.Field == capability {
+			return e.Enabled, nil
 		}
 	}
 	return false, nil

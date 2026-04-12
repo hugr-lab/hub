@@ -42,7 +42,7 @@ type ConversationLookup func(ctx context.Context, conversationID string) (*Conve
 // ToolsHandler handles LLM + Hugr tools chat. Receives full history, streams
 // intermediate results, and returns the final response text together with
 // token usage so the caller can attach a `usage` block to the WS response.
-type ToolsHandler func(ctx context.Context, userID string, messages []LLMMessage, stream StreamCallback) (string, *UsageInfo, error)
+type ToolsHandler func(ctx context.Context, userID, conversationID string, messages []LLMMessage, stream StreamCallback) (string, *UsageInfo, error)
 
 // LLMHandler handles pure LLM chat (no tools). Receives full history.
 type LLMHandler func(ctx context.Context, model string, messages []LLMMessage) (string, *UsageInfo, error)
@@ -56,8 +56,8 @@ type AgentStreamHandler func(ctx context.Context, instanceID, conversationID, us
 // MessagePersister saves messages to DB.
 type MessagePersister func(ctx context.Context, conversationID, role, content string)
 
-// FullMessagePersister saves messages with tool_calls and tool_call_id to DB.
-type FullMessagePersister func(ctx context.Context, conversationID, role, content string, toolCalls any, toolCallID string)
+// FullMessagePersister saves messages with tool_calls, tool_call_id, and channel metadata to DB.
+type FullMessagePersister func(ctx context.Context, conversationID, role, content string, toolCalls any, toolCallID string, channel string, tokenCount int, modelUsed string)
 
 // TitleGenerator generates a short title from the first user message.
 type TitleGenerator func(ctx context.Context, userMessage string) string
@@ -171,14 +171,21 @@ func (g *Gateway) Handler() http.Handler {
 
 // ChatMessage is the wire format for WebSocket messages (channel protocol).
 type ChatMessage struct {
+	// Legacy fields — kept for backward compat during migration window
 	Type       string       `json:"type"`                    // "message", "token", "thinking", "tool_call", "tool_result", "response", "error", "status", "title_update", "summary", "cancel", "summarize"
 	Content    string       `json:"content,omitempty"`       // text content
-	Messages   []LLMMessage `json:"messages,omitempty"`      // full history (client → server)
+	Messages   []LLMMessage `json:"messages,omitempty"`      // full history (client → server) — will be dropped after migration
 	ToolCalls  any          `json:"tool_calls,omitempty"`    // tool calls from LLM
 	ToolCallID string       `json:"tool_call_id,omitempty"`  // for tool_result
 	AgentName  string       `json:"agent_name,omitempty"`    // agent display name (for personalization)
 	Usage      *UsageInfo   `json:"usage,omitempty"`         // token usage metadata (on response)
 	SummaryOf  []string     `json:"summary_of,omitempty"`    // message IDs summarized (on summary)
+
+	// Channel protocol fields (Spec F) — coexist with Type during migration
+	Channel    string `json:"channel,omitempty"`     // final|status|analysis|tool_call|tool_result|plan|sub_agent|dive|hitl|hud|error
+	Payload    any    `json:"payload,omitempty"`     // channel-specific structured data
+	TokenCount int    `json:"token_count,omitempty"` // estimated tokens for this frame
+	ModelUsed  string `json:"model_used,omitempty"`  // which model produced this
 }
 
 // UsageInfo contains token usage metadata for a response.
@@ -287,20 +294,23 @@ func (g *Gateway) handleMessage(ctx context.Context, conn *websocket.Conn, userI
 		// Persist intermediate tool messages. Each persist runs in its own
 		// goroutine with a 30s timeout — without the timeout a wedged DB
 		// would leak goroutines on every tool call.
+		// Channel metadata (channel, token_count, model_used) is passed through
+		// so the DB row captures the channel protocol fields.
 		if g.persistFull != nil {
+			ch := withChannel(m) // resolve channel for persistence
 			switch m.Type {
 			case "tool_call":
-				go func(content string, toolCalls any) {
+				go func(content string, toolCalls any, channel string, tokenCount int, modelUsed string) {
 					pCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 					defer cancel()
-					g.persistFull(pCtx, conversationID, "assistant", content, toolCalls, "")
-				}(m.Content, m.ToolCalls)
+					g.persistFull(pCtx, conversationID, "assistant", content, toolCalls, "", channel, tokenCount, modelUsed)
+				}(m.Content, m.ToolCalls, ch.Channel, ch.TokenCount, ch.ModelUsed)
 			case "tool_result":
-				go func(content, toolCallID string) {
+				go func(content, toolCallID, channel string, tokenCount int) {
 					pCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 					defer cancel()
-					g.persistFull(pCtx, conversationID, "tool", content, nil, toolCallID)
-				}(m.Content, m.ToolCallID)
+					g.persistFull(pCtx, conversationID, "tool", content, nil, toolCallID, channel, tokenCount, "")
+				}(m.Content, m.ToolCallID, ch.Channel, ch.TokenCount)
 			}
 		}
 	}
@@ -318,7 +328,7 @@ func (g *Gateway) handleMessage(ctx context.Context, conn *websocket.Conn, userI
 
 	case "tools":
 		if g.tools != nil {
-			response, usage, err = g.tools(ctx, userID, msg.Messages, stream)
+			response, usage, err = g.tools(ctx, userID, conversationID, msg.Messages, stream)
 		} else {
 			err = fmt.Errorf("tools mode not configured")
 		}
@@ -339,7 +349,7 @@ func (g *Gateway) handleMessage(ctx context.Context, conn *websocket.Conn, userI
 			}
 			stream(ChatMessage{Type: "status", Content: "agent offline, using tools mode"})
 			if g.tools != nil {
-				response, usage, err = g.tools(ctx, userID, msg.Messages, stream)
+				response, usage, err = g.tools(ctx, userID, conversationID, msg.Messages, stream)
 			} else {
 				err = fmt.Errorf("no handler available")
 			}
@@ -361,8 +371,20 @@ func (g *Gateway) handleMessage(ctx context.Context, conn *websocket.Conn, userI
 		return
 	}
 
-	// Persist assistant response (goroutine — 30s timeout)
-	if g.persist != nil {
+	respMsg := ChatMessage{Type: "response", Content: response, AgentName: conv.AgentName}
+	if usage != nil {
+		respMsg.Usage = usage
+	}
+
+	// Persist assistant response with channel metadata (goroutine — 30s timeout)
+	if g.persistFull != nil {
+		ch := withChannel(respMsg)
+		go func(content, channel, modelUsed string, tokenCount int) {
+			pCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+			defer cancel()
+			g.persistFull(pCtx, conversationID, "assistant", content, nil, "", channel, tokenCount, modelUsed)
+		}(response, ch.Channel, ch.ModelUsed, ch.TokenCount)
+	} else if g.persist != nil {
 		go func() {
 			pCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 			defer cancel()
@@ -370,10 +392,6 @@ func (g *Gateway) handleMessage(ctx context.Context, conn *websocket.Conn, userI
 		}()
 	}
 
-	respMsg := ChatMessage{Type: "response", Content: response, AgentName: conv.AgentName}
-	if usage != nil {
-		respMsg.Usage = usage
-	}
 	g.writeJSON(ctx, conn, respMsg)
 
 	// Auto-generate title after first user message (synchronous — handleMessage is already in goroutine)
@@ -398,7 +416,43 @@ func (g *Gateway) handleMessage(ctx context.Context, conn *websocket.Conn, userI
 	}
 }
 
+// withChannel sets the Channel field from the legacy Type field so both
+// coexist on the wire during the migration window. Also estimates TokenCount
+// from content length when not already set.
+func withChannel(msg ChatMessage) ChatMessage {
+	if msg.Channel == "" {
+		switch msg.Type {
+		case "token":
+			msg.Channel = "final"
+		case "response":
+			msg.Channel = "final"
+		case "thinking":
+			msg.Channel = "analysis"
+		case "tool_call":
+			msg.Channel = "tool_call"
+		case "tool_result":
+			msg.Channel = "tool_result"
+		case "status", "title_update":
+			msg.Channel = "status"
+		case "error":
+			msg.Channel = "error"
+		case "summary":
+			msg.Channel = "final"
+		default:
+			msg.Channel = "status"
+		}
+	}
+	if msg.TokenCount == 0 && msg.Content != "" {
+		msg.TokenCount = len(msg.Content) / 4 // rough char/4 estimate
+	}
+	if msg.ModelUsed == "" && msg.Usage != nil {
+		msg.ModelUsed = msg.Usage.Model
+	}
+	return msg
+}
+
 func (g *Gateway) writeJSON(ctx context.Context, conn *websocket.Conn, msg ChatMessage) {
+	msg = withChannel(msg) // dual-emit: populate Channel from Type for all outgoing frames
 	data, _ := json.Marshal(msg)
 	if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
 		g.logger.Warn("websocket write error", "error", err)

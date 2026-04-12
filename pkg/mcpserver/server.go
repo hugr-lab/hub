@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/hugr-lab/hub/pkg/agentconn"
 	"github.com/hugr-lab/hub/pkg/auth"
@@ -17,23 +20,29 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
-// Server provides per-user MCP endpoints at /mcp/{user_id}.
+// Server provides per-user MCP endpoints at /mcp.
 // Hugr discovery/schema/data tools come from query-engine/pkg/mcp.
 // Memory, registry, and LLM tools are added on top.
 type Server struct {
-	hugrClient *client.Client
-	llmRouter  *llmrouter.Router
-	agentConn  *agentconn.Manager
-	logger     *slog.Logger
-	debug      bool
+	hugrClient  *client.Client
+	llmRouter   *llmrouter.Router
+	agentConn   *agentconn.Manager
+	logger      *slog.Logger
+	debug       bool
+	storagePath string // HUB_STORAGE_PATH for disk checkpoints
 }
 
 func New(hugrClient *client.Client, llmRouter *llmrouter.Router, logger *slog.Logger, debug bool) *Server {
+	storagePath := os.Getenv("HUB_STORAGE_PATH")
+	if storagePath == "" {
+		storagePath = "/var/hub-storage"
+	}
 	return &Server{
-		hugrClient: hugrClient,
-		llmRouter:  llmRouter,
-		logger:     logger,
-		debug:      debug,
+		hugrClient:  hugrClient,
+		llmRouter:   llmRouter,
+		logger:      logger,
+		debug:       debug,
+		storagePath: storagePath,
 	}
 }
 
@@ -103,28 +112,53 @@ type ChatUsage struct {
 // Hub streams tool_calls/tool_results back to the client.
 // Returns the final assistant text + cumulative token usage across all turns.
 //
-// TODO(spec-e): clientMessages is currently the full history sent from the
-// browser. This couples the chat session to a single client tab — the agent
-// can't run autonomously, can't be resumed from a different browser, and any
-// background work between user turns is lost. Under Spec E (unified agent
-// runtime) the agent owns its history and reads it from hub.db.agent_messages
-// keyed by conversation_id; the WS message only carries the new user turn.
-// Until then, treat clientMessages as the canonical history but plan for the
-// signature to drop it in favour of (conversation_id, newUserMessage).
-func (s *Server) HandleUserMessage(ctx context.Context, userID string, clientMessages []llmrouter.Message, stream StatusCallback) (string, *ChatUsage, error) {
+// conversationID is used to load history from DB when clientMessages is empty
+// (Spec F stateful sessions). When clientMessages is non-empty it is used
+// as-is for backward compatibility during the migration window.
+func (s *Server) HandleUserMessage(ctx context.Context, userID string, clientMessages []llmrouter.Message, stream StatusCallback, conversationID string) (string, *ChatUsage, error) {
 	const maxTurns = 15
 
 	tools := s.getToolsForLLM()
 
-	// Use client history as-is — client owns the conversation state
-	history := make([]llmrouter.Message, len(clientMessages))
-	copy(history, clientMessages)
+	// Stateful sessions (Spec F): if client sent no history, load from DB.
+	// This enables tab-close resilience and cross-device resume.
+	var history []llmrouter.Message
+	if len(clientMessages) > 0 {
+		history = make([]llmrouter.Message, len(clientMessages))
+		copy(history, clientMessages)
+	} else if conversationID != "" {
+		loaded, err := s.loadConversationHistory(ctx, conversationID)
+		if err != nil {
+			s.logger.Warn("failed to load conversation history from DB, proceeding empty", "conversation", conversationID, "error", err)
+		} else {
+			history = loaded
+		}
+	}
 
 	// Aggregate usage across turns. The model name comes from the last
 	// `done` event we observed (all turns of one chat message hit the same
 	// model). Token counts are summed so the user sees the full cost of
 	// the agentic loop, not just the last turn.
 	usage := &ChatUsage{}
+
+	// Write agent_runs row (Spec F: lightweight run index).
+	// The deferred update sets final status after the loop returns.
+	runID := fmt.Sprintf("run-%d", time.Now().UnixNano())
+	if conversationID != "" {
+		s.insertAgentRun(ctx, runID, conversationID)
+		defer func() {
+			status := "done"
+			errMsg := ""
+			if usage.TokensIn == 0 && usage.TokensOut == 0 {
+				status = "crashed"
+				errMsg = "no tokens recorded"
+			}
+			s.updateAgentRun(ctx, runID, status, errMsg, usage.TokensIn, usage.TokensOut, usage.Model)
+			if status == "done" {
+				s.writeCheckpoint(conversationID, runID, usage)
+			}
+		}()
+	}
 
 	// Multi-turn loop with streaming
 	for turn := 0; turn < maxTurns; turn++ {
@@ -227,6 +261,159 @@ func (s *Server) HandleUserMessage(ctx context.Context, userID string, clientMes
 	}
 
 	return "", usage, fmt.Errorf("max turns (%d) reached", maxTurns)
+}
+
+// loadConversationHistory loads messages for a conversation from DB via Hugr
+// GraphQL. For branched conversations this uses the conversation_context view
+// which walks the parent chain. Returns messages ordered by created_at.
+func (s *Server) loadConversationHistory(ctx context.Context, conversationID string) ([]llmrouter.Message, error) {
+	res, err := s.hugrClient.Query(ctx,
+		`query($cid: String!) { hub { db { conversation_context(
+			conversation_id: $cid
+		) { role content tool_calls tool_call_id } } } }`,
+		map[string]any{"cid": conversationID},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("load conversation history: %w", err)
+	}
+	defer res.Close()
+	if res.Err() != nil {
+		return nil, fmt.Errorf("load conversation history: %w", res.Err())
+	}
+
+	var rows []struct {
+		Role       string `json:"role"`
+		Content    string `json:"content"`
+		ToolCalls  any    `json:"tool_calls"`
+		ToolCallID string `json:"tool_call_id"`
+	}
+	if err := res.ScanData("hub.db.conversation_context", &rows); err != nil {
+		return nil, fmt.Errorf("scan conversation history: %w", err)
+	}
+
+	messages := make([]llmrouter.Message, len(rows))
+	for i, r := range rows {
+		messages[i] = llmrouter.Message{
+			Role:       r.Role,
+			Content:    r.Content,
+			ToolCallID: r.ToolCallID,
+		}
+		if r.ToolCalls != nil {
+			data, _ := json.Marshal(r.ToolCalls)
+			var tc []any
+			json.Unmarshal(data, &tc)
+			messages[i].ToolCalls = tc
+		}
+	}
+	return messages, nil
+}
+
+// insertAgentRun creates an agent_runs row with status=running.
+func (s *Server) insertAgentRun(ctx context.Context, runID, conversationID string) {
+	res, err := s.hugrClient.Query(ctx,
+		`mutation($id: String!, $cid: String!) {
+			hub { db { insert_agent_runs(data: {
+				id: $id, conversation_id: $cid, turn_index: 0, status: "running"
+			}) { id } } }
+		}`,
+		map[string]any{"id": runID, "cid": conversationID},
+	)
+	if err != nil {
+		s.logger.Warn("failed to insert agent_run", "run", runID, "error", err)
+		return
+	}
+	defer res.Close()
+	if res.Err() != nil {
+		s.logger.Warn("insert agent_run error", "run", runID, "error", res.Err())
+	}
+}
+
+// updateAgentRun finalizes an agent_runs row with status, tokens, model.
+func (s *Server) updateAgentRun(ctx context.Context, runID, status, errMsg string, tokensIn, tokensOut int, model string) {
+	vars := map[string]any{"id": runID, "status": status, "ti": tokensIn, "to": tokensOut}
+	dataParts := `status: $status, tokens_in: $ti, tokens_out: $to`
+	varDefs := `$id: String!, $status: String!, $ti: Int!, $to: Int!`
+
+	if errMsg != "" {
+		varDefs += `, $err: String`
+		dataParts += `, error: $err`
+		vars["err"] = errMsg
+	}
+
+	// Use context.WithoutCancel so the update survives request cancellation.
+	updateCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+
+	gql := fmt.Sprintf(`mutation(%s) {
+		hub { db { update_agent_runs(
+			filter: { id: { eq: $id } },
+			data: { %s }
+		) { affected_rows } } }
+	}`, varDefs, dataParts)
+
+	res, err := s.hugrClient.Query(updateCtx, gql, vars)
+	if err != nil {
+		s.logger.Warn("failed to update agent_run", "run", runID, "error", err)
+		return
+	}
+	defer res.Close()
+	if res.Err() != nil {
+		s.logger.Warn("update agent_run error", "run", runID, "error", res.Err())
+	}
+}
+
+// writeCheckpoint writes L2 context snapshot and L1 turn state to disk.
+// This is write-only in Spec F — recovery reads are deferred to Spec G.
+func (s *Server) writeCheckpoint(conversationID, runID string, usage *ChatUsage) {
+	if s.storagePath == "" || conversationID == "" {
+		return
+	}
+
+	convDir := filepath.Join(s.storagePath, "conversations", conversationID)
+	turnDir := filepath.Join(convDir, "turns", runID)
+
+	// L1: turn directory with state.json
+	if err := os.MkdirAll(turnDir, 0o755); err != nil {
+		s.logger.Warn("failed to create turn dir", "path", turnDir, "error", err)
+		return
+	}
+	stateJSON, _ := json.Marshal(map[string]any{
+		"status":    "done",
+		"tokens_in": usage.TokensIn,
+		"tokens_out": usage.TokensOut,
+		"model":     usage.Model,
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
+	})
+	if err := os.WriteFile(filepath.Join(turnDir, "state.json"), stateJSON, 0o644); err != nil {
+		s.logger.Warn("failed to write state.json", "run", runID, "error", err)
+	}
+
+	// L2: append to context.jsonl
+	contextFile := filepath.Join(convDir, "context.jsonl")
+	entry, _ := json.Marshal(map[string]any{
+		"turn_id":    runID,
+		"tokens_in":  usage.TokensIn,
+		"tokens_out": usage.TokensOut,
+		"model":      usage.Model,
+		"ts":         time.Now().UTC().Format(time.RFC3339),
+	})
+	f, err := os.OpenFile(contextFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		s.logger.Warn("failed to open context.jsonl", "path", contextFile, "error", err)
+		return
+	}
+	f.Write(append(entry, '\n'))
+	f.Close()
+
+	// L2: checkpoint snapshot (copy of context.jsonl for branching)
+	checkpointDir := filepath.Join(convDir, "checkpoints")
+	os.MkdirAll(checkpointDir, 0o755)
+	// The actual message_id for the snapshot ref would come from the
+	// persist callback — for now we use the runID as a proxy.
+	src, err := os.ReadFile(contextFile)
+	if err == nil {
+		os.WriteFile(filepath.Join(checkpointDir, runID+".bin"), src, 0o644)
+	}
 }
 
 // executeTool calls a tool handler directly for tools mode.

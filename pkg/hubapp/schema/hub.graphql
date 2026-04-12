@@ -236,6 +236,16 @@ type agent_messages @table(name: "agent_messages") {
   )
   """True if this message is a summary of other messages"""
   is_summary: Boolean
+  """Channel type: final, status, analysis, tool_call, tool_result, plan, sub_agent, dive, hitl, hud, error"""
+  channel: String
+  """Channel-specific structured data (tool args, plan steps, etc.)"""
+  payload: JSON
+  """Estimated token count for this message"""
+  token_count: Int
+  """Which AI model produced this message"""
+  model_used: String
+  """Filesystem path to context snapshot at this point (for branching)"""
+  context_snapshot_ref: String
   """When the message was created"""
   created_at: Timestamp @default(insert_exp: "NOW()")
 }
@@ -359,6 +369,43 @@ type tool_calls @table(name: "tool_calls") {
   created_at: Timestamp @default(insert_exp: "NOW()")
 }
 
+"""Per-turn run record for a conversation. One row per user message → assistant response cycle.
+Tracks timing, resource consumption, model breakdown by intent, and status."""
+type agent_runs @table(name: "agent_runs") {
+  """Run ID (e.g. run-{nanos})"""
+  id: String! @pk
+  """Conversation this run belongs to"""
+  conversation_id: String! @field_references(
+    name: "runs_conv_ref"
+    references_name: "conversations"
+    field: "id"
+    query: "conversation"
+    description: "Conversation this run belongs to"
+    references_query: "runs"
+    references_description: "Turn runs for this conversation"
+  )
+  """Sequential turn number within conversation"""
+  turn_index: Int!
+  """Run status: running, done, crashed, awaiting_hitl"""
+  status: String!
+  """When the turn began"""
+  started_at: Timestamp!
+  """When the turn completed (null if still running)"""
+  finished_at: Timestamp
+  """Total input tokens across all LLM calls in this turn"""
+  tokens_in: Int
+  """Total output tokens"""
+  tokens_out: Int
+  """Per-intent breakdown: {intent: {model, tokens_in, tokens_out}}"""
+  model_breakdown: JSON
+  """Filesystem path to L1 turn directory (for recovery)"""
+  context_ref: String
+  """Error message if status=crashed"""
+  error: String
+  """When this record was created"""
+  created_at: Timestamp @default(insert_exp: "NOW()")
+}
+
 """Token and request budget limits per user, role, or global scope.
 LLM providers are now Hugr data sources (llm-openai, llm-anthropic, llm-gemini).
 provider_id references the data source name (e.g. claude, gpt4)."""
@@ -408,6 +455,10 @@ type llm_usage @table(name: "llm_usage") {
   duration_ms: Int
   """Period bucket key (e.g. 2026-04-02/hour/14)"""
   period_key: String!
+  """Intent type that triggered routing (default, planning, tool_calling, summarization, classification)"""
+  intent: String
+  """Actual model used after intent routing and fallback"""
+  resolved_model: String
   """When the request was made"""
   created_at: Timestamp @default(insert_exp: "NOW()")
 }

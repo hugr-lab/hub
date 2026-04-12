@@ -28,6 +28,11 @@ export interface WsMessage {
   agent_name?: string;
   usage?: UsageInfo;
   summary_of?: string[];
+  // Channel protocol fields (Spec F) — coexist with type during migration
+  channel?: string;
+  payload?: any;
+  token_count?: number;
+  model_used?: string;
 }
 
 // ── WebSocket ──────────────────────────────────────────

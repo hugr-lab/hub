@@ -305,9 +305,10 @@ async def _has_hub_management_admin(user_id: str, user_name: str, role: str) -> 
     """Return True if the caller's role has the hub:management.admin capability
     enabled in Hugr core.role_permissions.
 
-    Uses the management secret + x-hugr-impersonated-* headers to evaluate the
-    permission against the target role (requires the admin-keyed role in Hugr
-    to have can_impersonate=true — see .env.example for setup).
+    Uses function.core.auth.check_access with the management secret +
+    x-hugr-impersonated-* headers to evaluate the permission against the
+    target role (requires the admin-keyed role in Hugr to have
+    can_impersonate=true — see .env.example for setup).
     """
     hugr_secret = os.environ.get("HUGR_SECRET_KEY", "")
     if not hugr_secret or not role:
@@ -317,8 +318,9 @@ async def _has_hub_management_admin(user_id: str, user_name: str, role: str) -> 
             resp = await client.post(
                 f"{HUGR_URL}/query",
                 json={"query": (
-                    "{ function { core { auth { my_permissions { disabled "
-                    "permissions { object field disabled } } } } } }"
+                    '{ function { core { auth { check_access('
+                    'type_name: "hub:management", fields: "admin"'
+                    ') { field enabled } } } } }'
                 )},
                 headers={
                     "X-Hugr-Secret-Key": hugr_secret,
@@ -328,24 +330,18 @@ async def _has_hub_management_admin(user_id: str, user_name: str, role: str) -> 
                 },
                 timeout=5,
             )
-        payload = (
+        entries = (
             (resp.json() or {})
             .get("data", {})
             .get("function", {})
             .get("core", {})
             .get("auth", {})
-            .get("my_permissions")
-            or {}
+            .get("check_access")
+            or []
         )
-        if payload.get("disabled", False):
-            return False
-        for p in payload.get("permissions", []) or []:
-            if (
-                p.get("object") == "hub:management"
-                and p.get("field") == "admin"
-                and not p.get("disabled", True)
-            ):
-                return True
+        for e in entries:
+            if e.get("field") == "admin":
+                return e.get("enabled", False)
     except Exception as e:
         logger.warning("Failed to check hub:management.admin capability for %s: %s", user_id, e)
     return False
