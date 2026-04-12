@@ -11,13 +11,13 @@ import (
 	"nhooyr.io/websocket"
 )
 
-// RunLocal starts the agent in local mode — HTTP server with WebSocket
-// endpoints at /ws/{conversation_id} and /health.
+// RunLocal starts the agent in local mode — listens on localhost for
+// WebSocket connections from ChatWebSocketHandler (routed by hub-chat).
+// Hub-service is NOT involved in message routing for local agents.
 func (a *Agent) RunLocal(ctx context.Context, listenAddr string) error {
 	if err := a.Connect(ctx); err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
-	a.skills.Load()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws/", a.handleLocalWS)

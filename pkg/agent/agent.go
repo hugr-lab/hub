@@ -306,10 +306,12 @@ type historyMessage struct {
 // RunWebSocket connects to Hub Service via WebSocket and processes messages.
 // Reconnects with exponential backoff on disconnect.
 func (a *Agent) RunWebSocket(ctx context.Context, wsURL, instanceID string) error {
-	if err := a.Connect(ctx); err != nil {
-		return err
+	// Connect if not already connected (idempotent — RunLocal may have called first)
+	if a.hubClient == nil {
+		if err := a.Connect(ctx); err != nil {
+			return err
+		}
 	}
-	a.skills.Load()
 
 	endpoint := wsURL + "/agent/ws/" + instanceID
 	a.logger.Info("agent WebSocket mode", "endpoint", endpoint)
@@ -345,8 +347,9 @@ func (a *Agent) RunWebSocket(ctx context.Context, wsURL, instanceID string) erro
 // wsSession runs a single WebSocket connection session. Returns true if connection was established.
 func (a *Agent) wsSession(ctx context.Context, endpoint string) (bool, error) {
 	headers := make(map[string][]string)
-	if a.authToken != "" {
-		headers["Authorization"] = []string{"Bearer " + a.authToken}
+	token := a.CurrentToken()
+	if token != "" {
+		headers["Authorization"] = []string{"Bearer " + token}
 	}
 
 	conn, _, err := websocket.Dial(ctx, endpoint, &websocket.DialOptions{
