@@ -256,17 +256,12 @@ func (s *Server) HandleUserMessage(ctx context.Context, userID string, clientMes
 // GraphQL. For branched conversations this uses the conversation_context view
 // which walks the parent chain. Returns messages ordered by created_at.
 func (s *Server) loadConversationHistory(ctx context.Context, conversationID string) ([]llmrouter.Message, error) {
-	// Load messages directly from agent_messages for this conversation.
-	// The conversation_context recursive view is defined in hub.graphql but
-	// its raw SQL references hub.db.* paths that DuckDB cannot resolve at
-	// query time. Until Hugr supports parameterised views natively, we fall
-	// back to a flat query. Branched conversations will get only their own
-	// messages — full parent-chain resolution is deferred to Spec G.
+	// Use conversation_context recursive view — walks the parent chain for
+	// branched conversations, returning messages in created_at order.
 	res, err := s.hugrClient.Query(ctx,
-		`query($cid: String!) { hub { db { agent_messages(
-			filter: { conversation_id: { eq: $cid } }
-			order_by: [{ field: "created_at", direction: ASC }]
-		) { role content tool_calls tool_call_id created_at } } } }`,
+		`query($cid: String!) { hub { db { conversation_context(
+			args: { conversation_id: $cid }
+		) { role content tool_calls tool_call_id } } } }`,
 		map[string]any{"cid": conversationID},
 	)
 	if err != nil {
@@ -283,7 +278,7 @@ func (s *Server) loadConversationHistory(ctx context.Context, conversationID str
 		ToolCalls  any    `json:"tool_calls"`
 		ToolCallID string `json:"tool_call_id"`
 	}
-	if err := res.ScanData("hub.db.agent_messages", &rows); err != nil {
+	if err := res.ScanData("hub.db.conversation_context", &rows); err != nil {
 		return nil, fmt.Errorf("scan conversation history: %w", err)
 	}
 

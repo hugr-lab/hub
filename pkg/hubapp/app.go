@@ -267,6 +267,7 @@ func (a *HubApp) Init(ctx context.Context) error {
 					{Role: "system", Content: "Generate a very short title (3-6 words, no quotes) for a chat that starts with this message. Reply with ONLY the title, nothing else."},
 					{Role: "user", Content: userMessage},
 				},
+				Intent: "classification",
 			})
 			if err != nil {
 				return ""
@@ -403,7 +404,7 @@ func toAnySlice(v any) []any {
 }
 
 func (a *HubApp) persistMessage(ctx context.Context, conversationID, role, content string) {
-	a.persistMessageFull(ctx, conversationID, role, content, nil, "", "", 0, "")
+	a.persistMessageFull(ctx, conversationID, role, content, nil, "", "final", 0, "")
 }
 
 func (a *HubApp) persistMessageFull(ctx context.Context, conversationID, role, content string, toolCalls any, toolCallID string, channel string, tokenCount int, modelUsed string) {

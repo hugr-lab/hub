@@ -779,7 +779,7 @@ func (a *HubApp) handleBranchConversationAt(w *app.Result, r *app.Request) error
 	}
 
 	// Clone context snapshot (T028) — copy checkpoint to new conversation dir.
-	a.cloneContextSnapshot(parentID, convID, snapshotRef)
+	a.cloneContextSnapshot(convID, snapshotRef)
 
 	a.logger.Info("conversation branched at message", "parent", parentID, "branch", convID, "message", input.MessageID, "by", u.ID)
 	return w.SetJSON(map[string]any{
@@ -795,7 +795,7 @@ func (a *HubApp) handleBranchConversationAt(w *app.Result, r *app.Request) error
 // to a new conversation's context.jsonl for branch resume. If there is no
 // snapshot to clone the branch starts with an empty disk state — the
 // conversation_context view still provides full history from DB.
-func (a *HubApp) cloneContextSnapshot(_, dstConvID string, snapshotRef *string) {
+func (a *HubApp) cloneContextSnapshot(dstConvID string, snapshotRef *string) {
 	if a.config.StoragePath == "" {
 		return
 	}

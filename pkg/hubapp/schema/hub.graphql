@@ -473,21 +473,21 @@ type conversation_context @view(
   sql: """
   WITH RECURSIVE conv_chain AS (
     SELECT id, parent_id, branch_point_message_id, 0 AS depth
-    FROM hub.db.conversations WHERE id = [$conversation_id]
+    FROM conversations WHERE id = [$conversation_id]
     UNION ALL
     SELECT c.id, c.parent_id, c.branch_point_message_id, cc.depth + 1
-    FROM hub.db.conversations c
+    FROM conversations c
     JOIN conv_chain cc ON c.id = cc.parent_id
     WHERE cc.depth < 3
   )
   SELECT m.id, m.conversation_id, m.role, m.content,
          m.tool_calls, m.tool_call_id, m.tokens_used, m.model,
          m.is_summary, m.summarized_by, m.created_at
-  FROM hub.db.agent_messages m
+  FROM agent_messages m
   JOIN conv_chain cc ON m.conversation_id = cc.id
   WHERE cc.branch_point_message_id IS NULL
      OR m.created_at <= (
-       SELECT created_at FROM hub.db.agent_messages
+       SELECT created_at FROM agent_messages
        WHERE id = cc.branch_point_message_id
      )
   ORDER BY m.created_at
