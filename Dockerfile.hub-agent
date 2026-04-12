@@ -1,6 +1,5 @@
-FROM golang:1.26-alpine AS builder
+FROM golang:1.26 AS builder
 
-RUN apk add --no-cache gcc g++ musl-dev
 WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download
@@ -9,7 +8,7 @@ COPY cmd/ cmd/
 COPY pkg/ pkg/
 RUN CGO_ENABLED=0 go build -o /hub-agent ./cmd/hub-agent/ \
     && CGO_ENABLED=0 go build -o /sandbox-mcp ./cmd/sandbox-mcp/ \
-    && CGO_ENABLED=1 go build -tags duckdb_arrow -ldflags '-linkmode external -extldflags "-static"' -o /result-store-mcp ./cmd/result-store-mcp/
+    && CGO_ENABLED=1 go build -tags duckdb_arrow -o /result-store-mcp ./cmd/result-store-mcp/
 
 FROM python:3.12-slim
 RUN apt-get update && apt-get install -y --no-install-recommends bash curl && rm -rf /var/lib/apt/lists/*

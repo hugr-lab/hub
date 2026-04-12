@@ -11,15 +11,14 @@ ARG DUCKDB_KERNEL_VERSION=v0.3.5
 # -----------------------------------------------------------------------------
 # Stage 0: Build hub-agent + MCP server binaries (Go)
 # -----------------------------------------------------------------------------
-FROM golang:1.26-alpine AS go-builder
-RUN apk add --no-cache gcc g++ musl-dev
+FROM golang:1.26 AS go-builder
 WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd/ cmd/
 COPY pkg/ pkg/
 RUN CGO_ENABLED=0 go build -o /hub-agent ./cmd/hub-agent/ \
-    && CGO_ENABLED=1 go build -tags duckdb_arrow -ldflags '-linkmode external -extldflags "-static"' -o /result-store-mcp ./cmd/result-store-mcp/ \
+    && CGO_ENABLED=1 go build -tags duckdb_arrow -o /result-store-mcp ./cmd/result-store-mcp/ \
     && CGO_ENABLED=0 go build -o /kernel-mcp ./cmd/kernel-mcp/
 
 # -----------------------------------------------------------------------------
