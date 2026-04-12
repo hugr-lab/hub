@@ -319,6 +319,22 @@ export function hasLLM(): boolean {
   return _hasLLM ?? false;
 }
 
+/**
+ * List LLM models available to the current user (permission-filtered).
+ * Uses hub.my_available_models table function (Spec G).
+ */
+export async function myAvailableModelsGQL(): Promise<ModelInfo[]> {
+  try {
+    const data = await gqlQuery(`{
+      hub { my_available_models { name type provider model } }
+    }`);
+    return data?.hub?.my_available_models ?? [];
+  } catch (err) {
+    // Fallback to unfiltered model list
+    return listModels();
+  }
+}
+
 // ── Agent instances (for sidebar "New Chat → Agent") ──────
 
 export async function listAgentInstances(): Promise<AgentInstance[]> {

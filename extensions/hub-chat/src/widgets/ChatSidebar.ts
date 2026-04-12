@@ -1,13 +1,13 @@
 /**
  * ChatSidebar — conversation tree in left sidebar.
  * Uses ConversationTree for hierarchical display with branches.
- * Disables LLM/Tools modes when no LLM configured.
+ * Two chat modes: Quick Chat (LLM direct) and Agent.
  */
 import { Widget } from '@lumino/widgets';
 import { MainAreaWidget } from '@jupyterlab/apputils';
 import {
   listConversations, createConversation, renameConversation, deleteConversation,
-  moveConversation, listModels, listAgentInstances, hasLLM,
+  moveConversation, listModels, myAvailableModelsGQL, listAgentInstances, hasLLM,
   Conversation,
 } from '../convApiGraphQL.js';
 import { ConversationTree } from './ConversationTree.js';
@@ -103,17 +103,14 @@ export class ChatSidebarWidget extends Widget {
     const dialog = document.createElement('div');
     dialog.className = 'hub-chat-sidebar-dialog';
 
-    const toolsDisabled = !llmAvailable ? 'disabled' : '';
     const llmDisabled = !llmAvailable ? 'disabled' : '';
-    const toolsTooltip = !llmAvailable ? 'title="No LLM models configured"' : '';
     const llmTooltip = !llmAvailable ? 'title="No LLM models configured"' : '';
 
     dialog.innerHTML = `
       <div class="hub-chat-sidebar-dialog-title">New Chat</div>
       <select id="hc-mode">
-        <option value="tools" ${toolsDisabled} ${toolsTooltip}>LLM + Tools</option>
-        <option value="llm" ${llmDisabled} ${llmTooltip}>LLM only</option>
         <option value="agent">Agent</option>
+        <option value="llm" ${llmDisabled} ${llmTooltip}>Quick Chat</option>
       </select>
       <div id="hc-model-row" style="display:none">
         <select id="hc-model"><option value="">Loading models...</option></select>
@@ -138,11 +135,6 @@ export class ChatSidebarWidget extends Widget {
     let modelsLoaded = false;
     let agentsLoaded = false;
 
-    // If no LLM, default to agent mode
-    if (!llmAvailable) {
-      modeSelect.value = 'agent';
-    }
-
     const updateModeUI = async () => {
       modelRow.style.display = 'none';
       agentRow.style.display = 'none';
@@ -151,7 +143,7 @@ export class ChatSidebarWidget extends Widget {
         modelRow.style.display = '';
         if (!modelsLoaded) {
           modelsLoaded = true;
-          const models = await listModels();
+          const models = await myAvailableModelsGQL();
           modelSelect.innerHTML = '';
           if (models.length === 0) {
             modelSelect.innerHTML = '<option value="">No models available</option>';
@@ -171,13 +163,12 @@ export class ChatSidebarWidget extends Widget {
           const agents = await listAgentInstances();
           agentSelect.innerHTML = '';
           if (agents.length === 0) {
-            agentSelect.innerHTML = '<option value="">No running agents</option>';
+            agentSelect.innerHTML = '<option value="">No agents available</option>';
           } else {
             for (const a of agents) {
               const opt = document.createElement('option');
               opt.value = a.id;
-              const status = a.connected ? 'connected' : 'disconnected';
-              opt.textContent = `${a.display_name || a.agent_type_id} (${status})`;
+              opt.textContent = `${a.display_name || a.agent_type_id}`;
               agentSelect.appendChild(opt);
             }
           }
@@ -189,7 +180,7 @@ export class ChatSidebarWidget extends Widget {
 
     dialog.querySelector('#hc-cancel')!.addEventListener('click', () => dialog.remove());
     dialog.querySelector('#hc-create')!.addEventListener('click', async () => {
-      const mode = modeSelect.value as 'llm' | 'tools' | 'agent';
+      const mode = modeSelect.value as 'llm' | 'agent';
       const title = (dialog.querySelector('#hc-title') as HTMLInputElement).value.trim();
       const model = mode === 'llm' ? modelSelect.value : undefined;
       const agentId = mode === 'agent' ? agentSelect.value : undefined;
