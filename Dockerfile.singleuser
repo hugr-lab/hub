@@ -19,7 +19,8 @@ COPY cmd/ cmd/
 COPY pkg/ pkg/
 RUN CGO_ENABLED=0 go build -o /hub-agent ./cmd/hub-agent/ \
     && CGO_ENABLED=1 go build -tags duckdb_arrow -o /result-store-mcp ./cmd/result-store-mcp/ \
-    && CGO_ENABLED=0 go build -o /kernel-mcp ./cmd/kernel-mcp/
+    && CGO_ENABLED=0 go build -o /kernel-mcp ./cmd/kernel-mcp/ \
+    && CGO_ENABLED=0 go build -o /sandbox-mcp ./cmd/sandbox-mcp/
 
 # -----------------------------------------------------------------------------
 # Stage 1: Build Hub JupyterLab extensions (needs Node.js + Python)
@@ -134,6 +135,7 @@ RUN pip install --no-cache-dir --break-system-packages /tmp/agent-bridge/ && rm 
 COPY --from=go-builder /hub-agent /usr/local/bin/hub-agent
 COPY --from=go-builder /result-store-mcp /usr/local/bin/result-store-mcp
 COPY --from=go-builder /kernel-mcp /usr/local/bin/kernel-mcp
+COPY --from=go-builder /sandbox-mcp /usr/local/bin/sandbox-mcp
 
 # Skills catalog (built-in skill definitions)
 COPY system/skills/ /usr/local/share/hub-agent/skills/

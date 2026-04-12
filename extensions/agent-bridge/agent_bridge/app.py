@@ -138,6 +138,12 @@ async def _start_agent() -> bool:
                 "command": "kernel-mcp",
                 "transport": "stdio",
             })
+        if _binary_exists("sandbox-mcp"):
+            mcp_servers.append({
+                "name": "sandbox",
+                "command": "sandbox-mcp",
+                "transport": "stdio",
+            })
         with open(config_path, "w") as f:
             json.dump({"max_turns": 15, "mcp_servers": mcp_servers}, f, indent=2)
     env.setdefault("AGENT_CONFIG", config_path)
