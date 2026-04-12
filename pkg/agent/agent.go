@@ -97,6 +97,16 @@ func (a *Agent) Connect(ctx context.Context) error {
 	}
 
 	a.logger.Info("tool registry ready", "total_tools", len(a.registry.AllTools()))
+
+	// 3. Load skill catalog and filter by agent capabilities (if agent_id set)
+	a.skills.Load()
+	agentID := os.Getenv("HUB_AGENT_ID")
+	if agentID == "" {
+		agentID = os.Getenv("AGENT_INSTANCE_ID")
+	}
+	if agentID != "" {
+		a.filterSkillsByCapabilities(ctx, agentID)
+	}
 	return nil
 }
 
@@ -115,6 +125,51 @@ func (a *Agent) CallHubTool(ctx context.Context, name string, args map[string]an
 		return extractText(result), fmt.Errorf("hub tool error: %s", extractText(result))
 	}
 	return extractText(result), nil
+}
+
+// filterSkillsByCapabilities calls hub.agent_capabilities via MCP to get
+// the allowed skill list for this agent, then filters the skill catalog.
+func (a *Agent) filterSkillsByCapabilities(ctx context.Context, agentID string) {
+	// Call the agent_capabilities tool to get allowed skills
+	result, err := a.CallHubTool(ctx, "data-inline_graphql_result", map[string]any{
+		"query": fmt.Sprintf(`{ hub { agent_capabilities(agent_id: "%s") { skill_id context } } }`, agentID),
+	})
+	if err != nil {
+		a.logger.Warn("failed to fetch agent capabilities, using all skills", "agent", agentID, "error", err)
+		return
+	}
+
+	// Parse the result to extract skill IDs
+	var parsed struct {
+		Hub struct {
+			Capabilities []struct {
+				SkillID string `json:"skill_id"`
+				Context string `json:"context"`
+			} `json:"agent_capabilities"`
+		} `json:"hub"`
+	}
+	if err := json.Unmarshal([]byte(result), &parsed); err != nil {
+		a.logger.Warn("failed to parse agent capabilities", "error", err)
+		return
+	}
+
+	if len(parsed.Hub.Capabilities) == 0 {
+		a.logger.Debug("no capabilities returned, using all skills", "agent", agentID)
+		return
+	}
+
+	var allowedIDs []string
+	runtimeCtx := "any"
+	for _, c := range parsed.Hub.Capabilities {
+		allowedIDs = append(allowedIDs, c.SkillID)
+		if c.Context != "" && c.Context != "any" {
+			runtimeCtx = c.Context
+		}
+	}
+
+	// Filter catalog
+	filtered := a.skills.Filter(runtimeCtx, allowedIDs)
+	a.logger.Info("skills filtered by capabilities", "agent", agentID, "context", runtimeCtx, "allowed", len(filtered), "total", len(a.skills.All()))
 }
 
 // HandleMessage processes a user message through the agentic loop.

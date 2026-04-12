@@ -21,7 +21,10 @@ import (
 	"syscall"
 	"time"
 
+	"database/sql"
+
 	"github.com/apache/arrow-go/v18/arrow/ipc"
+	"github.com/duckdb/duckdb-go/v2"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -291,17 +294,75 @@ func handleHead(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResu
 	return toolError(fmt.Sprintf("result %q not found", name)), nil
 }
 
-// handleQuery runs SQL over a saved result (stub — DuckDB integration deferred).
+// handleQuery runs SQL over a saved result using embedded DuckDB.
 func handleQuery(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	name, _ := args["name"].(string)
-	sql, _ := args["sql"].(string)
-	if name == "" || sql == "" {
+	sqlQuery, _ := args["sql"].(string)
+	if name == "" || sqlQuery == "" {
 		return toolError("name and sql are required"), nil
 	}
-	// DuckDB embedded query will be implemented when go-duckdb is added.
-	// For now, return a helpful message.
-	return toolError("result.query with DuckDB SQL is not yet available. Use result.head to preview data, or query via Hugr GraphQL."), nil
+	name = sanitizeName(name)
+
+	// Find the result file(s) and build CREATE VIEW
+	var tableDef string
+	arrowPath := filepath.Join(resultsDir, name+".arrow")
+	jsonPath := filepath.Join(resultsDir, name+".json")
+	dirPath := filepath.Join(resultsDir, name)
+
+	if _, err := os.Stat(arrowPath); err == nil {
+		tableDef = fmt.Sprintf("CREATE VIEW %s AS SELECT * FROM read_ipc('%s')", name, arrowPath)
+	} else if _, err := os.Stat(jsonPath); err == nil {
+		tableDef = fmt.Sprintf("CREATE VIEW %s AS SELECT * FROM read_json_auto('%s')", name, jsonPath)
+	} else if info, err := os.Stat(dirPath); err == nil && info.IsDir() {
+		tableDef = fmt.Sprintf("CREATE VIEW %s AS SELECT * FROM read_ipc('%s/*.arrow')", name, dirPath)
+	} else {
+		return toolError(fmt.Sprintf("result %q not found", name)), nil
+	}
+
+	// Execute via embedded DuckDB
+	connector, err := duckdb.NewConnector("", nil)
+	if err != nil {
+		return toolError(fmt.Sprintf("DuckDB init: %v", err)), nil
+	}
+	defer connector.Close()
+
+	db := sql.OpenDB(connector)
+	defer db.Close()
+
+	// Create view for the saved result
+	if _, err := db.ExecContext(ctx, tableDef); err != nil {
+		return toolError(fmt.Sprintf("DuckDB create view: %v", err)), nil
+	}
+
+	// Execute user query
+	dbRows, err := db.QueryContext(ctx, sqlQuery)
+	if err != nil {
+		return toolError(fmt.Sprintf("DuckDB query: %v", err)), nil
+	}
+	defer dbRows.Close()
+
+	// Convert to JSON
+	cols, _ := dbRows.Columns()
+	var rows []map[string]any
+	for dbRows.Next() {
+		values := make([]any, len(cols))
+		ptrs := make([]any, len(cols))
+		for i := range values {
+			ptrs[i] = &values[i]
+		}
+		if err := dbRows.Scan(ptrs...); err != nil {
+			continue
+		}
+		row := make(map[string]any, len(cols))
+		for i, col := range cols {
+			row[col] = values[i]
+		}
+		rows = append(rows, row)
+	}
+
+	data, _ := json.MarshalIndent(rows, "", "  ")
+	return toolResult(string(data)), nil
 }
 
 // handleDrop deletes a saved result.
