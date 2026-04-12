@@ -120,12 +120,26 @@ async def _start_agent() -> bool:
     if os.path.isdir(skills_dir):
         env.setdefault("AGENT_SKILLS_DIR", skills_dir)
 
-    # Agent config — use default if available
+    # Agent config — create with MCP servers if not exists
     config_path = os.path.expanduser("~/.agent/config.json")
     if not os.path.exists(config_path):
         os.makedirs(os.path.dirname(config_path), exist_ok=True)
+        # Static MCP server config — will move to agent_types DB config (Spec H)
+        mcp_servers = []
+        if _binary_exists("result-store-mcp"):
+            mcp_servers.append({
+                "name": "result-store",
+                "command": "result-store-mcp",
+                "transport": "stdio",
+            })
+        if _binary_exists("kernel-mcp"):
+            mcp_servers.append({
+                "name": "kernel",
+                "command": "kernel-mcp",
+                "transport": "stdio",
+            })
         with open(config_path, "w") as f:
-            json.dump({"max_turns": 15, "mcp_servers": []}, f)
+            json.dump({"max_turns": 15, "mcp_servers": mcp_servers}, f, indent=2)
     env.setdefault("AGENT_CONFIG", config_path)
 
     logger.info("starting hub-agent: %s", agent_bin)
@@ -166,6 +180,12 @@ async def _check_health() -> bool:
         return resp.code == 200
     except Exception:
         return False
+
+
+def _binary_exists(name: str) -> bool:
+    """Check if a binary is available in PATH."""
+    import shutil
+    return shutil.which(name) is not None
 
 
 def _find_agent_binary() -> str | None:
