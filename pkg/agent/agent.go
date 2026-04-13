@@ -17,7 +17,7 @@ import (
 	mcpclient "github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
-	"nhooyr.io/websocket"
+	"github.com/coder/websocket"
 )
 
 // Agent is the main runtime. Connects to Hub Service MCP and local MCP servers,
@@ -34,6 +34,9 @@ type Agent struct {
 	learner     *Learner
 	config      *AgentConfig
 	logger      *slog.Logger
+
+	// Per-conversation session state (local mode only)
+	sessions *SessionManager
 }
 
 func New(hubURL, authToken, skillsDir string, config *AgentConfig, logger *slog.Logger) *Agent {
@@ -43,6 +46,7 @@ func New(hubURL, authToken, skillsDir string, config *AgentConfig, logger *slog.
 		registry:    NewToolRegistry(),
 		skills:      NewSkillCatalog(skillsDir, logger),
 		skillRouter: NewSkillRouter(),
+		sessions:    NewSessionManager(),
 		config:      config,
 		logger:      logger,
 	}
@@ -71,12 +75,15 @@ func (a *Agent) CurrentToken() string {
 // Connect establishes all MCP connections and builds the tool registry.
 func (a *Agent) Connect(ctx context.Context) error {
 	// 1. Connect to Hub Service MCP (HTTP transport)
-	var opts []transport.StreamableHTTPCOption
-	token := a.CurrentToken()
-	if token != "" {
-		opts = append(opts, transport.WithHTTPHeaders(map[string]string{
-			"Authorization": "Bearer " + token,
-		}))
+	// Use dynamic header function so the token is refreshed on every request.
+	// OIDC tokens in workspace expire every 60s; static headers cause 401.
+	opts := []transport.StreamableHTTPCOption{
+		transport.WithHTTPHeaderFunc(func(_ context.Context) map[string]string {
+			if t := a.CurrentToken(); t != "" {
+				return map[string]string{"Authorization": "Bearer " + t}
+			}
+			return nil
+		}),
 	}
 	client, err := mcpclient.NewStreamableHttpClient(a.hubURL, opts...)
 	if err != nil {
@@ -151,7 +158,7 @@ func (a *Agent) CallHubTool(ctx context.Context, name string, args map[string]an
 func (a *Agent) filterSkillsByCapabilities(ctx context.Context, agentID string) {
 	// Call the agent_capabilities tool to get allowed skills
 	result, err := a.CallHubTool(ctx, "data-inline_graphql_result", map[string]any{
-		"query": fmt.Sprintf(`{ hub { agent_capabilities(agent_id: "%s") { skill_id context } } }`, agentID),
+		"query": fmt.Sprintf(`{ hub { agent_capabilities(args: {agent_id: "%s"}) { skill_id context } } }`, agentID),
 	})
 	if err != nil {
 		a.logger.Warn("failed to fetch agent capabilities, using all skills", "agent", agentID, "error", err)
@@ -219,7 +226,8 @@ func (a *Agent) HandleMessagesWithStream(ctx context.Context, messages []history
 		history = append(history, msg)
 	}
 
-	return a.runAgenticLoopWithStream(ctx, history, stream)
+	resp, _, err := a.runAgenticLoopWithStream(ctx, history, stream)
+	return resp, err
 }
 
 // HandleMessages processes a full conversation history through the agentic loop.

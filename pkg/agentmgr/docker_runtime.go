@@ -50,8 +50,12 @@ func NewDockerRuntime(network, storagePath, hubURL string, logger *slog.Logger) 
 }
 
 // Reconstruct scans existing containers with hub.managed=true label on startup.
+// Scans ALL containers (including exited) to recover tokenIndex — an agent may
+// have exited due to a transient 401 during hub-service restart. The token
+// must be in tokenIndex before the agent retries connection.
 func (rt *DockerRuntime) Reconstruct(ctx context.Context) {
 	containers, err := rt.docker.ContainerList(ctx, container.ListOptions{
+		All:     true, // include exited containers
 		Filters: filters.NewArgs(filters.Arg("label", "hub.managed=true")),
 	})
 	if err != nil {
@@ -66,20 +70,24 @@ func (rt *DockerRuntime) Reconstruct(ctx context.Context) {
 			continue
 		}
 		token := c.Labels["hub.agent-token"]
+		status := "running"
+		if c.State != "running" {
+			status = "stopped"
+		}
 		state := &RuntimeState{
 			AgentID:     agentID,
 			DisplayName: c.Labels["hub.agent-name"],
 			AgentTypeID: c.Labels["hub.agent-type"],
 			ContainerID: c.ID,
 			AuthToken:   token,
-			Status:      "running",
+			Status:      status,
 			StartedAt:   time.Unix(c.Created, 0),
 		}
 		rt.states[agentID] = state
 		if token != "" {
 			rt.tokenIndex[token] = agentID
 		}
-		rt.logger.Info("reconstructed agent state", "agent", agentID, "container", c.ID[:12])
+		rt.logger.Info("reconstructed agent state", "agent", agentID, "status", status, "container", c.ID[:12])
 	}
 }
 

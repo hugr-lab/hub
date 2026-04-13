@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/hugr-lab/hub/pkg/agent"
 )
@@ -75,12 +76,29 @@ func main() {
 		}
 
 	case os.Getenv("HUB_SERVICE_AGENT_WS") != "" && os.Getenv("AGENT_INSTANCE_ID") != "":
-		// Remote mode: connect to Hub Service via WebSocket
+		// Remote mode: connect to Hub Service via WebSocket with retry.
+		// Hub-service may restart and lose tokenIndex temporarily; Reconstruct
+		// recovers it from container labels, but there's a race window.
 		wsURL := os.Getenv("HUB_SERVICE_AGENT_WS")
 		instanceID := os.Getenv("AGENT_INSTANCE_ID")
-		if err := a.RunWebSocket(ctx, wsURL, instanceID); err != nil {
-			logger.Error("agent WebSocket failed", "error", err)
-			os.Exit(1)
+		maxRetries := 10
+		for attempt := 0; attempt <= maxRetries; attempt++ {
+			err := a.RunWebSocket(ctx, wsURL, instanceID)
+			if err == nil || ctx.Err() != nil {
+				break
+			}
+			if attempt < maxRetries {
+				delay := time.Duration(1<<min(attempt, 5)) * time.Second // 1s, 2s, 4s, 8s, 16s, 32s...
+				logger.Warn("agent connection failed, retrying", "attempt", attempt+1, "delay", delay, "error", err)
+				select {
+				case <-time.After(delay):
+				case <-ctx.Done():
+					break
+				}
+			} else {
+				logger.Error("agent failed after retries", "error", err)
+				os.Exit(1)
+			}
 		}
 
 	default:

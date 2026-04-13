@@ -14,7 +14,7 @@ import (
 
 	"github.com/hugr-lab/hub/pkg/auth"
 
-	"nhooyr.io/websocket"
+	"github.com/coder/websocket"
 )
 
 // testGateway creates a gateway with configurable handlers for testing.

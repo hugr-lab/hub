@@ -58,6 +58,26 @@ func (s *Server) registerConversationTools(mcpSrv *server.MCPServer, userID stri
 		),
 		s.handleConversationMessages(userID),
 	)
+
+	mcpSrv.AddTool(
+		mcp.NewTool("conversation-persist-message",
+			mcp.WithDescription("Persist a message to conversation history in DB. Used by workspace agents to save user↔agent messages."),
+			mcp.WithString("conversation_id", mcp.Required(), mcp.Description("Conversation ID")),
+			mcp.WithString("role", mcp.Required(), mcp.Description("Message role: user, assistant, tool, system")),
+			mcp.WithString("content", mcp.Required(), mcp.Description("Message content")),
+			mcp.WithString("channel", mcp.Description("Channel: final, status, tool_call, tool_result")),
+		),
+		s.handleConversationPersistMessage(userID),
+	)
+
+	mcpSrv.AddTool(
+		mcp.NewTool("conversation-set-title",
+			mcp.WithDescription("Set conversation title. Used by workspace agents for auto-titling."),
+			mcp.WithString("conversation_id", mcp.Required(), mcp.Description("Conversation ID")),
+			mcp.WithString("title", mcp.Required(), mcp.Description("New title")),
+		),
+		s.handleConversationSetTitle(userID),
+	)
 }
 
 func (s *Server) handleConversationCreate(userID string) server.ToolHandlerFunc {
@@ -207,6 +227,70 @@ func (s *Server) handleConversationDelete(userID string) server.ToolHandlerFunc 
 		defer res.Close()
 
 		return toolResult(fmt.Sprintf(`{"deleted": "%s"}`, id)), nil
+	}
+}
+
+func (s *Server) handleConversationPersistMessage(userID string) server.ToolHandlerFunc {
+	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		args := request.GetArguments()
+		convID, _ := args["conversation_id"].(string)
+		role, _ := args["role"].(string)
+		content, _ := args["content"].(string)
+		if convID == "" || role == "" {
+			return toolError("conversation_id and role required"), nil
+		}
+
+		msgID := fmt.Sprintf("msg-%d", time.Now().UnixNano())
+		channel, _ := args["channel"].(string)
+		if channel == "" {
+			if role == "user" || role == "assistant" {
+				channel = "final"
+			} else {
+				channel = role
+			}
+		}
+
+		res, err := s.hugrClient.Query(ctx,
+			`mutation($id: String!, $cid: String!, $role: String!, $content: String!, $ch: String!) {
+				hub { db { insert_agent_messages(data: {
+					id: $id, conversation_id: $cid, role: $role, content: $content, channel: $ch
+				}) { id } } }
+			}`,
+			map[string]any{"id": msgID, "cid": convID, "role": role, "content": content, "ch": channel},
+		)
+		if err != nil {
+			return toolError(fmt.Sprintf("persist message: %v", err)), nil
+		}
+		defer res.Close()
+
+		return toolResult(fmt.Sprintf(`{"id": "%s"}`, msgID)), nil
+	}
+}
+
+func (s *Server) handleConversationSetTitle(userID string) server.ToolHandlerFunc {
+	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		args := request.GetArguments()
+		convID, _ := args["conversation_id"].(string)
+		title, _ := args["title"].(string)
+		if convID == "" || title == "" {
+			return toolError("conversation_id and title required"), nil
+		}
+
+		res, err := s.hugrClient.Query(ctx,
+			`mutation($id: String!, $title: String!) {
+				hub { db { update_conversations(
+					filter: { id: { eq: $id } }
+					data: { title: $title }
+				) { affected_rows } } }
+			}`,
+			map[string]any{"id": convID, "title": title},
+		)
+		if err != nil {
+			return toolError(fmt.Sprintf("set title: %v", err)), nil
+		}
+		defer res.Close()
+
+		return toolResult(fmt.Sprintf(`{"renamed": "%s"}`, convID)), nil
 	}
 }
 

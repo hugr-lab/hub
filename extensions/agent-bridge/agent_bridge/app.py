@@ -155,7 +155,7 @@ async def _start_agent() -> bool:
             [agent_bin],
             env=env,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=None,  # inherit — agent logs go to workspace stderr (visible in docker logs)
         )
     except Exception as e:
         logger.error("failed to start hub-agent: %s", e)

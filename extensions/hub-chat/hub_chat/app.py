@@ -21,6 +21,9 @@ log = logging.getLogger("hub_chat")
 
 AGENT_LISTEN = os.environ.get("HUB_AGENT_LISTEN", "localhost:18888")
 
+# Cache: conversation_id → runtime_context (doesn't change after creation)
+_context_cache: dict[str, str] = {}
+
 
 def _get_access_token() -> str | None:
     """Get current OIDC access token from hub_token_provider in-memory store."""
@@ -39,19 +42,17 @@ async def _resolve_conversation_context(conversation_id: str, token: str | None)
     """Determine runtime_context for a conversation by querying its agent_type.
 
     Returns 'local', 'remote', or 'llm'.
+    Caches result per conversation_id (runtime_context doesn't change).
     """
+    if conversation_id in _context_cache:
+        return _context_cache[conversation_id]
+
     hub_service_url = os.environ.get("HUB_SERVICE_URL", "")
     if not hub_service_url or not token:
         return "remote"  # fallback
 
     try:
         client = tornado.httpclient.AsyncHTTPClient()
-        body = json.dumps({"query": (
-            '{ function { core { auth { check_access('
-            'type_name: "hub:agent_types", fields: "personal-assistant"'
-            ') { field enabled } } } } }'
-        )})
-        # Query conversation to get mode and agent_type runtime_context
         query = json.dumps({"query": f'''{{
             hub {{ db {{ conversations(filter: {{id: {{eq: "{conversation_id}"}}}}, limit: 1) {{
                 mode
@@ -76,14 +77,15 @@ async def _resolve_conversation_context(conversation_id: str, token: str | None)
         conv = convs[0]
         mode = conv.get("mode", "")
         if mode == "llm":
+            _context_cache[conversation_id] = "llm"
             return "llm"
 
         agent = conv.get("agent") or {}
         agent_type = agent.get("agent_type") or {}
         runtime_ctx = agent_type.get("runtime_context", "")
-        if runtime_ctx == "local":
-            return "local"
-        return "remote"
+        result = "local" if runtime_ctx == "local" else "remote"
+        _context_cache[conversation_id] = result
+        return result
     except Exception as e:
         log.warning("Failed to resolve conversation context: %s", e)
         return "remote"

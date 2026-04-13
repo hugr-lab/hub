@@ -12,7 +12,7 @@ import (
 
 	"github.com/hugr-lab/hub/pkg/auth"
 
-	"nhooyr.io/websocket"
+	"github.com/coder/websocket"
 )
 
 // ConversationInfo holds the routing info for a conversation.
@@ -321,16 +321,20 @@ func (g *Gateway) handleMessage(ctx context.Context, conn *websocket.Conn, userI
 
 	default:
 		// All other modes (agent, tools, legacy) route to the agent.
-		// For mode=tools (legacy), fall through to agent with personal agent fallback.
 		agentID := conv.AgentInstanceID
 		if agentID == "" {
-			// Legacy conversation or no agent linked — use personal agent
 			agentID = "agent-personal-" + userID
 		}
+		// Spec F: browser sends only {content: "text"}, not messages[].
+		// Build a minimal messages array if the browser didn't send one.
+		agentMsgs := msg.Messages
+		if len(agentMsgs) == 0 && msg.Content != "" {
+			agentMsgs = []LLMMessage{{Role: "user", Content: msg.Content}}
+		}
 		if g.agentStream != nil {
-			response, err = g.agentStream(ctx, agentID, conversationID, userID, msg.Messages, stream)
+			response, err = g.agentStream(ctx, agentID, conversationID, userID, agentMsgs, stream)
 		} else if g.agent != nil {
-			response, err = g.agent(ctx, agentID, conversationID, userID, msg.Messages)
+			response, err = g.agent(ctx, agentID, conversationID, userID, agentMsgs)
 		} else {
 			err = fmt.Errorf("no agent handler configured")
 		}

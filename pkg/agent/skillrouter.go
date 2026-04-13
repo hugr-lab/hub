@@ -69,14 +69,9 @@ func (r *SkillRouter) Route(message string, available []SkillMeta) []string {
 		result = append(result, c.id)
 	}
 
-	// If no skills matched, include all available (fallback)
-	if len(candidates) == 0 && len(available) > 0 {
-		for _, skill := range available {
-			if !r.AlwaysInclude[skill.ID] {
-				result = append(result, skill.ID)
-			}
-		}
-	}
+	// If no skills matched, rely on always-included skills only (constitution,
+	// context). Including ALL skills as fallback pollutes the system prompt and
+	// causes wrong behavior for simple messages like greetings.
 
 	return result
 }

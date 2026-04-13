@@ -14,7 +14,7 @@ import (
 
 	"github.com/hugr-lab/hub/pkg/auth"
 
-	"nhooyr.io/websocket"
+	"github.com/coder/websocket"
 )
 
 // AgentMessage is the wire format between Hub Service and agent containers.
@@ -287,9 +287,9 @@ func (m *Manager) SendMessageStream(ctx context.Context, instanceID, conversatio
 		case resp := <-ch:
 			switch resp.Type {
 			case "response":
-				if onStream != nil {
-					onStream(resp)
-				}
+				// Don't relay the final response via onStream — the gateway
+				// sends its own response frame with AgentName and Usage.
+				// Relaying here would cause a duplicate message on the client.
 				return resp.Content, nil
 			case "error":
 				return "", fmt.Errorf("agent error: %s", resp.Content)

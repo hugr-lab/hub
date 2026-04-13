@@ -16,8 +16,10 @@ COPY --from=builder /hub-agent /usr/local/bin/hub-agent
 COPY --from=builder /sandbox-mcp /tools/sandbox-mcp
 COPY --from=builder /result-store-mcp /tools/result-store-mcp
 
-RUN mkdir -p /shared /.agent/skills /tools
+RUN mkdir -p /shared /.agent /tools
+COPY system/skills/ /.agent/skills/
 COPY config/agent-default-config.json /.agent/config.json
+ENV PATH="/tools:/usr/local/bin:${PATH}"
 WORKDIR /.agent
 
 ENTRYPOINT ["hub-agent"]

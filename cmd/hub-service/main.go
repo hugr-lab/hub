@@ -22,7 +22,7 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	c := hubapp.NewHugrClient(cfg.HugrURL, cfg.HugrSecretKey, cfg.QueryTimeout)
+	c := hubapp.NewHugrClient(cfg.HugrURL, cfg.HugrSecretKey, cfg.QueryTimeout, cfg.SubscriptionPool)
 	app := hubapp.New(cfg, logger, c)
 
 	logger.Info("starting hub-service",
