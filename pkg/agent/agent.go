@@ -17,45 +17,73 @@ import (
 	mcpclient "github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
-	"nhooyr.io/websocket"
+	"github.com/coder/websocket"
 )
 
 // Agent is the main runtime. Connects to Hub Service MCP and local MCP servers,
 // collects tools into a unified registry, and runs multi-turn LLM reasoning.
 type Agent struct {
-	hubURL     string
-	authToken  string // AGENT_TOKEN for hub-service authentication
-	hubClient  *mcpclient.Client
-	mcpManager *MCPServerManager
-	registry   *ToolRegistry
-	skills     *SkillsEngine
-	learner    *Learner
-	config     *AgentConfig
-	logger     *slog.Logger
+	hubURL      string
+	authToken   string       // static AGENT_TOKEN (remote context)
+	tokenSource *TokenSource // dynamic OIDC token (workspace context)
+	hubClient   *mcpclient.Client
+	mcpManager  *MCPServerManager
+	registry    *ToolRegistry
+	skills      *SkillCatalog
+	skillRouter *SkillRouter
+	learner     *Learner
+	config      *AgentConfig
+	logger      *slog.Logger
+
+	// Per-conversation session state (local mode only)
+	sessions *SessionManager
 }
 
 func New(hubURL, authToken, skillsDir string, config *AgentConfig, logger *slog.Logger) *Agent {
 	a := &Agent{
-		hubURL:    hubURL,
-		authToken: authToken,
-		registry:  NewToolRegistry(),
-		skills:    NewSkillsEngine(skillsDir, logger),
-		config:    config,
-		logger:    logger,
+		hubURL:      hubURL,
+		authToken:   authToken,
+		registry:    NewToolRegistry(),
+		skills:      NewSkillCatalog(skillsDir, logger),
+		skillRouter: NewSkillRouter(),
+		sessions:    NewSessionManager(),
+		config:      config,
+		logger:      logger,
 	}
 	a.learner = NewLearner(a)
 	a.mcpManager = NewMCPServerManager(config.MCPServers, logger)
 	return a
 }
 
+// SetTokenSource sets a dynamic token source (for workspace context).
+// When set, CurrentToken() returns the refreshed token instead of static authToken.
+func (a *Agent) SetTokenSource(ts *TokenSource) {
+	a.tokenSource = ts
+}
+
+// CurrentToken returns the current auth token — dynamic from TokenSource
+// if set (workspace), otherwise static authToken (remote).
+func (a *Agent) CurrentToken() string {
+	if a.tokenSource != nil {
+		if t := a.tokenSource.Token(); t != "" {
+			return t
+		}
+	}
+	return a.authToken
+}
+
 // Connect establishes all MCP connections and builds the tool registry.
 func (a *Agent) Connect(ctx context.Context) error {
 	// 1. Connect to Hub Service MCP (HTTP transport)
-	var opts []transport.StreamableHTTPCOption
-	if a.authToken != "" {
-		opts = append(opts, transport.WithHTTPHeaders(map[string]string{
-			"Authorization": "Bearer " + a.authToken,
-		}))
+	// Use dynamic header function so the token is refreshed on every request.
+	// OIDC tokens in workspace expire every 60s; static headers cause 401.
+	opts := []transport.StreamableHTTPCOption{
+		transport.WithHTTPHeaderFunc(func(_ context.Context) map[string]string {
+			if t := a.CurrentToken(); t != "" {
+				return map[string]string{"Authorization": "Bearer " + t}
+			}
+			return nil
+		}),
 	}
 	client, err := mcpclient.NewStreamableHttpClient(a.hubURL, opts...)
 	if err != nil {
@@ -95,6 +123,16 @@ func (a *Agent) Connect(ctx context.Context) error {
 	}
 
 	a.logger.Info("tool registry ready", "total_tools", len(a.registry.AllTools()))
+
+	// 3. Load skill catalog and filter by agent capabilities (if agent_id set)
+	a.skills.Load()
+	agentID := os.Getenv("HUB_AGENT_ID")
+	if agentID == "" {
+		agentID = os.Getenv("AGENT_INSTANCE_ID")
+	}
+	if agentID != "" {
+		a.filterSkillsByCapabilities(ctx, agentID)
+	}
 	return nil
 }
 
@@ -113,6 +151,51 @@ func (a *Agent) CallHubTool(ctx context.Context, name string, args map[string]an
 		return extractText(result), fmt.Errorf("hub tool error: %s", extractText(result))
 	}
 	return extractText(result), nil
+}
+
+// filterSkillsByCapabilities calls hub.agent_capabilities via MCP to get
+// the allowed skill list for this agent, then filters the skill catalog.
+func (a *Agent) filterSkillsByCapabilities(ctx context.Context, agentID string) {
+	// Call the agent_capabilities tool to get allowed skills
+	result, err := a.CallHubTool(ctx, "data-inline_graphql_result", map[string]any{
+		"query": fmt.Sprintf(`{ hub { agent_capabilities(args: {agent_id: "%s"}) { skill_id context } } }`, agentID),
+	})
+	if err != nil {
+		a.logger.Warn("failed to fetch agent capabilities, using all skills", "agent", agentID, "error", err)
+		return
+	}
+
+	// Parse the result to extract skill IDs
+	var parsed struct {
+		Hub struct {
+			Capabilities []struct {
+				SkillID string `json:"skill_id"`
+				Context string `json:"context"`
+			} `json:"agent_capabilities"`
+		} `json:"hub"`
+	}
+	if err := json.Unmarshal([]byte(result), &parsed); err != nil {
+		a.logger.Warn("failed to parse agent capabilities", "error", err)
+		return
+	}
+
+	if len(parsed.Hub.Capabilities) == 0 {
+		a.logger.Debug("no capabilities returned, using all skills", "agent", agentID)
+		return
+	}
+
+	var allowedIDs []string
+	runtimeCtx := "any"
+	for _, c := range parsed.Hub.Capabilities {
+		allowedIDs = append(allowedIDs, c.SkillID)
+		if c.Context != "" && c.Context != "any" {
+			runtimeCtx = c.Context
+		}
+	}
+
+	// Filter catalog
+	filtered := a.skills.Filter(runtimeCtx, allowedIDs)
+	a.logger.Info("skills filtered by capabilities", "agent", agentID, "context", runtimeCtx, "allowed", len(filtered), "total", len(a.skills.All()))
 }
 
 // HandleMessage processes a user message through the agentic loop.
@@ -143,7 +226,8 @@ func (a *Agent) HandleMessagesWithStream(ctx context.Context, messages []history
 		history = append(history, msg)
 	}
 
-	return a.runAgenticLoopWithStream(ctx, history, stream)
+	resp, _, err := a.runAgenticLoopWithStream(ctx, history, stream)
+	return resp, err
 }
 
 // HandleMessages processes a full conversation history through the agentic loop.
@@ -230,10 +314,12 @@ type historyMessage struct {
 // RunWebSocket connects to Hub Service via WebSocket and processes messages.
 // Reconnects with exponential backoff on disconnect.
 func (a *Agent) RunWebSocket(ctx context.Context, wsURL, instanceID string) error {
-	if err := a.Connect(ctx); err != nil {
-		return err
+	// Connect if not already connected (idempotent — RunLocal may have called first)
+	if a.hubClient == nil {
+		if err := a.Connect(ctx); err != nil {
+			return err
+		}
 	}
-	a.skills.Load()
 
 	endpoint := wsURL + "/agent/ws/" + instanceID
 	a.logger.Info("agent WebSocket mode", "endpoint", endpoint)
@@ -269,8 +355,9 @@ func (a *Agent) RunWebSocket(ctx context.Context, wsURL, instanceID string) erro
 // wsSession runs a single WebSocket connection session. Returns true if connection was established.
 func (a *Agent) wsSession(ctx context.Context, endpoint string) (bool, error) {
 	headers := make(map[string][]string)
-	if a.authToken != "" {
-		headers["Authorization"] = []string{"Bearer " + a.authToken}
+	token := a.CurrentToken()
+	if token != "" {
+		headers["Authorization"] = []string{"Bearer " + token}
 	}
 
 	conn, _, err := websocket.Dial(ctx, endpoint, &websocket.DialOptions{

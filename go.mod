@@ -4,14 +4,16 @@ go 1.26.1
 
 require (
 	github.com/apache/arrow-go/v18 v18.5.2
+	github.com/coder/websocket v1.8.14
 	github.com/docker/docker v28.5.2+incompatible
+	github.com/duckdb/duckdb-go/v2 v2.10501.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/hugr-lab/airport-go v0.2.1
 	github.com/hugr-lab/query-engine v0.3.25
 	github.com/hugr-lab/query-engine/client v0.3.25
 	github.com/hugr-lab/query-engine/types v0.3.25
 	github.com/mark3labs/mcp-go v0.47.0
-	nhooyr.io/websocket v1.8.17
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -23,9 +25,16 @@ require (
 	github.com/distribution/reference v0.6.0 // indirect
 	github.com/docker/go-connections v0.6.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
+	github.com/duckdb/duckdb-go-bindings v0.10501.0 // indirect
+	github.com/duckdb/duckdb-go-bindings/lib/darwin-amd64 v0.10501.0 // indirect
+	github.com/duckdb/duckdb-go-bindings/lib/darwin-arm64 v0.10501.0 // indirect
+	github.com/duckdb/duckdb-go-bindings/lib/linux-amd64 v0.10501.0 // indirect
+	github.com/duckdb/duckdb-go-bindings/lib/linux-arm64 v0.10501.0 // indirect
+	github.com/duckdb/duckdb-go-bindings/lib/windows-amd64 v0.10501.0 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
+	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/goccy/go-json v0.10.6 // indirect
 	github.com/google/flatbuffers v25.12.19+incompatible // indirect
 	github.com/google/jsonschema-go v0.4.2 // indirect

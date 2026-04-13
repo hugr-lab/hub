@@ -12,7 +12,7 @@ import (
 
 	"github.com/hugr-lab/hub/pkg/auth"
 
-	"nhooyr.io/websocket"
+	"github.com/coder/websocket"
 )
 
 func testManager(t *testing.T) (*Manager, *httptest.Server) {

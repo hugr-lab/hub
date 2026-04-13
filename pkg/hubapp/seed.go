@@ -4,21 +4,22 @@ import "context"
 
 func (a *HubApp) seedAgentTypes(ctx context.Context) {
 	types := []struct {
-		ID, DisplayName, Description, Image string
+		ID, DisplayName, Description, Image, RuntimeContext string
 	}{
-		{"data-analyst", "Data Analyst", "Hugr data exploration agent with discovery, query, and visualization skills", "hub-agent:latest"},
-		{"openclaw", "OpenClaw Agent", "Third-party OpenClaw agent runtime using Hub Service OpenAI-compatible endpoint", "openclaw/agent:latest"},
+		{"personal-assistant", "Personal Assistant", "Default workspace agent with data exploration, memory, query registry, result store, and kernel access", "hub-agent:latest", "local"},
+		{"data-analyst", "Data Analyst", "Hugr data exploration agent with discovery, query, and visualization skills", "hub-agent:latest", "remote"},
+		{"openclaw", "OpenClaw Agent", "Third-party OpenClaw agent runtime using Hub Service OpenAI-compatible endpoint", "openclaw/agent:latest", "remote"},
 	}
 
 	for _, t := range types {
-		a.seedOneAgentType(ctx, t.ID, t.DisplayName, t.Description, t.Image)
+		a.seedOneAgentType(ctx, t.ID, t.DisplayName, t.Description, t.Image, t.RuntimeContext)
 	}
 }
 
 // seedOneAgentType seeds a single agent type. Extracted from the loop so each
 // iteration gets its own deferred Close() and we don't accumulate result
 // handles until seedAgentTypes returns.
-func (a *HubApp) seedOneAgentType(ctx context.Context, id, displayName, description, image string) {
+func (a *HubApp) seedOneAgentType(ctx context.Context, id, displayName, description, image, runtimeContext string) {
 	// Check if exists
 	res, err := a.client.Query(ctx,
 		`query($id: String!) { hub { db { agent_types(filter: { id: { eq: $id } }) { id } } } }`,
@@ -45,12 +46,12 @@ func (a *HubApp) seedOneAgentType(ctx context.Context, id, displayName, descript
 
 	// Insert
 	res2, err := a.client.Query(ctx,
-		`mutation($id: String!, $name: String!, $desc: String!, $img: String!) {
+		`mutation($id: String!, $name: String!, $desc: String!, $img: String!, $ctx: String!) {
 			hub { db { insert_agent_types(
-				data: { id: $id, display_name: $name, description: $desc, image: $img }
+				data: { id: $id, display_name: $name, description: $desc, image: $img, runtime_context: $ctx }
 			) { id } } }
 		}`,
-		map[string]any{"id": id, "name": displayName, "desc": description, "img": image},
+		map[string]any{"id": id, "name": displayName, "desc": description, "img": image, "ctx": runtimeContext},
 	)
 	if err != nil {
 		a.logger.Warn("failed to seed agent type", "id", id, "error", err)

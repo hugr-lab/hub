@@ -26,7 +26,7 @@ func skipIfNoHugr(t *testing.T) {
 		secretKey = "secret-key"
 	}
 
-	c := NewHugrClient(hugrURL, secretKey, 10*time.Second)
+	c := NewHugrClient(hugrURL, secretKey, 10*time.Second, 0)
 	ctx := auth.ContextWithUser(context.Background(), auth.UserInfo{ID: "test", Role: "admin"})
 	res, err := c.Query(ctx, `{ hub { db { users(limit: 1) { id } } } }`, nil)
 	if err != nil {
@@ -49,7 +49,7 @@ func testClient(t *testing.T, userID ...string) (*HubApp, context.Context) {
 		secretKey = "secret-key"
 	}
 
-	c := NewHugrClient(hugrURL, secretKey, 10*time.Second)
+	c := NewHugrClient(hugrURL, secretKey, 10*time.Second, 0)
 	app := &HubApp{
 		client: c,
 		logger: slog.Default(),

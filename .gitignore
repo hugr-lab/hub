@@ -35,10 +35,12 @@ extensions/*/.venv/
 # Go
 /hub-service
 /hub-agent
+/result-store-mcp
+/kernel-mcp
 
 # Docker
 hub-data/
-hugr-data/
+/hugr-data/
 hub-db-data/
 hub-storage/
 

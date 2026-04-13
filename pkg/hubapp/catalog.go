@@ -25,6 +25,12 @@ func (a *HubApp) registerCatalog() error {
 	if err := a.registerConversationMutations(); err != nil {
 		return err
 	}
+	if err := a.registerCatalogFunctions(); err != nil {
+		return err
+	}
+	if err := a.registerModelFunctions(); err != nil {
+		return err
+	}
 	return nil
 }
 

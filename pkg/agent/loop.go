@@ -4,9 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/hugr-lab/hub/pkg/llmrouter"
 )
+
+// lastUserMessage extracts the last user message from history for routing.
+func lastUserMessage(history []llmrouter.Message) string {
+	for i := len(history) - 1; i >= 0; i-- {
+		if history[i].Role == "user" {
+			return history[i].Content
+		}
+	}
+	return ""
+}
 
 // ToolCall represents a parsed tool call from LLM response.
 type ToolCall struct {
@@ -26,63 +37,71 @@ type LLMResponse struct {
 
 // RunLoop executes the multi-turn agentic loop with a single user message.
 func (a *Agent) RunLoop(ctx context.Context, userMessage string) (string, error) {
-	// 1. Retrieve learned context
 	learnedContext := a.learner.RetrieveContext(ctx, userMessage)
+	systemPrompt := a.buildSystemPrompt(userMessage, learnedContext)
 
-	// 2. Build system prompt
-	systemPrompt := a.skills.SystemPrompt()
-	if learnedContext != "" {
-		systemPrompt += "\n\n" + learnedContext
-	}
-
-	// 3. Initialize message history
 	history := []llmrouter.Message{
 		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: userMessage},
 	}
 
-	return a.runAgenticLoop(ctx, history)
+	resp, _, err := a.runAgenticLoop(ctx, history)
+	return resp, err
 }
+
+// buildSystemPrompt routes the user message through the skill router and
+// assembles a per-turn system prompt from matching skills.
+func (a *Agent) buildSystemPrompt(userMessage, learnedContext string) string {
+	available := a.skills.All()
+	selectedIDs := a.skillRouter.Route(userMessage, available)
+
+	var parts []string
+	for _, id := range selectedIDs {
+		full, err := a.skills.LoadFull(id)
+		if err != nil {
+			a.logger.Warn("failed to load skill", "id", id, "error", err)
+			continue
+		}
+		if full.SystemPrompt != "" {
+			parts = append(parts, full.SystemPrompt)
+		}
+	}
+
+	if len(parts) == 0 {
+		parts = append(parts, "You are a data analysis assistant. Help users explore and query data.")
+	}
+
+	prompt := strings.Join(parts, "\n\n")
+	if learnedContext != "" {
+		prompt += "\n\n" + learnedContext
+	}
+
+	a.logger.Info("skills selected", "message_preview", truncate(userMessage, 50), "skills", selectedIDs, "available", len(available))
+	return prompt
+}
+
 
 // RunLoopWithHistory executes the multi-turn agentic loop with full conversation history.
 // The history is used as-is (client owns it), with learned context prepended if missing system prompt.
 func (a *Agent) RunLoopWithHistory(ctx context.Context, history []llmrouter.Message) (string, error) {
-	// If no system prompt in history, prepend one
 	if len(history) == 0 || history[0].Role != "system" {
-		// Retrieve context from last user message
-		var lastUserMsg string
-		for i := len(history) - 1; i >= 0; i-- {
-			if history[i].Role == "user" {
-				lastUserMsg = history[i].Content
-				break
-			}
-		}
+		lastUserMsg := lastUserMessage(history)
 		learnedContext := a.learner.RetrieveContext(ctx, lastUserMsg)
-		systemPrompt := a.skills.SystemPrompt()
-		if learnedContext != "" {
-			systemPrompt += "\n\n" + learnedContext
-		}
+		systemPrompt := a.buildSystemPrompt(lastUserMsg, learnedContext)
 		history = append([]llmrouter.Message{{Role: "system", Content: systemPrompt}}, history...)
 	}
-
-	return a.runAgenticLoop(ctx, history)
+	resp, _, err := a.runAgenticLoop(ctx, history)
+	return resp, err
 }
 
 // runAgenticLoopWithStream is the multi-turn loop with streaming callbacks.
-func (a *Agent) runAgenticLoopWithStream(ctx context.Context, history []llmrouter.Message, stream AgentStreamCallback) (string, error) {
+// Returns (response, updatedHistory, error) — the updated history includes all
+// intermediate messages (assistant tool_calls, tool results, final assistant).
+func (a *Agent) runAgenticLoopWithStream(ctx context.Context, history []llmrouter.Message, stream AgentStreamCallback) (string, []llmrouter.Message, error) {
 	if len(history) == 0 || history[0].Role != "system" {
-		var lastUserMsg string
-		for i := len(history) - 1; i >= 0; i-- {
-			if history[i].Role == "user" {
-				lastUserMsg = history[i].Content
-				break
-			}
-		}
+		lastUserMsg := lastUserMessage(history)
 		learnedContext := a.learner.RetrieveContext(ctx, lastUserMsg)
-		systemPrompt := a.skills.SystemPrompt()
-		if learnedContext != "" {
-			systemPrompt += "\n\n" + learnedContext
-		}
+		systemPrompt := a.buildSystemPrompt(lastUserMsg, learnedContext)
 		history = append([]llmrouter.Message{{Role: "system", Content: systemPrompt}}, history...)
 	}
 
@@ -91,11 +110,15 @@ func (a *Agent) runAgenticLoopWithStream(ctx context.Context, history []llmroute
 	for turn := 0; turn < a.config.MaxTurns; turn++ {
 		resp, err := a.callLLM(ctx, history, tools)
 		if err != nil {
-			return "", fmt.Errorf("turn %d: %w", turn, err)
+			return "", history, fmt.Errorf("turn %d: %w", turn, err)
 		}
 
 		if len(resp.ToolCalls) == 0 {
-			return resp.Content, nil
+			history = append(history, llmrouter.Message{
+				Role:    "assistant",
+				Content: resp.Content,
+			})
+			return resp.Content, history, nil
 		}
 
 		// Stream tool_call
@@ -137,35 +160,34 @@ func (a *Agent) runAgenticLoopWithStream(ctx context.Context, history []llmroute
 		}
 	}
 
-	return "", fmt.Errorf("max turns (%d) reached", a.config.MaxTurns)
+	return "", history, fmt.Errorf("max turns (%d) reached", a.config.MaxTurns)
 }
 
 // runAgenticLoop is the core multi-turn loop shared by RunLoop and RunLoopWithHistory.
-func (a *Agent) runAgenticLoop(ctx context.Context, history []llmrouter.Message) (string, error) {
-	// Get tools for LLM
+func (a *Agent) runAgenticLoop(ctx context.Context, history []llmrouter.Message) (string, []llmrouter.Message, error) {
 	tools := a.registry.ToLLMTools()
 
-	// Agentic loop
 	for turn := 0; turn < a.config.MaxTurns; turn++ {
 		resp, err := a.callLLM(ctx, history, tools)
 		if err != nil {
 			a.logger.Error("LLM call failed", "turn", turn, "history_len", len(history), "error", err)
-			return "", fmt.Errorf("turn %d: %w", turn, err)
+			return "", history, fmt.Errorf("turn %d: %w", turn, err)
 		}
 
-		// No tool calls — final response
 		if len(resp.ToolCalls) == 0 {
-			return resp.Content, nil
+			history = append(history, llmrouter.Message{
+				Role:    "assistant",
+				Content: resp.Content,
+			})
+			return resp.Content, history, nil
 		}
 
-		// Append assistant message with tool calls
 		history = append(history, llmrouter.Message{
 			Role:      "assistant",
 			Content:   resp.Content,
 			ToolCalls: toolCallsToAny(resp.ToolCalls),
 		})
 
-		// Execute each tool call
 		for _, tc := range resp.ToolCalls {
 			result, err := a.executeTool(ctx, tc)
 			resultText := result
@@ -173,21 +195,19 @@ func (a *Agent) runAgenticLoop(ctx context.Context, history []llmrouter.Message)
 				resultText = fmt.Sprintf("Error: %v", err)
 			}
 
-			// Append tool result
 			history = append(history, llmrouter.Message{
 				Role:       "tool",
 				Content:    resultText,
 				ToolCallID: tc.ID,
 			})
 
-			// Learn from tool call
 			if err == nil {
 				a.learner.LearnFromToolCall(ctx, tc.Name, tc.Arguments, result)
 			}
 		}
 	}
 
-	return "", fmt.Errorf("max turns (%d) reached", a.config.MaxTurns)
+	return "", history, fmt.Errorf("max turns (%d) reached", a.config.MaxTurns)
 }
 
 // callLLM calls llm-complete on Hub Service MCP with messages and tools.

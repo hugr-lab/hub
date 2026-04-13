@@ -1,6 +1,7 @@
 package hubapp
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
 	"time"
@@ -15,8 +16,9 @@ type Config struct {
 	DatabaseDSN   string // PostgreSQL DSN for hub DB
 	RedisURL      string // Redis URL for per-user rate limiting (required)
 	StoragePath   string // Root directory for persistent storage (HUB_STORAGE_PATH)
-	QueryTimeout  time.Duration // Timeout for Hugr GraphQL queries (HUGR_QUERY_TIMEOUT)
-	LogLevel      slog.Level
+	QueryTimeout      time.Duration // Timeout for Hugr GraphQL queries (HUGR_QUERY_TIMEOUT)
+	SubscriptionPool  int           // Max WebSocket connections for subscriptions (HUB_SUBSCRIPTION_POOL_MAX)
+	LogLevel          slog.Level
 }
 
 func LoadConfig() Config {
@@ -29,7 +31,8 @@ func LoadConfig() Config {
 		InternalURL:   envOrDefault("HUB_SERVICE_INTERNAL_URL", "http://hub-service:8082"),
 		RedisURL:      envOrDefault("HUB_REDIS_URL", "redis://localhost:6379/0"),
 		StoragePath:   envOrDefault("HUB_STORAGE_PATH", "/var/hub-storage"),
-		QueryTimeout:  envDuration("HUGR_QUERY_TIMEOUT", 5*time.Minute),
+		QueryTimeout:     envDuration("HUGR_QUERY_TIMEOUT", 5*time.Minute),
+		SubscriptionPool: envInt("HUB_SUBSCRIPTION_POOL_MAX", 20),
 	}
 
 	switch os.Getenv("LOG_LEVEL") {
@@ -72,6 +75,16 @@ func LoadRoutingConfig() map[string]string {
 func envOrDefault(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return def
+}
+
+func envInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		var n int
+		if _, err := fmt.Sscanf(v, "%d", &n); err == nil && n > 0 {
+			return n
+		}
 	}
 	return def
 }

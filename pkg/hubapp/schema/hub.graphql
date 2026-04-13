@@ -84,14 +84,16 @@ type agent_types @table(name: "agent_types") {
   image: String!
   """Allowed capabilities: python, bash, web_search"""
   capabilities: [String]
-  """Skill package names to load at startup"""
-  skills: [String]
+  """Allowed skill IDs (references filesystem catalog)"""
+  allowed_skills: [String]
   """Tool allow/deny policy per tool name"""
   tool_policy: JSON
   """Maximum running instances per user"""
   max_instances_per_user: Int
   """Seconds of inactivity before auto-stop"""
   idle_timeout_seconds: Int
+  """Runtime context filter: any, local (workspace only), remote (container only)"""
+  runtime_context: String
   """Extra configuration (env vars, resource limits)"""
   metadata: JSON
 }
@@ -403,6 +405,35 @@ type agent_runs @table(name: "agent_runs") {
   """Error message if status=crashed"""
   error: String
   """When this record was created"""
+  created_at: Timestamp @default(insert_exp: "NOW()")
+}
+
+"""Saved query result metadata — mirrors what agents write to disk.
+Enables cross-process lookups without filesystem walks."""
+type agent_results @table(name: "agent_results") {
+  """Result name (user-chosen identifier)"""
+  name: String! @pk
+  """Agent that created this result"""
+  agent_id: String! @pk @field_references(
+    name: "results_agent_ref"
+    references_name: "agents"
+    field: "id"
+    query: "agent"
+    description: "Agent that created this result"
+    references_query: "results"
+    references_description: "Saved results for this agent"
+  )
+  """Conversation context (nullable — results can outlive conversations)"""
+  conversation_id: String
+  """Total row count across all parts"""
+  total_rows: Int
+  """Total disk size in bytes"""
+  total_bytes: BigInt
+  """Arrow schema summary"""
+  schema: JSON
+  """If true, result survives conversation deletion"""
+  pinned: Boolean
+  """When result was saved"""
   created_at: Timestamp @default(insert_exp: "NOW()")
 }
 

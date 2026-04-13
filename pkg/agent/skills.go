@@ -1,143 +1,160 @@
 package agent
 
 import (
-	"archive/zip"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
-// SkillsEngine loads and manages SKILL.md files from .skill archives.
-type SkillsEngine struct {
-	dir    string
-	skills []Skill
+// SkillCatalog scans a directory tree for SKILL.md files and provides
+// lightweight SkillMeta at startup with on-demand SkillFull loading.
+//
+// Directory layout:
+//
+//	{root}/
+//	  {skill_id}/
+//	    {version}/
+//	      SKILL.md
+//
+// The catalog picks the latest version directory per skill (lexicographic).
+type SkillCatalog struct {
+	root   string
+	skills map[string]SkillMeta // id → SkillMeta (latest version)
+	paths  map[string]string    // id → absolute path to SKILL.md
 	logger *slog.Logger
 }
 
-// Skill represents a loaded skill with its instructions and references.
-type Skill struct {
-	Name         string
-	Description  string
-	Instructions string
-	References   map[string]string // filename → content
+func NewSkillCatalog(root string, logger *slog.Logger) *SkillCatalog {
+	return &SkillCatalog{
+		root:   root,
+		skills: make(map[string]SkillMeta),
+		paths:  make(map[string]string),
+		logger: logger,
+	}
 }
 
-func NewSkillsEngine(dir string, logger *slog.Logger) *SkillsEngine {
-	return &SkillsEngine{dir: dir, logger: logger}
-}
-
-// Load reads all .skill archives from the skills directory.
-func (e *SkillsEngine) Load() {
-	entries, err := os.ReadDir(e.dir)
+// Load scans the catalog directory and parses all SKILL.md frontmatters.
+func (c *SkillCatalog) Load() {
+	entries, err := os.ReadDir(c.root)
 	if err != nil {
-		e.logger.Warn("skills directory not found", "dir", e.dir, "error", err)
+		c.logger.Warn("skill catalog directory not found", "root", c.root, "error", err)
 		return
 	}
 
 	for _, entry := range entries {
-		if !strings.HasSuffix(entry.Name(), ".skill") {
+		if !entry.IsDir() {
 			continue
 		}
-		path := filepath.Join(e.dir, entry.Name())
-		skill, err := loadSkillArchive(path)
+		skillID := entry.Name()
+		versDir := filepath.Join(c.root, skillID)
+		versions, err := os.ReadDir(versDir)
 		if err != nil {
-			e.logger.Warn("failed to load skill", "path", path, "error", err)
 			continue
 		}
-		e.skills = append(e.skills, skill)
-		e.logger.Info("skill loaded", "name", skill.Name, "references", len(skill.References))
-	}
 
-	e.logger.Info("skills loaded", "count", len(e.skills))
+		// Pick latest version (lexicographic sort, last wins)
+		var versionNames []string
+		for _, v := range versions {
+			if v.IsDir() {
+				versionNames = append(versionNames, v.Name())
+			}
+		}
+		if len(versionNames) == 0 {
+			continue
+		}
+		sort.Strings(versionNames)
+		latestVersion := versionNames[len(versionNames)-1]
+
+		skillPath := filepath.Join(versDir, latestVersion, "SKILL.md")
+		meta, err := ParseSkillMeta(skillPath)
+		if err != nil {
+			c.logger.Warn("failed to parse skill", "path", skillPath, "error", err)
+			continue
+		}
+		meta.ID = skillID
+		meta.Version = latestVersion
+		c.skills[skillID] = meta
+		c.paths[skillID] = skillPath
+		c.logger.Info("skill loaded", "id", skillID, "version", latestVersion, "tools", len(meta.Tools))
+	}
+	c.logger.Info("skill catalog loaded", "count", len(c.skills))
 }
 
-// SystemPrompt builds the system prompt from loaded skills.
-func (e *SkillsEngine) SystemPrompt() string {
-	if len(e.skills) == 0 {
+// All returns all loaded skill metadata.
+func (c *SkillCatalog) All() []SkillMeta {
+	result := make([]SkillMeta, 0, len(c.skills))
+	for _, m := range c.skills {
+		result = append(result, m)
+	}
+	return result
+}
+
+// Get returns a single skill's metadata by ID.
+func (c *SkillCatalog) Get(id string) (SkillMeta, bool) {
+	m, ok := c.skills[id]
+	return m, ok
+}
+
+// LoadFull loads the full skill content for on-demand injection into a turn.
+func (c *SkillCatalog) LoadFull(id string) (SkillFull, error) {
+	path, ok := c.paths[id]
+	if !ok {
+		return SkillFull{}, fmt.Errorf("skill %q not found in catalog", id)
+	}
+	full, err := LoadSkillFull(path)
+	if err != nil {
+		return SkillFull{}, err
+	}
+	full.ID = id
+	full.Version = c.skills[id].Version
+	return full, nil
+}
+
+// SystemPrompt builds a combined system prompt from all loaded skills.
+// This is a backward-compatible method — the skill router (Phase 3) will
+// replace this with per-turn prompt assembly.
+func (c *SkillCatalog) SystemPrompt() string {
+	if len(c.skills) == 0 {
 		return "You are a data analysis assistant. Help users explore and query data."
 	}
-
-	var sb strings.Builder
-	for _, s := range e.skills {
-		sb.WriteString(s.Instructions)
-		sb.WriteString("\n\n")
-		for name, content := range s.References {
-			sb.WriteString(fmt.Sprintf("## Reference: %s\n\n%s\n\n", name, content))
+	var parts []string
+	for id := range c.skills {
+		full, err := c.LoadFull(id)
+		if err != nil {
+			continue
+		}
+		if full.SystemPrompt != "" {
+			parts = append(parts, full.SystemPrompt)
 		}
 	}
-	return sb.String()
+	if len(parts) == 0 {
+		return "You are a data analysis assistant. Help users explore and query data."
+	}
+	return strings.Join(parts, "\n\n")
 }
 
-// loadSkillArchive reads a .skill ZIP archive containing SKILL.md and references/.
-func loadSkillArchive(path string) (Skill, error) {
-	r, err := zip.OpenReader(path)
-	if err != nil {
-		return Skill{}, fmt.Errorf("open archive: %w", err)
-	}
-	defer r.Close()
-
-	skill := Skill{
-		Name:       strings.TrimSuffix(filepath.Base(path), ".skill"),
-		References: make(map[string]string),
+// Filter returns only skills matching the given context and allowed IDs.
+// If allowedIDs is empty, all skills are returned (no filter).
+func (c *SkillCatalog) Filter(context string, allowedIDs []string) []SkillMeta {
+	allowed := make(map[string]bool)
+	for _, id := range allowedIDs {
+		allowed[id] = true
 	}
 
-	for _, f := range r.File {
-		if f.FileInfo().IsDir() {
+	var result []SkillMeta
+	for _, m := range c.skills {
+		// Context filter: "any" matches everything, otherwise must match
+		if m.Context != "any" && m.Context != context {
 			continue
 		}
-
-		rc, err := f.Open()
-		if err != nil {
+		// Allowed filter: empty = all allowed
+		if len(allowed) > 0 && !allowed[m.ID] {
 			continue
 		}
-		data, err := readAll(rc)
-		rc.Close()
-		if err != nil {
-			continue
-		}
-
-		name := filepath.Base(f.Name)
-		if name == "SKILL.md" {
-			skill.Instructions = string(data)
-			// Extract description from first line after frontmatter
-			lines := strings.Split(skill.Instructions, "\n")
-			for _, l := range lines {
-				l = strings.TrimSpace(l)
-				if l != "" && l != "---" && !strings.HasPrefix(l, "name:") && !strings.HasPrefix(l, "description:") {
-					if strings.HasPrefix(l, "description:") {
-						skill.Description = strings.TrimPrefix(l, "description:")
-						skill.Description = strings.TrimSpace(strings.Trim(skill.Description, "\""))
-					}
-					break
-				}
-				if strings.HasPrefix(l, "description:") {
-					skill.Description = strings.TrimPrefix(l, "description:")
-					skill.Description = strings.TrimSpace(strings.Trim(skill.Description, "\""))
-				}
-			}
-		} else if strings.HasPrefix(f.Name, "references/") {
-			skill.References[name] = string(data)
-		}
+		result = append(result, m)
 	}
-
-	if skill.Instructions == "" {
-		return skill, fmt.Errorf("SKILL.md not found in archive")
-	}
-
-	return skill, nil
-}
-
-func readAll(rc interface{ Read([]byte) (int, error) }) ([]byte, error) {
-	var buf []byte
-	tmp := make([]byte, 4096)
-	for {
-		n, err := rc.Read(tmp)
-		buf = append(buf, tmp[:n]...)
-		if err != nil {
-			break
-		}
-	}
-	return buf, nil
+	return result
 }

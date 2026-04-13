@@ -23,10 +23,11 @@ CREATE TABLE IF NOT EXISTS agent_types (
   description TEXT,
   image TEXT NOT NULL,
   capabilities TEXT[] DEFAULT '{}',
-  skills TEXT[] DEFAULT '{}',
+  allowed_skills TEXT[] DEFAULT '{}',
   tool_policy JSONB DEFAULT '{}',
   max_instances_per_user INT DEFAULT 1,
   idle_timeout_seconds INT DEFAULT 3600,
+  runtime_context TEXT DEFAULT 'any',
   metadata JSONB DEFAULT '{}'
 );
 
@@ -166,6 +167,19 @@ CREATE TABLE IF NOT EXISTS agent_runs (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
+-- Result store metadata (mirrors agent disk state for cross-process queries)
+CREATE TABLE IF NOT EXISTS agent_results (
+  name TEXT NOT NULL,
+  agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  conversation_id TEXT,
+  total_rows INT,
+  total_bytes BIGINT,
+  schema JSONB,
+  pinned BOOLEAN DEFAULT false,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  PRIMARY KEY (agent_id, name)
+);
+
 -- LLM budgets (provider_id references Hugr data source name, no FK)
 CREATE TABLE IF NOT EXISTS llm_budgets (
   id TEXT PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -208,4 +222,5 @@ CREATE INDEX IF NOT EXISTS idx_query_registry_user ON query_registry(user_id);
 CREATE INDEX IF NOT EXISTS idx_tool_calls_session ON tool_calls(session_id);
 CREATE INDEX IF NOT EXISTS idx_agent_runs_conv ON agent_runs(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_agent_runs_status ON agent_runs(status) WHERE status = 'running';
+CREATE INDEX IF NOT EXISTS idx_agent_results_conv ON agent_results(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_llm_usage_period ON llm_usage(user_id, provider_id, period_key);

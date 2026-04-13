@@ -24,7 +24,7 @@ import (
 
 const (
 	appName    = "hub"
-	appVersion = "0.2.2"
+	appVersion = "0.3.0"
 )
 
 type HubApp struct {
@@ -128,9 +128,11 @@ func (a *HubApp) Init(ctx context.Context) error {
 	// Ensure conversation state directory exists on the persistent volume.
 	// Agent processes and hub-service itself write per-turn checkpoints here.
 	if a.config.StoragePath != "" {
-		convDir := a.config.StoragePath + "/conversations"
-		if err := os.MkdirAll(convDir, 0o755); err != nil {
-			a.logger.Warn("failed to create conversations state dir", "path", convDir, "error", err)
+		for _, dir := range []string{"/conversations", "/system/skills"} {
+			p := a.config.StoragePath + dir
+			if err := os.MkdirAll(p, 0o755); err != nil {
+				a.logger.Warn("failed to create state dir", "path", p, "error", err)
+			}
 		}
 	}
 
@@ -168,6 +170,7 @@ func (a *HubApp) Init(ctx context.Context) error {
 	//   /ws/{conversation_id} WebSocket stream to chat UI (registered below)
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", mcpSrv.Handler())
+	mux.HandleFunc("/hugr", a.hugrProxyHandler())
 	// Legacy /mcp/{user_id} redirect — 307 to /mcp for backward compat.
 	mux.HandleFunc("/mcp/", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/mcp", http.StatusTemporaryRedirect)
@@ -223,37 +226,6 @@ func (a *HubApp) Init(ctx context.Context) error {
 				Model:     resp.Model,
 			}
 			return resp.Content, usage, nil
-		},
-		Tools: func(ctx context.Context, userID, conversationID string, messages []wsgateway.LLMMessage, stream wsgateway.StreamCallback) (string, *wsgateway.UsageInfo, error) {
-			msgs := make([]llmrouter.Message, len(messages))
-			for i, m := range messages {
-				msgs[i] = llmrouter.Message{
-					Role: m.Role, Content: m.Content,
-					ToolCallID: m.ToolCallID,
-				}
-				if m.ToolCalls != nil {
-					msgs[i].ToolCalls = toAnySlice(m.ToolCalls)
-				}
-			}
-			// Inject identity for Hugr calls
-			if u, ok := auth.UserFromContext(ctx); ok {
-				ctx = auth.InjectIdentity(ctx, u)
-			}
-			text, chatUsage, err := mcpSrv.HandleUserMessage(ctx, userID, msgs, func(msgType, content string, toolCalls any, toolCallID string) {
-				stream(wsgateway.ChatMessage{
-					Type: msgType, Content: content,
-					ToolCalls: toolCalls, ToolCallID: toolCallID,
-				})
-			}, conversationID)
-			var usage *wsgateway.UsageInfo
-			if chatUsage != nil {
-				usage = &wsgateway.UsageInfo{
-					TokensIn:  chatUsage.TokensIn,
-					TokensOut: chatUsage.TokensOut,
-					Model:     chatUsage.Model,
-				}
-			}
-			return text, usage, err
 		},
 		Persist: func(ctx context.Context, conversationID, role, content string) {
 			a.persistMessage(ctx, conversationID, role, content)
@@ -396,12 +368,7 @@ func (a *HubApp) lookupConversation(ctx context.Context, conversationID string) 
 	return info, nil
 }
 
-func toAnySlice(v any) []any {
-	data, _ := json.Marshal(v)
-	var result []any
-	json.Unmarshal(data, &result)
-	return result
-}
+
 
 func (a *HubApp) persistMessage(ctx context.Context, conversationID, role, content string) {
 	a.persistMessageFull(ctx, conversationID, role, content, nil, "", "final", 0, "")

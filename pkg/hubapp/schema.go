@@ -14,10 +14,14 @@ var migration001 string
 //go:embed schema/migrations/002_channel_protocol.sql
 var migration002 string
 
+//go:embed schema/migrations/003_unified_runtime.sql
+var migration003 string
+
 // migrations maps fromVersion → SQL to run. The key is the version that
 // the database currently reports; the SQL brings it to appVersion.
 var migrations = map[string]string{
-	"0.1.0": migration001 + "\n" + migration002, // fresh → current via both migrations
-	"0.2.0": migration002,                        // A+ → current via channel protocol only
-	"0.2.1": migration002,                        // re-run 002 to fix FK constraints
+	"0.1.0": migration001 + "\n" + migration002 + "\n" + migration003,
+	"0.2.0": migration002 + "\n" + migration003,
+	"0.2.1": migration002 + "\n" + migration003,
+	"0.2.2": migration003,
 }

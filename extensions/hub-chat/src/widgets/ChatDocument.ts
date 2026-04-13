@@ -141,12 +141,20 @@ export class ChatDocumentWidget extends Widget {
   private connectWs(): void {
     if (!this.wsBase || this.isDisposed) return;
 
+    // Close existing connection if any (prevent parallel connections)
+    if (this.ws) {
+      this.ws.onclose = null;
+      this.ws.onerror = null;
+      this.ws.close();
+      this.ws = null;
+    }
+
     this.ws = connectWebSocket(
       this.wsBase,
       this.conversationId,
       (msg) => this.onWsMessage(msg),
       () => this.onWsClose(),
-      () => this.onWsClose(),
+      () => {}, // onerror → onclose fires next, don't double-trigger
     );
     this.ws.onopen = () => {
       this.reconnectAttempt = 0;
@@ -161,6 +169,12 @@ export class ChatDocumentWidget extends Widget {
     this.stopBtn.style.display = 'none';
     this.removeStatusMsg();
     this.finalizeStream();
+
+    // Cancel any pending reconnect to prevent overlapping timers
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
 
     const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempt), 30000);
     this.reconnectAttempt++;
