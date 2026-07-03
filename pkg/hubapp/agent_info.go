@@ -1,7 +1,9 @@
 package hubapp
 
 // agent_info — the Hugr function hugen's remote identity source calls at
-// `mutation { function { hub { agent_info } } }` to fetch its own settings.
+// `mutation { function { hub { agent { info } } } }` to fetch its own settings.
+// It lives in the `agent` module (path hub.agent.info), a sibling of the
+// hub.agent.db data source.
 //
 // It resolves the CALLING agent from the auth context (the service principal is
 // provisioned so user_id == agent_id, D11) and returns its identity plus the
@@ -34,9 +36,11 @@ func agentInfoType() app.Type {
 		AsType()
 }
 
-// registerAgentInfo wires the agent_info mutation into the catalog.
+// registerAgentInfo wires the info mutation into the `agent` module → the
+// function resolves at `mutation { function { hub { agent { info } } } }`
+// (path hub.agent.info).
 func (a *HubApp) registerAgentInfo() error {
-	return a.mux.HandleFunc("default", "agent_info", a.handleAgentInfo,
+	return a.mux.HandleFunc("agent", "info", a.handleAgentInfo,
 		app.ArgFromContext("user_id", app.String, app.AuthUserID),
 		app.ArgFromContext("user_name", app.String, app.AuthUserName),
 		app.ArgFromContext("role", app.String, app.AuthRole),
