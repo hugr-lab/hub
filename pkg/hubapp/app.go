@@ -21,6 +21,7 @@ import (
 	"github.com/hugr-lab/hugen/pkg/store/schema"
 	"github.com/hugr-lab/query-engine/client"
 	"github.com/hugr-lab/query-engine/client/app"
+	"github.com/hugr-lab/query-engine/pkg/db"
 )
 
 const (
@@ -80,7 +81,25 @@ func (a *HubApp) Catalog(ctx context.Context) (catalog.Catalog, error) {
 	return a.mux, nil
 }
 
+// agentSchemaParams are the template vars the hub renders the agent-store
+// schema with — its OWN embedder (hub-configured), NOT query-engine's global
+// _system_embedder. The hub renders the SDL/DDL itself (below) instead of
+// handing raw templates to the provisioner, so it controls which embedder the
+// @embeddings directives reference.
+func (a *HubApp) agentSchemaParams() schema.Params {
+	return schema.Params{
+		VectorSize:   a.config.AgentVectorSize,
+		EmbedderName: a.config.AgentEmbedder,
+	}
+}
+
 func (a *HubApp) DataSources(ctx context.Context) ([]app.DataSourceInfo, error) {
+	// Render the agent-store SDL here (native Postgres) with the hub's embedder
+	// so @embeddings(model: …) points at HUB_AGENT_EMBEDDER, not _system_embedder.
+	agentSDL, err := schema.SDL(db.SDBPostgres, a.agentSchemaParams())
+	if err != nil {
+		return nil, fmt.Errorf("render agent store SDL: %w", err)
+	}
 	return []app.DataSourceInfo{
 		{
 			Name:        "db",
@@ -94,20 +113,19 @@ func (a *HubApp) DataSources(ctx context.Context) ([]app.DataSourceInfo, error) 
 		{
 			// Agent runtime store — hugen owns the schema + its version stream.
 			// Path is a SEPARATE physical DB (see Config.AgentDatabaseDSN). The
-			// SDL/DDL are hugen's raw templates; the app framework renders them
-			// with the server's system embedder (VectorSize + EmbedderName) and
-			// the isPostgres/isDuckDB funcs — same common convention as this hub
-			// schema. Name "agent.db" → GraphQL path hub.agent.db, prefix
-			// hub_agent_db — nests under a FRESH hub.agent module, NOT under hub.db (nesting a
-			// source under an EXISTING source module, hub.db.agent under hub.db, breaks
-			// hub.db module merge in hugr).
+			// hub renders the hugen SDL/DDL with ITS embedder (agentSchemaParams)
+			// via the shared common template convention. Name "agent.db" →
+			// GraphQL path hub.agent.db, prefix hub_agent_db — nests under a FRESH
+			// hub.agent module, NOT under hub.db (nesting a source under an
+			// EXISTING source module, hub.db.agent under hub.db, breaks the hub.db
+			// module merge in hugr).
 			Name:        "agent.db",
 			Type:        "postgres",
 			Description: "Agent runtime store (hugen schema): sessions, events, notes, skills, tasks, tool policies",
 			Path:        a.config.AgentDatabaseDSN,
 			ReadOnly:    false,
 			Version:     schema.Version,
-			HugrSchema:  schema.RawSDL(),
+			HugrSchema:  agentSDL,
 		},
 		{
 			Name:        "redis",
@@ -125,8 +143,9 @@ func (a *HubApp) InitDBSchemaTemplate(ctx context.Context, name string) (string,
 	case "db":
 		return hubDBSchema, nil
 	case "agent.db":
-		// hugen's raw physical DDL — the framework renders it (Postgres).
-		return schema.RawInitDDL(), nil
+		// hugen physical DDL rendered here (native Postgres) with the hub's
+		// embedder/vector-size, mirroring the SDL in DataSources.
+		return schema.InitDDL(db.SDBPostgres, a.agentSchemaParams())
 	}
 	return "", fmt.Errorf("unknown data source: %s", name)
 }
@@ -143,8 +162,8 @@ func (a *HubApp) MigrateDBSchemaTemplate(ctx context.Context, name, fromVersion 
 		}
 		return sql, nil
 	case "agent.db":
-		// hugen owns the agent-store migration stream; framework renders + applies.
-		return schema.RawMigrateDDL(fromVersion)
+		// hugen owns the agent-store migration stream; rendered here (Postgres).
+		return schema.MigrateDDL(db.SDBPostgres, fromVersion, a.agentSchemaParams())
 	}
 	return "", fmt.Errorf("unknown data source: %s", name)
 }

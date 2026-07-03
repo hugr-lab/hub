@@ -22,6 +22,13 @@ type Config struct {
 	// out-of-band (the provisioner needs direct non-SSL Postgres access and does
 	// not CREATE DATABASE for app sources).
 	AgentDatabaseDSN string
+	// AgentEmbedder is the embedding data source (registered in hugr) the agent
+	// store's @embeddings directives reference. The hub renders the SDL/DDL with
+	// THIS embedder (its own, hub-configured) rather than letting the provisioner
+	// inject query-engine's global _system_embedder. AgentVectorSize is that
+	// embedder's dimension; 0 disables embeddings.
+	AgentEmbedder   string
+	AgentVectorSize int
 	// AgentConfigFile is a YAML/JSON agent-config file returned by agent_info as
 	// a testing fallback when the calling agent is not yet registered in
 	// hub.agent.db (the "return the settings we have locally" path). Same shape
@@ -42,6 +49,8 @@ func LoadConfig() Config {
 		FlightAddr:    envOrDefault("HUB_SERVICE_FLIGHT", ":10001"),
 		DatabaseDSN:      envOrDefault("HUB_DATABASE_DSN", "postgres://hugr:hugr_password@localhost:18032/hub"),
 		AgentDatabaseDSN: envOrDefault("HUB_AGENT_DATABASE_DSN", "postgres://hugr:hugr_password@localhost:18032/agent"),
+		AgentEmbedder:    envOrDefault("HUB_AGENT_EMBEDDER", "gemma-embedding"),
+		AgentVectorSize:  envInt("HUB_AGENT_VECTOR_SIZE", 768),
 		AgentConfigFile:  envOrDefault("HUB_AGENT_CONFIG_FILE", ""),
 		InternalURL:   envOrDefault("HUB_SERVICE_INTERNAL_URL", "http://hub-service:8082"),
 		RedisURL:      envOrDefault("HUB_REDIS_URL", "redis://localhost:6379/0"),
