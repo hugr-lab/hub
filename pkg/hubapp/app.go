@@ -18,6 +18,7 @@ import (
 	"github.com/hugr-lab/hub/pkg/llmrouter"
 	"github.com/hugr-lab/hub/pkg/mcpserver"
 	"github.com/hugr-lab/hub/pkg/wsgateway"
+	"github.com/hugr-lab/hugen/pkg/store/schema"
 	"github.com/hugr-lab/query-engine/client"
 	"github.com/hugr-lab/query-engine/client/app"
 )
@@ -91,6 +92,22 @@ func (a *HubApp) DataSources(ctx context.Context) ([]app.DataSourceInfo, error) 
 			HugrSchema:  hubGraphQLSchema,
 		},
 		{
+			// Agent runtime store — hugen owns the schema + its version stream.
+			// Path is a SEPARATE physical DB (see Config.AgentDatabaseDSN). The
+			// SDL/DDL are hugen's raw templates; the app framework renders them
+			// with the server's system embedder (VectorSize + EmbedderName) and
+			// the isPostgres/isDuckDB funcs — same common convention as this hub
+			// schema. Name "db.agent" → GraphQL path hub.db.agent, prefix
+			// hub_db_agent.
+			Name:        "db.agent",
+			Type:        "postgres",
+			Description: "Agent runtime store (hugen schema): sessions, events, notes, skills, tasks, tool policies",
+			Path:        a.config.AgentDatabaseDSN,
+			ReadOnly:    false,
+			Version:     schema.Version,
+			HugrSchema:  schema.RawSDL(),
+		},
+		{
 			Name:        "redis",
 			Type:        "redis",
 			Description: "Hub rate limiting and cache store",
@@ -102,8 +119,12 @@ func (a *HubApp) DataSources(ctx context.Context) ([]app.DataSourceInfo, error) 
 }
 
 func (a *HubApp) InitDBSchemaTemplate(ctx context.Context, name string) (string, error) {
-	if name == "db" {
+	switch name {
+	case "db":
 		return hubDBSchema, nil
+	case "db.agent":
+		// hugen's raw physical DDL — the framework renders it (Postgres).
+		return schema.RawInitDDL(), nil
 	}
 	return "", fmt.Errorf("unknown data source: %s", name)
 }
@@ -112,14 +133,18 @@ func (a *HubApp) InitDBSchemaTemplate(ctx context.Context, name string) (string,
 // Hugr calls this when the stored schema version differs from appVersion.
 // fromVersion is the version currently in the database.
 func (a *HubApp) MigrateDBSchemaTemplate(ctx context.Context, name, fromVersion string) (string, error) {
-	if name != "db" {
-		return "", fmt.Errorf("unknown data source: %s", name)
+	switch name {
+	case "db":
+		sql, ok := migrations[fromVersion]
+		if !ok {
+			return "", fmt.Errorf("no migration path from version %s to %s", fromVersion, appVersion)
+		}
+		return sql, nil
+	case "db.agent":
+		// hugen owns the agent-store migration stream; framework renders + applies.
+		return schema.RawMigrateDDL(fromVersion)
 	}
-	sql, ok := migrations[fromVersion]
-	if !ok {
-		return "", fmt.Errorf("no migration path from version %s to %s", fromVersion, appVersion)
-	}
-	return sql, nil
+	return "", fmt.Errorf("unknown data source: %s", name)
 }
 
 func (a *HubApp) Init(ctx context.Context) error {
