@@ -97,9 +97,11 @@ func (a *HubApp) DataSources(ctx context.Context) ([]app.DataSourceInfo, error) 
 			// SDL/DDL are hugen's raw templates; the app framework renders them
 			// with the server's system embedder (VectorSize + EmbedderName) and
 			// the isPostgres/isDuckDB funcs — same common convention as this hub
-			// schema. Name "db.agent" → GraphQL path hub.db.agent, prefix
-			// hub_db_agent.
-			Name:        "db.agent",
+			// schema. Name "agent.db" → GraphQL path hub.agent.db, prefix
+			// hub_agent_db — nests under a FRESH hub.agent module, NOT under hub.db (nesting a
+			// source under an EXISTING source module, hub.db.agent under hub.db, breaks
+			// hub.db module merge in hugr).
+			Name:        "agent.db",
 			Type:        "postgres",
 			Description: "Agent runtime store (hugen schema): sessions, events, notes, skills, tasks, tool policies",
 			Path:        a.config.AgentDatabaseDSN,
@@ -122,7 +124,7 @@ func (a *HubApp) InitDBSchemaTemplate(ctx context.Context, name string) (string,
 	switch name {
 	case "db":
 		return hubDBSchema, nil
-	case "db.agent":
+	case "agent.db":
 		// hugen's raw physical DDL — the framework renders it (Postgres).
 		return schema.RawInitDDL(), nil
 	}
@@ -140,7 +142,7 @@ func (a *HubApp) MigrateDBSchemaTemplate(ctx context.Context, name, fromVersion 
 			return "", fmt.Errorf("no migration path from version %s to %s", fromVersion, appVersion)
 		}
 		return sql, nil
-	case "db.agent":
+	case "agent.db":
 		// hugen owns the agent-store migration stream; framework renders + applies.
 		return schema.RawMigrateDDL(fromVersion)
 	}
