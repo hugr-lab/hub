@@ -18,8 +18,10 @@ import (
 	"github.com/hugr-lab/hub/pkg/llmrouter"
 	"github.com/hugr-lab/hub/pkg/mcpserver"
 	"github.com/hugr-lab/hub/pkg/wsgateway"
+	"github.com/hugr-lab/hugen/pkg/store/schema"
 	"github.com/hugr-lab/query-engine/client"
 	"github.com/hugr-lab/query-engine/client/app"
+	"github.com/hugr-lab/query-engine/pkg/db"
 )
 
 const (
@@ -79,7 +81,32 @@ func (a *HubApp) Catalog(ctx context.Context) (catalog.Catalog, error) {
 	return a.mux, nil
 }
 
+// agentSchemaParams are the template vars the hub renders the agent-store
+// schema with — its OWN embedder (hub-configured), NOT query-engine's global
+// _system_embedder. The hub renders the SDL/DDL itself (below) instead of
+// handing raw templates to the provisioner, so it controls which embedder the
+// @embeddings directives reference.
+func (a *HubApp) agentSchemaParams() schema.Params {
+	return schema.Params{
+		VectorSize:   a.config.AgentVectorSize,
+		EmbedderName: a.config.AgentEmbedder,
+	}
+}
+
 func (a *HubApp) DataSources(ctx context.Context) ([]app.DataSourceInfo, error) {
+	// The hub "db" and "agent.db" sources are distinct Hugr apps but share the
+	// per-physical-DB _hugr_app_meta version row, so they MUST live in separate
+	// physical databases — otherwise their schema-version rows collide and
+	// Init/Migrate dispatch corrupts. Fail fast on a misconfiguration.
+	if a.config.AgentDatabaseDSN == a.config.DatabaseDSN {
+		return nil, fmt.Errorf("HUB_AGENT_DATABASE_DSN must be a separate physical database from HUB_DATABASE_DSN (both are %q); they collide on the _hugr_app_meta version row", a.config.DatabaseDSN)
+	}
+	// Render the agent-store SDL here (native Postgres) with the hub's embedder
+	// so @embeddings(model: …) points at HUB_AGENT_EMBEDDER, not _system_embedder.
+	agentSDL, err := schema.SDL(db.SDBPostgres, a.agentSchemaParams())
+	if err != nil {
+		return nil, fmt.Errorf("render agent store SDL: %w", err)
+	}
 	return []app.DataSourceInfo{
 		{
 			Name:        "db",
@@ -89,6 +116,23 @@ func (a *HubApp) DataSources(ctx context.Context) ([]app.DataSourceInfo, error) 
 			ReadOnly:    false,
 			Version:     appVersion,
 			HugrSchema:  hubGraphQLSchema,
+		},
+		{
+			// Agent runtime store — hugen owns the schema + its version stream.
+			// Path is a SEPARATE physical DB (see Config.AgentDatabaseDSN). The
+			// hub renders the hugen SDL/DDL with ITS embedder (agentSchemaParams)
+			// via the shared common template convention. Name "agent.db" →
+			// GraphQL path hub.agent.db, prefix hub_agent_db — nests under a FRESH
+			// hub.agent module, NOT under hub.db (nesting a source under an
+			// EXISTING source module, hub.db.agent under hub.db, breaks the hub.db
+			// module merge in hugr).
+			Name:        "agent.db",
+			Type:        "postgres",
+			Description: "Agent runtime store (hugen schema): sessions, events, notes, skills, tasks, tool policies",
+			Path:        a.config.AgentDatabaseDSN,
+			ReadOnly:    false,
+			Version:     schema.Version,
+			HugrSchema:  agentSDL,
 		},
 		{
 			Name:        "redis",
@@ -102,8 +146,13 @@ func (a *HubApp) DataSources(ctx context.Context) ([]app.DataSourceInfo, error) 
 }
 
 func (a *HubApp) InitDBSchemaTemplate(ctx context.Context, name string) (string, error) {
-	if name == "db" {
+	switch name {
+	case "db":
 		return hubDBSchema, nil
+	case "agent.db":
+		// hugen physical DDL rendered here (native Postgres) with the hub's
+		// embedder/vector-size, mirroring the SDL in DataSources.
+		return schema.InitDDL(db.SDBPostgres, a.agentSchemaParams())
 	}
 	return "", fmt.Errorf("unknown data source: %s", name)
 }
@@ -112,14 +161,18 @@ func (a *HubApp) InitDBSchemaTemplate(ctx context.Context, name string) (string,
 // Hugr calls this when the stored schema version differs from appVersion.
 // fromVersion is the version currently in the database.
 func (a *HubApp) MigrateDBSchemaTemplate(ctx context.Context, name, fromVersion string) (string, error) {
-	if name != "db" {
-		return "", fmt.Errorf("unknown data source: %s", name)
+	switch name {
+	case "db":
+		sql, ok := migrations[fromVersion]
+		if !ok {
+			return "", fmt.Errorf("no migration path from version %s to %s", fromVersion, appVersion)
+		}
+		return sql, nil
+	case "agent.db":
+		// hugen owns the agent-store migration stream; rendered here (Postgres).
+		return schema.MigrateDDL(db.SDBPostgres, fromVersion, a.agentSchemaParams())
 	}
-	sql, ok := migrations[fromVersion]
-	if !ok {
-		return "", fmt.Errorf("no migration path from version %s to %s", fromVersion, appVersion)
-	}
-	return sql, nil
+	return "", fmt.Errorf("unknown data source: %s", name)
 }
 
 func (a *HubApp) Init(ctx context.Context) error {

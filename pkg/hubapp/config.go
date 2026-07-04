@@ -14,6 +14,21 @@ type Config struct {
 	FlightAddr    string // gRPC Flight server
 	InternalURL   string // Hub Service URL accessible from agent containers
 	DatabaseDSN   string // PostgreSQL DSN for hub DB
+	// AgentDatabaseDSN is the PostgreSQL DSN for the hugen Agent store
+	// (hub.agent.db). MUST be a physically SEPARATE database from DatabaseDSN:
+	// the Hugr app framework tracks per-app schema version in _hugr_app_meta
+	// keyed by app name, so two sources of the same app sharing one physical DB
+	// would collide on the version row. The empty database must be created
+	// out-of-band (the provisioner needs direct non-SSL Postgres access and does
+	// not CREATE DATABASE for app sources).
+	AgentDatabaseDSN string
+	// AgentEmbedder is the embedding data source (registered in hugr) the agent
+	// store's @embeddings directives reference. The hub renders the SDL/DDL with
+	// THIS embedder (its own, hub-configured) rather than letting the provisioner
+	// inject query-engine's global _system_embedder. AgentVectorSize is that
+	// embedder's dimension; 0 disables embeddings.
+	AgentEmbedder   string
+	AgentVectorSize int
 	RedisURL      string // Redis URL for per-user rate limiting (required)
 	StoragePath   string // Root directory for persistent storage (HUB_STORAGE_PATH)
 	QueryTimeout      time.Duration // Timeout for Hugr GraphQL queries (HUGR_QUERY_TIMEOUT)
@@ -27,7 +42,10 @@ func LoadConfig() Config {
 		HugrSecretKey: envOrDefault("HUGR_SECRET_KEY", ""),
 		ListenAddr:    envOrDefault("HUB_SERVICE_LISTEN", ":10000"),
 		FlightAddr:    envOrDefault("HUB_SERVICE_FLIGHT", ":10001"),
-		DatabaseDSN:   envOrDefault("HUB_DATABASE_DSN", "postgres://hugr:hugr_password@localhost:18032/hub"),
+		DatabaseDSN:      envOrDefault("HUB_DATABASE_DSN", "postgres://hugr:hugr_password@localhost:18032/hub"),
+		AgentDatabaseDSN: envOrDefault("HUB_AGENT_DATABASE_DSN", "postgres://hugr:hugr_password@localhost:18032/agent"),
+		AgentEmbedder:    envOrDefault("HUB_AGENT_EMBEDDER", "gemma-embedding"),
+		AgentVectorSize:  envInt("HUB_AGENT_VECTOR_SIZE", 768),
 		InternalURL:   envOrDefault("HUB_SERVICE_INTERNAL_URL", "http://hub-service:8082"),
 		RedisURL:      envOrDefault("HUB_REDIS_URL", "redis://localhost:6379/0"),
 		StoragePath:   envOrDefault("HUB_STORAGE_PATH", "/var/hub-storage"),
@@ -82,7 +100,10 @@ func envOrDefault(key, def string) string {
 func envInt(key string, def int) int {
 	if v := os.Getenv(key); v != "" {
 		var n int
-		if _, err := fmt.Sscanf(v, "%d", &n); err == nil && n > 0 {
+		// Accept an explicit 0 (a valid value — e.g. HUB_AGENT_VECTOR_SIZE=0
+		// disables embeddings); only a negative or unparseable value falls
+		// back to the default.
+		if _, err := fmt.Sscanf(v, "%d", &n); err == nil && n >= 0 {
 			return n
 		}
 	}
