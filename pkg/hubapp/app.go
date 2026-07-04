@@ -94,6 +94,13 @@ func (a *HubApp) agentSchemaParams() schema.Params {
 }
 
 func (a *HubApp) DataSources(ctx context.Context) ([]app.DataSourceInfo, error) {
+	// The hub "db" and "agent.db" sources are distinct Hugr apps but share the
+	// per-physical-DB _hugr_app_meta version row, so they MUST live in separate
+	// physical databases — otherwise their schema-version rows collide and
+	// Init/Migrate dispatch corrupts. Fail fast on a misconfiguration.
+	if a.config.AgentDatabaseDSN == a.config.DatabaseDSN {
+		return nil, fmt.Errorf("HUB_AGENT_DATABASE_DSN must be a separate physical database from HUB_DATABASE_DSN (both are %q); they collide on the _hugr_app_meta version row", a.config.DatabaseDSN)
+	}
 	// Render the agent-store SDL here (native Postgres) with the hub's embedder
 	// so @embeddings(model: …) points at HUB_AGENT_EMBEDDER, not _system_embedder.
 	agentSDL, err := schema.SDL(db.SDBPostgres, a.agentSchemaParams())

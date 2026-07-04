@@ -29,11 +29,6 @@ type Config struct {
 	// embedder's dimension; 0 disables embeddings.
 	AgentEmbedder   string
 	AgentVectorSize int
-	// AgentConfigFile is a YAML/JSON agent-config file returned by agent_info as
-	// a testing fallback when the calling agent is not yet registered in
-	// hub.agent.db (the "return the settings we have locally" path). Same shape
-	// hugen's config.LoadStaticInput parses. Empty disables the fallback.
-	AgentConfigFile string
 	RedisURL      string // Redis URL for per-user rate limiting (required)
 	StoragePath   string // Root directory for persistent storage (HUB_STORAGE_PATH)
 	QueryTimeout      time.Duration // Timeout for Hugr GraphQL queries (HUGR_QUERY_TIMEOUT)
@@ -51,7 +46,6 @@ func LoadConfig() Config {
 		AgentDatabaseDSN: envOrDefault("HUB_AGENT_DATABASE_DSN", "postgres://hugr:hugr_password@localhost:18032/agent"),
 		AgentEmbedder:    envOrDefault("HUB_AGENT_EMBEDDER", "gemma-embedding"),
 		AgentVectorSize:  envInt("HUB_AGENT_VECTOR_SIZE", 768),
-		AgentConfigFile:  envOrDefault("HUB_AGENT_CONFIG_FILE", ""),
 		InternalURL:   envOrDefault("HUB_SERVICE_INTERNAL_URL", "http://hub-service:8082"),
 		RedisURL:      envOrDefault("HUB_REDIS_URL", "redis://localhost:6379/0"),
 		StoragePath:   envOrDefault("HUB_STORAGE_PATH", "/var/hub-storage"),

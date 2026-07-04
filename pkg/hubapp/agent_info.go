@@ -10,16 +10,14 @@ package hubapp
 // resolved runtime config: agent_type.config overlaid with the agent's
 // config_override, both read from the Agent DB (hub.agent.db).
 //
-// Auto-registration (create the agent row when missing) is deferred. Until an
-// agent is seeded, a testing fallback returns HUB_AGENT_CONFIG_FILE verbatim so
-// a remote agent can boot with the settings we have locally.
+// Auto-registration (create the agent row when missing) is deferred; until an
+// agent is seeded, agent_info returns a "not registered" error. The config is
+// sourced only from hub.agent.db — there is no config-file fallback.
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/hugr-lab/query-engine/client/app"
-	"gopkg.in/yaml.v3"
 )
 
 // agentInfoType is the object agent_info returns. The hugen client scans it into
@@ -47,7 +45,7 @@ func (a *HubApp) registerAgentInfo() error {
 		app.ArgFromContext("auth_type", app.String, app.AuthType),
 		app.Return(agentInfoType()),
 		app.Mutation(),
-		app.Desc("Resolve the calling agent's settings. Identity = auth principal (user_id == agent_id). Config = agent_type.config ⊕ config_override from hub.agent.db; falls back to HUB_AGENT_CONFIG_FILE when the agent is not yet registered."),
+		app.Desc("Resolve the calling agent's settings. Identity = auth principal (user_id == agent_id). Config = agent_type.config ⊕ config_override from hub.agent.db."),
 	)
 }
 
@@ -59,12 +57,9 @@ func (a *HubApp) handleAgentInfo(w *app.Result, r *app.Request) error {
 	aid := u.ID // agent principal: user_id == agent_id (D11)
 	ctx := withIdentity(r.Context(), u)
 
-	// 1. Real path — read the agent + its type from the Agent DB, merge configs.
-	//    A DB-level failure (query / result / scan) PROPAGATES: it must not
-	//    degrade to the config-file fallback, which would boot a registered
-	//    agent on the wrong (local) config or misreport a DB outage as "not
-	//    registered". Only a genuinely absent agent (empty result) falls
-	//    through to the testing fallback below.
+	// Read the agent + its type from the Agent DB and merge configs. A DB-level
+	// failure (query / result / scan) PROPAGATES as an error — it must not be
+	// misreported as "agent not registered"; only a genuinely empty result is.
 	res, err := a.client.Query(ctx,
 		`query($aid: String!) { hub { agent { db { agents(
 			filter: { id: { eq: $aid } } limit: 1
@@ -111,36 +106,7 @@ func (a *HubApp) handleAgentInfo(w *app.Result, r *app.Request) error {
 		})
 	}
 
-	// 2. Testing fallback — the agent is not registered yet; return the local
-	//    config file so a remote agent can boot. Auto-registration lands later.
-	if a.config.AgentConfigFile == "" {
-		return fmt.Errorf("agent_info: agent %q not registered in hub.agent.db and HUB_AGENT_CONFIG_FILE is unset", aid)
-	}
-	cfg, err := loadAgentConfigFile(a.config.AgentConfigFile)
-	if err != nil {
-		return fmt.Errorf("agent_info: load config file: %w", err)
-	}
-	a.logger.Info("agent_info: served fallback config file", "agent", aid, "file", a.config.AgentConfigFile)
-	return w.SetJSON(map[string]any{
-		"id":            aid,
-		"agent_type_id": "",
-		"short_id":      aid,
-		"name":          u.Name,
-		"status":        "active",
-		"config":        cfg,
-	})
-}
-
-// loadAgentConfigFile reads a YAML (or JSON — YAML is a superset) agent-config
-// file into the generic map hugen's config.LoadStaticInput consumes.
-func loadAgentConfigFile(path string) (map[string]any, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	var cfg map[string]any
-	if err := yaml.Unmarshal(b, &cfg); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
-	}
-	return cfg, nil
+	// Not found — config lives only in hub.agent.db; there is no file fallback.
+	// Registration (deferred) seeds the row.
+	return fmt.Errorf("agent_info: agent %q not registered in hub.agent.db", aid)
 }
