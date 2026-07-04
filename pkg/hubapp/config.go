@@ -106,7 +106,10 @@ func envOrDefault(key, def string) string {
 func envInt(key string, def int) int {
 	if v := os.Getenv(key); v != "" {
 		var n int
-		if _, err := fmt.Sscanf(v, "%d", &n); err == nil && n > 0 {
+		// Accept an explicit 0 (a valid value — e.g. HUB_AGENT_VECTOR_SIZE=0
+		// disables embeddings); only a negative or unparseable value falls
+		// back to the default.
+		if _, err := fmt.Sscanf(v, "%d", &n); err == nil && n >= 0 {
 			return n
 		}
 	}

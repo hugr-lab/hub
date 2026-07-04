@@ -60,6 +60,11 @@ func (a *HubApp) handleAgentInfo(w *app.Result, r *app.Request) error {
 	ctx := withIdentity(r.Context(), u)
 
 	// 1. Real path — read the agent + its type from the Agent DB, merge configs.
+	//    A DB-level failure (query / result / scan) PROPAGATES: it must not
+	//    degrade to the config-file fallback, which would boot a registered
+	//    agent on the wrong (local) config or misreport a DB outage as "not
+	//    registered". Only a genuinely absent agent (empty result) falls
+	//    through to the testing fallback below.
 	res, err := a.client.Query(ctx,
 		`query($aid: String!) { hub { agent { db { agents(
 			filter: { id: { eq: $aid } } limit: 1
@@ -67,42 +72,43 @@ func (a *HubApp) handleAgentInfo(w *app.Result, r *app.Request) error {
 		map[string]any{"aid": aid},
 	)
 	if err != nil {
-		a.logger.Warn("agent_info: Agent DB lookup failed, trying config file", "agent", aid, "error", err)
-	} else {
-		defer res.Close()
-		if res.Err() != nil {
-			a.logger.Warn("agent_info: Agent DB query error, trying config file", "agent", aid, "error", res.Err())
-		} else {
-			var agents []struct {
-				ID             string         `json:"id"`
-				AgentTypeID    string         `json:"agent_type_id"`
-				ShortID        string         `json:"short_id"`
-				Name           string         `json:"name"`
-				Status         string         `json:"status"`
-				ConfigOverride map[string]any `json:"config_override"`
-				AgentType      struct {
-					Config map[string]any `json:"config"`
-				} `json:"agent_type"`
-			}
-			if scanErr := res.ScanData("hub.agent.db.agents", &agents); scanErr == nil && len(agents) > 0 {
-				ag := agents[0]
-				merged := make(map[string]any, len(ag.AgentType.Config)+len(ag.ConfigOverride))
-				for k, v := range ag.AgentType.Config { // base: the type's config
-					merged[k] = v
-				}
-				for k, v := range ag.ConfigOverride { // per-instance override wins
-					merged[k] = v
-				}
-				return w.SetJSON(map[string]any{
-					"id":            ag.ID,
-					"agent_type_id": ag.AgentTypeID,
-					"short_id":      ag.ShortID,
-					"name":          ag.Name,
-					"status":        ag.Status,
-					"config":        merged,
-				})
-			}
+		return fmt.Errorf("agent_info: Agent DB lookup failed for %q: %w", aid, err)
+	}
+	defer res.Close()
+	if res.Err() != nil {
+		return fmt.Errorf("agent_info: Agent DB query error for %q: %w", aid, res.Err())
+	}
+	var agents []struct {
+		ID             string         `json:"id"`
+		AgentTypeID    string         `json:"agent_type_id"`
+		ShortID        string         `json:"short_id"`
+		Name           string         `json:"name"`
+		Status         string         `json:"status"`
+		ConfigOverride map[string]any `json:"config_override"`
+		AgentType      struct {
+			Config map[string]any `json:"config"`
+		} `json:"agent_type"`
+	}
+	if scanErr := res.ScanData("hub.agent.db.agents", &agents); scanErr != nil {
+		return fmt.Errorf("agent_info: scan agents for %q: %w", aid, scanErr)
+	}
+	if len(agents) > 0 {
+		ag := agents[0]
+		merged := make(map[string]any, len(ag.AgentType.Config)+len(ag.ConfigOverride))
+		for k, v := range ag.AgentType.Config { // base: the type's config
+			merged[k] = v
 		}
+		for k, v := range ag.ConfigOverride { // per-instance override wins
+			merged[k] = v
+		}
+		return w.SetJSON(map[string]any{
+			"id":            ag.ID,
+			"agent_type_id": ag.AgentTypeID,
+			"short_id":      ag.ShortID,
+			"name":          ag.Name,
+			"status":        ag.Status,
+			"config":        merged,
+		})
 	}
 
 	// 2. Testing fallback — the agent is not registered yet; return the local
