@@ -40,6 +40,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/hugr-lab/query-engine/client/app"
 	qeauth "github.com/hugr-lab/query-engine/pkg/auth"
+	"github.com/hugr-lab/query-engine/types"
 )
 
 // agentTokenInfo is what the issuer needs to know about an agent to stamp
@@ -51,9 +52,23 @@ type agentTokenInfo struct {
 	Status string
 }
 
+// Terminal-vs-transient sentinels: hugen's RemoteStore treats 401/403 as
+// FATAL (no retry) and everything else as retryable, so the directory must
+// distinguish "this credential is genuinely dead" from "the store hiccuped".
+var (
+	// errCredentialRejected — the bootstrap secret is unknown, expired, or
+	// already consumed. Terminal → 401.
+	errCredentialRejected = errors.New("credential rejected")
+	// errAgentNotRegistered — no such agent row. Terminal → 403 (a deleted
+	// agent holding a signature-valid JWT must not retry forever).
+	errAgentNotRegistered = errors.New("agent not registered")
+)
+
 // agentTokenDirectory is the narrow store surface the token endpoint
 // depends on — a seam so the HTTP handlers are unit-testable without a
 // live Hugr. *HubApp implements it over hub.agent.db / hub.db.
+// Implementations return the sentinels above for TERMINAL denials; any
+// other error is treated as a transient store failure (503).
 type agentTokenDirectory interface {
 	// agentForToken resolves the agent row (hub.agent.db.agents).
 	agentForToken(ctx context.Context, agentID string) (agentTokenInfo, error)
@@ -194,16 +209,30 @@ func (t *agentTokenIssuer) handleToken(w http.ResponseWriter, r *http.Request) {
 		agentID = id
 	} else {
 		id, err := t.dir.redeemBootstrapSecret(ctx, hashBootstrapSecret(req.Token))
-		if err != nil {
+		switch {
+		case errors.Is(err, errCredentialRejected):
 			t.logger.Warn("agent token: bootstrap secret rejected", "err", err)
 			t.deny(w, http.StatusUnauthorized, "credential rejected")
+			return
+		case err != nil:
+			// Transient store failure — 503 so the client's backoff retries;
+			// 401 would read as fatal in hugen's RemoteStore.
+			t.logger.Error("agent token: bootstrap store failure", "err", err)
+			t.deny(w, http.StatusServiceUnavailable, "bootstrap store failure")
 			return
 		}
 		agentID = id
 	}
 
 	info, err := t.dir.agentForToken(ctx, agentID)
-	if err != nil {
+	switch {
+	case errors.Is(err, errAgentNotRegistered):
+		// Terminal: a hard-deleted agent with a signature-valid JWT must be
+		// told "no" (403 = fatal for the client), not retry on 503 forever.
+		t.logger.Warn("agent token: agent not registered", "agent", agentID)
+		t.deny(w, http.StatusForbidden, "agent not registered")
+		return
+	case err != nil:
 		// A store failure must not read as "credentials rejected" (fatal in
 		// hugen's RemoteStore) — 503 lets the client's backoff retry.
 		t.logger.Error("agent token: agent lookup failed", "agent", agentID, "err", err)
@@ -297,7 +326,7 @@ func (a *HubApp) agentForToken(ctx context.Context, agentID string) (agentTokenI
 		return agentTokenInfo{}, fmt.Errorf("agent lookup %q: scan: %w", agentID, err)
 	}
 	if len(agents) == 0 {
-		return agentTokenInfo{}, fmt.Errorf("agent %q not registered in hub.agent.db", agentID)
+		return agentTokenInfo{}, fmt.Errorf("agent %q: %w", agentID, errAgentNotRegistered)
 	}
 	ag := agents[0]
 	return agentTokenInfo{ID: ag.ID, Name: ag.Name, Role: ag.Role, Status: ag.Status}, nil
@@ -324,17 +353,22 @@ func (a *HubApp) redeemBootstrapSecret(ctx context.Context, secretHash string) (
 		ConsumedAt *time.Time `json:"consumed_at"`
 	}
 	if err := res.ScanData("hub.db.agent_bootstrap_secrets", &rows); err != nil {
+		// The hugr client reports an empty filtered result as ErrNoData —
+		// that is "unknown secret" (terminal), not a store failure.
+		if errors.Is(err, types.ErrNoData) {
+			return "", fmt.Errorf("bootstrap secret unknown: %w", errCredentialRejected)
+		}
 		return "", fmt.Errorf("bootstrap lookup: scan: %w", err)
 	}
 	if len(rows) == 0 {
-		return "", errors.New("bootstrap secret unknown")
+		return "", fmt.Errorf("bootstrap secret unknown: %w", errCredentialRejected)
 	}
 	row := rows[0]
 	if row.ConsumedAt != nil {
-		return "", errors.New("bootstrap secret already consumed")
+		return "", fmt.Errorf("bootstrap secret already consumed: %w", errCredentialRejected)
 	}
 	if time.Now().After(row.ExpiresAt) {
-		return "", errors.New("bootstrap secret expired")
+		return "", fmt.Errorf("bootstrap secret expired: %w", errCredentialRejected)
 	}
 
 	// One-shot claim: the consumed_at IS NULL filter guarantees only the
@@ -394,7 +428,7 @@ func (a *HubApp) redeemBootstrapSecret(ctx context.Context, secretHash string) (
 		return "", fmt.Errorf("bootstrap confirm: scan: %w", err)
 	}
 	if len(after) == 0 || after[0].SecretHash != claim {
-		return "", errors.New("bootstrap secret already consumed")
+		return "", fmt.Errorf("bootstrap secret already consumed: %w", errCredentialRejected)
 	}
 	return row.AgentID, nil
 }
@@ -427,6 +461,11 @@ func (a *HubApp) registerAgentBootstrap() error {
 }
 
 func (a *HubApp) handleMintBootstrap(w *app.Result, r *app.Request) error {
+	// A secret minted while the issuer is disabled could never be redeemed
+	// (the /agent/token endpoint is not mounted) — fail loudly at mint time.
+	if a.config.AgentJWTKeyFile == "" {
+		return errors.New("agent token issuer disabled (HUB_AGENT_JWT_KEY not set)")
+	}
 	u := userFromArgs(r)
 	if err := requireUser(u); err != nil {
 		return err

@@ -25,7 +25,8 @@ import (
 type fakeDirectory struct {
 	agents    map[string]agentTokenInfo
 	secrets   map[string]string // secret_hash → agent_id, deleted on redeem
-	lookupErr error
+	lookupErr error             // transient store failure for agentForToken
+	redeemErr error             // transient store failure for redeemBootstrapSecret
 }
 
 func (f *fakeDirectory) agentForToken(_ context.Context, agentID string) (agentTokenInfo, error) {
@@ -34,15 +35,18 @@ func (f *fakeDirectory) agentForToken(_ context.Context, agentID string) (agentT
 	}
 	info, ok := f.agents[agentID]
 	if !ok {
-		return agentTokenInfo{}, errors.New("agent not registered")
+		return agentTokenInfo{}, errAgentNotRegistered
 	}
 	return info, nil
 }
 
 func (f *fakeDirectory) redeemBootstrapSecret(_ context.Context, secretHash string) (string, error) {
+	if f.redeemErr != nil {
+		return "", f.redeemErr
+	}
 	id, ok := f.secrets[secretHash]
 	if !ok {
-		return "", errors.New("bootstrap secret unknown or consumed")
+		return "", errCredentialRejected
 	}
 	delete(f.secrets, secretHash) // one-shot
 	return id, nil
@@ -165,6 +169,27 @@ func TestAgentToken_StatusAndStoreGates(t *testing.T) {
 	rec2, _ := postToken(t, iss, tok)
 	if rec2.Code != http.StatusServiceUnavailable {
 		t.Fatalf("store failure: code=%d, want 503", rec2.Code)
+	}
+	dir.lookupErr = nil
+
+	// Transient store failure on the BOOTSTRAP path must also be 503 —
+	// a container's first boot must survive a hugr blip (review F1).
+	dir.redeemErr = errors.New("db down")
+	rec3, _ := postToken(t, iss, "deadbeef")
+	if rec3.Code != http.StatusServiceUnavailable {
+		t.Fatalf("bootstrap store failure: code=%d, want 503", rec3.Code)
+	}
+	dir.redeemErr = nil
+
+	// A hard-deleted agent holding a signature-valid JWT is a TERMINAL 403
+	// (not 503 retry-forever) — review F2.
+	ghost, _, err := iss.issue(agentTokenInfo{ID: "agt-gone", Role: "agent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec4, _ := postToken(t, iss, ghost)
+	if rec4.Code != http.StatusForbidden {
+		t.Fatalf("deleted agent: code=%d, want 403", rec4.Code)
 	}
 }
 
