@@ -25,6 +25,9 @@ func (a *HubApp) registerCatalog() error {
 	if err := a.registerAgentInfo(); err != nil {
 		return err
 	}
+	if err := a.registerAgentBootstrap(); err != nil {
+		return err
+	}
 	if err := a.registerConversationMutations(); err != nil {
 		return err
 	}

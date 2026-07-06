@@ -18,8 +18,12 @@ type AuthConfig struct {
 // Sets UserInfo in context. Skips /health endpoint.
 func Middleware(next http.Handler, cfg AuthConfig) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Skip health check
-		if r.URL.Path == "/health" {
+		// Skip health check and the agent token endpoints — /agent/token is
+		// self-authenticating (the body token/secret IS the credential,
+		// spec-hub-side §1.2) and the public key is, well, public.
+		if r.URL.Path == "/health" ||
+			r.URL.Path == "/agent/token" ||
+			r.URL.Path == "/agent/token/public-key" {
 			next.ServeHTTP(w, r)
 			return
 		}

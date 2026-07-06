@@ -29,6 +29,17 @@ type Config struct {
 	// embedder's dimension; 0 disables embeddings.
 	AgentEmbedder   string
 	AgentVectorSize int
+	// Agent token authority (spec-hub-side §1, Mode B) — hub-service issues
+	// the agent JWTs hugr verifies against this issuer's public key.
+	// AgentJWTKeyFile is the PEM private key path (RSA / EC / Ed25519, PKCS8
+	// or OpenSSH); empty disables the issuer and the /agent/token endpoint.
+	AgentJWTKeyFile   string        // HUB_AGENT_JWT_KEY
+	AgentJWTIssuer    string        // HUB_AGENT_JWT_ISSUER — `iss` claim; must match the hugr auth-config jwt entry
+	AgentTokenTTL     time.Duration // HUB_AGENT_TOKEN_TTL — issued JWT lifetime (= revocation latency ceiling)
+	AgentBootstrapTTL time.Duration // HUB_AGENT_BOOTSTRAP_TTL — mint-to-redeem deadline for spawn secrets
+	// AgentTokenListen, when set, serves /agent/token on a dedicated internal
+	// listener (container network only); empty mounts it on the shared listener.
+	AgentTokenListen string // HUB_AGENT_TOKEN_LISTEN
 	RedisURL      string // Redis URL for per-user rate limiting (required)
 	StoragePath   string // Root directory for persistent storage (HUB_STORAGE_PATH)
 	QueryTimeout      time.Duration // Timeout for Hugr GraphQL queries (HUGR_QUERY_TIMEOUT)
@@ -46,6 +57,11 @@ func LoadConfig() Config {
 		AgentDatabaseDSN: envOrDefault("HUB_AGENT_DATABASE_DSN", "postgres://hugr:hugr_password@localhost:18032/agent"),
 		AgentEmbedder:    envOrDefault("HUB_AGENT_EMBEDDER", "gemma-embedding"),
 		AgentVectorSize:  envInt("HUB_AGENT_VECTOR_SIZE", 768),
+		AgentJWTKeyFile:   envOrDefault("HUB_AGENT_JWT_KEY", ""),
+		AgentJWTIssuer:    envOrDefault("HUB_AGENT_JWT_ISSUER", "hub-agents"),
+		AgentTokenTTL:     envDuration("HUB_AGENT_TOKEN_TTL", 30*time.Minute),
+		AgentBootstrapTTL: envDuration("HUB_AGENT_BOOTSTRAP_TTL", 10*time.Minute),
+		AgentTokenListen:  envOrDefault("HUB_AGENT_TOKEN_LISTEN", ""),
 		InternalURL:   envOrDefault("HUB_SERVICE_INTERNAL_URL", "http://hub-service:8082"),
 		RedisURL:      envOrDefault("HUB_REDIS_URL", "redis://localhost:6379/0"),
 		StoragePath:   envOrDefault("HUB_STORAGE_PATH", "/var/hub-storage"),

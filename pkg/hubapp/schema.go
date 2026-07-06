@@ -17,11 +17,15 @@ var migration002 string
 //go:embed schema/migrations/003_unified_runtime.sql
 var migration003 string
 
+//go:embed schema/migrations/004_agent_bootstrap.sql
+var migration004 string
+
 // migrations maps fromVersion → SQL to run. The key is the version that
 // the database currently reports; the SQL brings it to appVersion.
 var migrations = map[string]string{
-	"0.1.0": migration001 + "\n" + migration002 + "\n" + migration003,
-	"0.2.0": migration002 + "\n" + migration003,
-	"0.2.1": migration002 + "\n" + migration003,
-	"0.2.2": migration003,
+	"0.1.0": migration001 + "\n" + migration002 + "\n" + migration003 + "\n" + migration004,
+	"0.2.0": migration002 + "\n" + migration003 + "\n" + migration004,
+	"0.2.1": migration002 + "\n" + migration003 + "\n" + migration004,
+	"0.2.2": migration003 + "\n" + migration004,
+	"0.3.0": migration004,
 }
