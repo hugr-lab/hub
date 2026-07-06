@@ -207,7 +207,20 @@ CREATE TABLE IF NOT EXISTS llm_usage (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
+-- One-shot agent bootstrap secrets (spec-hub-side §1.5). Only the sha256 hex
+-- of the secret is stored; the plaintext is returned once at mint time and
+-- goes into the container env (HUGR_ACCESS_TOKEN). Consumed on first redeem.
+CREATE TABLE IF NOT EXISTS agent_bootstrap_secrets (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid(),
+  agent_id TEXT NOT NULL,
+  secret_hash TEXT NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  consumed_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
 -- Indexes
+CREATE INDEX IF NOT EXISTS idx_bootstrap_secret_hash ON agent_bootstrap_secrets(secret_hash);
 CREATE INDEX IF NOT EXISTS idx_conversations_user ON conversations(user_id, deleted_at);
 CREATE INDEX IF NOT EXISTS idx_conversations_parent ON conversations(parent_id);
 CREATE INDEX IF NOT EXISTS idx_agent_messages_conv ON agent_messages(conversation_id, created_at DESC);

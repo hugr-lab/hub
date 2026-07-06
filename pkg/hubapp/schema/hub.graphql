@@ -547,3 +547,19 @@ type conversation_context @view(
   """Creation timestamp"""
   created_at: Timestamp!
 }
+
+"""One-shot agent bootstrap secrets (spec-hub-side §1.5): sha256 hex of the spawn-time secret; consumed on first redeem at /agent/token. Plaintext is never stored."""
+type agent_bootstrap_secrets @table(name: "agent_bootstrap_secrets") {
+  """Secret record ID"""
+  id: String! @pk
+  """Agent this secret bootstraps"""
+  agent_id: String!
+  """sha256 hex of the plaintext secret"""
+  secret_hash: String!
+  """Redeem deadline — the secret is dead after this even if unconsumed"""
+  expires_at: Timestamp!
+  """Set on first successful redeem (one-shot)"""
+  consumed_at: Timestamp
+  """Mint timestamp"""
+  created_at: Timestamp @default(insert_exp: "NOW()")
+}

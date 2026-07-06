@@ -26,7 +26,7 @@ import (
 
 const (
 	appName    = "hub"
-	appVersion = "0.3.0"
+	appVersion = "0.3.1"
 )
 
 type HubApp struct {
@@ -35,6 +35,7 @@ type HubApp struct {
 	mux           *app.CatalogMux
 	client        *client.Client
 	server        *http.Server
+	tokenServer   *http.Server // dedicated /agent/token listener (HUB_AGENT_TOKEN_LISTEN), nil in shared mode
 	llmRouter     *llmrouter.Router
 	dockerRuntime *agentmgr.DockerRuntime
 	agentConnMgr  *agentconn.Manager
@@ -329,6 +330,34 @@ func (a *HubApp) Init(ctx context.Context) error {
 		w.Write([]byte(`{"status":"ok"}`))
 	})
 
+	// Agent token authority (spec-hub-side §1, HB1). Enabled by
+	// HUB_AGENT_JWT_KEY; HUB_AGENT_TOKEN_LISTEN picks a dedicated internal
+	// listener, empty mounts on the shared one (paths are exempt from the
+	// auth middleware — the body token IS the auth).
+	if a.config.AgentJWTKeyFile != "" {
+		issuer, err := newAgentTokenIssuer(a.config, a, a.logger)
+		if err != nil {
+			return err
+		}
+		if listen := a.config.AgentTokenListen; listen != "" {
+			tokenMux := http.NewServeMux()
+			issuer.mount(tokenMux)
+			a.tokenServer = &http.Server{Addr: listen, Handler: tokenMux}
+			go func() {
+				a.logger.Info("agent token listener starting", "addr", listen, "issuer", a.config.AgentJWTIssuer)
+				if err := a.tokenServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+					a.logger.Error("agent token listener error", "error", err)
+				}
+			}()
+		} else {
+			issuer.mount(mux)
+			a.logger.Info("agent token endpoint mounted on shared listener",
+				"addr", a.config.ListenAddr, "issuer", a.config.AgentJWTIssuer)
+		}
+	} else {
+		a.logger.Warn("agent token issuer disabled (HUB_AGENT_JWT_KEY not set) — agents cannot refresh tokens")
+	}
+
 	// Auth middleware — validates JWT, agent tokens, or secret key
 	hugrBase := strings.TrimSuffix(a.config.HugrURL, "/ipc")
 	jwksProvider := auth.NewJWKSProvider(hugrBase)
@@ -479,6 +508,11 @@ func (a *HubApp) persistMessageFull(ctx context.Context, conversationID, role, c
 
 func (a *HubApp) Shutdown(ctx context.Context) error {
 	a.logger.Info("hub app shutting down")
+	if a.tokenServer != nil {
+		if err := a.tokenServer.Shutdown(ctx); err != nil && err != http.ErrServerClosed {
+			a.logger.Warn("agent token listener shutdown", "error", err)
+		}
+	}
 	if a.server != nil {
 		return a.server.Shutdown(ctx)
 	}
