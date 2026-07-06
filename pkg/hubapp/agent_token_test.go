@@ -212,7 +212,7 @@ func TestAgentToken_HugrVerifiesIssuedToken(t *testing.T) {
 
 	provider, err := qeauth.NewJwt(&qeauth.JwtConfig{
 		Issuer:    "hub-agents",
-		PublicKey: rec.Body.Bytes(),
+		PublicKey: rec.Body.String(),
 	})
 	if err != nil {
 		t.Fatalf("hugr NewJwt with published key: %v", err)
