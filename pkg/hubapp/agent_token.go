@@ -337,9 +337,21 @@ func (a *HubApp) redeemBootstrapSecret(ctx context.Context, secretHash string) (
 		return "", errors.New("bootstrap secret expired")
 	}
 
-	// One-shot claim: the consumed_at IS NULL filter makes the update atomic —
-	// a concurrent redeem loses on affected_rows. NOTE: updates take the
-	// `_mut_data` input type; `_mut_input_data` is insert-only.
+	// One-shot claim: the consumed_at IS NULL filter guarantees only the
+	// first concurrent update lands. NOTE: updates take the `_mut_data`
+	// input type; `_mut_input_data` is insert-only.
+	//
+	// The claim is confirmed by a UNIQUE NONCE written over secret_hash,
+	// NOT by affected_rows and NOT by a timestamp: hugr's postgres source
+	// reports affected_rows=0 even for a successful update, and Timestamp
+	// round-trips at second precision (both found at the live gate,
+	// 2026-07-06 — query-engine issues). Overwriting the hash also erases
+	// the redeemable credential from the row entirely.
+	nonce, err := newBootstrapSecret()
+	if err != nil {
+		return "", err
+	}
+	claim := "consumed:" + nonce
 	upd, err := a.client.Query(ctx,
 		`mutation($id: String!, $data: hub_db_agent_bootstrap_secrets_mut_data!) {
 			hub { db { update_agent_bootstrap_secrets(
@@ -347,8 +359,11 @@ func (a *HubApp) redeemBootstrapSecret(ctx context.Context, secretHash string) (
 				data: $data
 			) { affected_rows } } } }`,
 		map[string]any{
-			"id":   row.ID,
-			"data": map[string]any{"consumed_at": time.Now().UTC().Format(time.RFC3339Nano)},
+			"id": row.ID,
+			"data": map[string]any{
+				"consumed_at": time.Now().UTC().Format(time.RFC3339Nano),
+				"secret_hash": claim,
+			},
 		},
 	)
 	if err != nil {
@@ -358,13 +373,27 @@ func (a *HubApp) redeemBootstrapSecret(ctx context.Context, secretHash string) (
 	if upd.Err() != nil {
 		return "", fmt.Errorf("bootstrap consume: %w", upd.Err())
 	}
-	var out struct {
-		AffectedRows int `json:"affected_rows"`
+
+	chk, err := a.client.Query(ctx,
+		`query($id: String!) { hub { db { agent_bootstrap_secrets(
+			filter: { id: { eq: $id } } limit: 1
+		) { secret_hash } } } }`,
+		map[string]any{"id": row.ID},
+	)
+	if err != nil {
+		return "", fmt.Errorf("bootstrap confirm: %w", err)
 	}
-	if err := upd.ScanData("hub.db.update_agent_bootstrap_secrets", &out); err != nil {
-		return "", fmt.Errorf("bootstrap consume: scan: %w", err)
+	defer chk.Close()
+	if chk.Err() != nil {
+		return "", fmt.Errorf("bootstrap confirm: %w", chk.Err())
 	}
-	if out.AffectedRows != 1 {
+	var after []struct {
+		SecretHash string `json:"secret_hash"`
+	}
+	if err := chk.ScanData("hub.db.agent_bootstrap_secrets", &after); err != nil {
+		return "", fmt.Errorf("bootstrap confirm: scan: %w", err)
+	}
+	if len(after) == 0 || after[0].SecretHash != claim {
 		return "", errors.New("bootstrap secret already consumed")
 	}
 	return row.AgentID, nil
