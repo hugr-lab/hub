@@ -338,9 +338,10 @@ func (a *HubApp) redeemBootstrapSecret(ctx context.Context, secretHash string) (
 	}
 
 	// One-shot claim: the consumed_at IS NULL filter makes the update atomic —
-	// a concurrent redeem loses on affected_rows.
+	// a concurrent redeem loses on affected_rows. NOTE: updates take the
+	// `_mut_data` input type; `_mut_input_data` is insert-only.
 	upd, err := a.client.Query(ctx,
-		`mutation($id: String!, $data: hub_db_agent_bootstrap_secrets_mut_input_data!) {
+		`mutation($id: String!, $data: hub_db_agent_bootstrap_secrets_mut_data!) {
 			hub { db { update_agent_bootstrap_secrets(
 				filter: { id: { eq: $id }, consumed_at: { is_null: true } }
 				data: $data
