@@ -126,6 +126,19 @@ func TestAgentRoleRows_PlatformDeniesPresent(t *testing.T) {
 			t.Errorf("%q must stay open (agent store / identity call)", key)
 		}
 	}
+
+	// Every platform type carries a disabled data-object:query row — a
+	// module-nav deny is bypassed by a relation/join, so per-type denies are
+	// what actually keep an agent out of the platform DB on every path.
+	for _, typ := range []string{
+		"hub_db_users", "hub_db_agent_types", "hub_db_agents", "hub_db_user_agents",
+		"hub_db_projects", "hub_db_chats", "hub_db_llm_budgets", "hub_db_agent_bootstrap_secrets",
+	} {
+		r, ok := seen["data-object:query|"+typ]
+		if !ok || !r.Disabled {
+			t.Errorf("platform type %s must have a disabled data-object:query deny", typ)
+		}
+	}
 }
 
 func TestBuildRoleRowsInsert_CarriesFilterAndData(t *testing.T) {

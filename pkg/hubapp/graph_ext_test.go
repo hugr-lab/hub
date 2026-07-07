@@ -41,13 +41,25 @@ func TestGraphExt_ExtendBlocksDeclareBothDependencies(t *testing.T) {
 	// Every cross-source extend block must depend on BOTH the source of the
 	// extended type and the source of the referenced types, or the engine
 	// refuses to compile it ("Dependency not loaded").
-	for _, typ := range []string{"hub_db_chats", "hub_db_user_agents", "hub_agent_db_agents"} {
+	for _, typ := range []string{"hub_db_chats", "hub_db_user_agents"} {
 		block := extendBlock(t, typ)
 		for _, dep := range []string{`@dependency(name: "hub.db")`, `@dependency(name: "hub.agent.db")`} {
 			if !strings.Contains(block, dep) {
 				t.Errorf("extend type %s is missing %s", typ, dep)
 			}
 		}
+	}
+}
+
+func TestGraphExt_NoReverseRelationFromAgentStore(t *testing.T) {
+	// SECURITY: the graph must NOT extend an Agent-DB type with a relation into
+	// a platform type. That would give an `agent`-role principal a direct read
+	// path into the platform DB (data-object filters cover only hub_agent_db_*),
+	// violating "the agent reaches platform data only via the hub MCP surface".
+	// Platform relations are declared ONLY on platform types (forward), reached
+	// by users/admins — never from the agent's own store.
+	if regexp.MustCompile(`(?m)^extend type hub_agent_db_`).MatchString(hubGraphExtSchema) {
+		t.Error("graph must not extend an Agent-DB (hub_agent_db_*) type — it opens a platform read path for agents")
 	}
 }
 
@@ -60,8 +72,6 @@ func TestGraphExt_JoinFieldsWellFormed(t *testing.T) {
 		{"hub_db_chats", "agent", "hub_agent_db_agents", "agent_id", "id"},
 		{"hub_db_chats", "root_session", "hub_agent_db_sessions", "root_session_id", "id"},
 		{"hub_db_user_agents", "agent", "hub_agent_db_agents", "agent_id", "id"},
-		{"hub_agent_db_agents", "chats", "hub_db_chats", "id", "agent_id"},
-		{"hub_agent_db_agents", "access_grants", "hub_db_user_agents", "id", "agent_id"},
 	}
 	for _, r := range rels {
 		block := extendBlock(t, r.parent)

@@ -47,7 +47,7 @@ func platformDenyRows() []schema.RolePermission {
 	deny := func(typeName, fieldName string) schema.RolePermission {
 		return schema.RolePermission{TypeName: typeName, FieldName: fieldName, Disabled: true}
 	}
-	return []schema.RolePermission{
+	rows := []schema.RolePermission{
 		// core.* — roles / permissions / api_keys / data sources. Reads leak
 		// secrets; writes are privilege escalation. function.core stays open.
 		deny("Query", "core"),
@@ -70,6 +70,23 @@ func platformDenyRows() []schema.RolePermission {
 		// function.hub.agent.info stays open — it is the agent identity call.
 		deny("_module_hub_agent_mut_function", "bootstrap_token"),
 	}
+	// Data-object denies on every PLATFORM type. The `_module_hub_query/db`
+	// deny above only fires on the module-navigation path (`hub.db.*`); a
+	// platform type reached via a cross-source relation (e.g. an HB-EXT `@join`
+	// from an Agent DB type, or a forward ref off an already-visible platform
+	// row) bypasses it, because per-type access is allow-by-default and the
+	// agent store seeds data-object rows ONLY for `hub_agent_db_*`. A disabled
+	// `data-object:query` row IS enforced on every path (it composes through
+	// relations/joins), so it closes any current or future platform read path.
+	// The agent reaches platform data only via the hub MCP tool surface;
+	// `function.hub.agent.info` (config in remote mode) stays open.
+	for _, t := range []string{
+		"hub_db_users", "hub_db_agent_types", "hub_db_agents", "hub_db_user_agents",
+		"hub_db_projects", "hub_db_chats", "hub_db_llm_budgets", "hub_db_agent_bootstrap_secrets",
+	} {
+		rows = append(rows, deny("data-object:query", t))
+	}
+	return rows
 }
 
 // agentRoleRows is the full managed row set stamped onto each seeded role.

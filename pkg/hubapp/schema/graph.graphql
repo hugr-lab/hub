@@ -56,27 +56,16 @@ extend type hub_db_user_agents
     )
 }
 
-# ── reverse: from an Agent DB agent back to platform chats / access grants ──
-extend type hub_agent_db_agents
-  @dependency(name: "hub.agent.db")
-  @dependency(name: "hub.db")
-{
-  "Platform chats that talk to this agent."
-  chats: [hub_db_chats]
-    @join(
-      references_name: "hub_db_chats"
-      source_fields: ["id"]
-      references_fields: ["agent_id"]
-    )
-
-  "User access grants for this agent (who may talk to it)."
-  access_grants: [hub_db_user_agents]
-    @join(
-      references_name: "hub_db_user_agents"
-      source_fields: ["id"]
-      references_fields: ["agent_id"]
-    )
-}
+# NOTE: no REVERSE relations (agent → platform chats / access grants) are
+# declared. An agent must never read the platform DB directly — it knows its
+# session participants and can verify a user by token via Hugr; chat routing is
+# a hub-service concern. A reverse @join from the Agent DB `agents` type would
+# give an `agent`-role principal a direct read path into platform chats/grants
+# (data-object filters do NOT protect the platform types, which are seeded only
+# for the agent store), so the platform side is reached ONLY via forward
+# relations from platform types (queried by users/admins) — never from the
+# agent's own store. The agent role is additionally denied every platform type
+# below (agent_roles.go), belt-and-suspenders.
 
 # ── flat chat-list surface for the web app (one query, both sources) ──
 #
