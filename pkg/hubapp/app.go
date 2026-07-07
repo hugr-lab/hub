@@ -26,7 +26,7 @@ import (
 
 const (
 	appName    = "hub"
-	appVersion = "0.3.1"
+	appVersion = "0.3.2"
 )
 
 type HubApp struct {
@@ -143,6 +143,28 @@ func (a *HubApp) DataSources(ctx context.Context) ([]app.DataSourceInfo, error) 
 			ReadOnly:    false,
 			HugrSchema:  " ", // non-empty to prevent self_defined=true (Redis has no schema)
 		},
+		{
+			// HB-EXT cross-source relation graph. An `extension` source is
+			// DuckDB-backed with no connection string (Path ""); it declares no
+			// tables of its own, only cross-source @join fields linking the
+			// platform DB (hub.db) and the Agent DB (hub.agent.db). MUST come
+			// AFTER both dependency sources so their types exist at load time
+			// (cross-catalog extensions also re-apply when a dependency reloads).
+			// Not Postgres → skips DB provisioning; HugrSchema is registered as a
+			// text catalog by the app framework.
+			Name:        "graph",
+			Type:        "extension",
+			Description: "Cross-source relation graph: chat/grant → agent identity + live session",
+			Path:        "",
+			// An extension is backed by an in-memory DuckDB catalog; it must be
+			// writable — DuckDB refuses to launch an in-memory DB in read-only
+			// mode ("Cannot launch in-memory database in read-only mode"). It
+			// defines no writable tables of its own, so this is not a data-write
+			// surface.
+			ReadOnly:   false,
+			Version:    appVersion,
+			HugrSchema: hubGraphExtSchema,
+		},
 	}, nil
 }
 
@@ -164,7 +186,10 @@ func (a *HubApp) InitDBSchemaTemplate(ctx context.Context, name string) (string,
 func (a *HubApp) MigrateDBSchemaTemplate(ctx context.Context, name, fromVersion string) (string, error) {
 	switch name {
 	case "db":
-		sql, ok := migrations[fromVersion]
+		sql, ok, err := migrationSQL(fromVersion)
+		if err != nil {
+			return "", err
+		}
 		if !ok {
 			return "", fmt.Errorf("no migration path from version %s to %s", fromVersion, appVersion)
 		}
@@ -177,7 +202,10 @@ func (a *HubApp) MigrateDBSchemaTemplate(ctx context.Context, name, fromVersion 
 }
 
 func (a *HubApp) Init(ctx context.Context) error {
-	a.logger.Info("hub app initialized — DB provisioned, starting services")
+	// Two independent schema streams, two separate physical DBs (D11): the
+	// platform DB tracks appVersion, the agent store tracks hugen's schema.Version.
+	a.logger.Info("hub app initialized — DB provisioned, starting services",
+		"platform_schema", appVersion, "agent_schema", schema.Version)
 
 	// Ensure conversation state directory exists on the persistent volume.
 	// Agent processes and hub-service itself write per-turn checkpoints here.

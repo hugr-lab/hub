@@ -1,0 +1,147 @@
+# HB-EXT — cross-source relation graph between the platform DB (hub.db) and the
+# Agent DB (hub.agent.db).
+#
+# The two stores are OWNED SEPARATELY (hub owns the platform DB; hugen owns the
+# Agent DB) and live in distinct physical Postgres databases, so there is no
+# physical cross-DB foreign key. This extension source declares the relations
+# DECLARATIVELY as cross-source @join fields — the engine executes the join in
+# DuckDB across the two databases — so the hub web app can navigate
+# chat → agent identity → live root session in ONE GraphQL query without a
+# Go-side merge.
+#
+# Notes:
+#   - @join extension fields are LIST-typed by the engine. A to-one target
+#     (agent_id → agents.id, a PK) still returns a single-element list; clients
+#     take the first element. (A clean to-one field would need @references, which
+#     is gated behind the DuckDB engine's SupportCrossCatalogReferences
+#     capability — deliberately not enabled here; @join is the verified path.)
+#   - @dependency names are the data_sources ROW names (hub.db / hub.agent.db),
+#     NOT module paths. Every source whose types appear must be declared.
+#   - Type prefixes: platform hub.db → hub_db_*, Agent DB hub.agent.db →
+#     hub_agent_db_*.
+
+# ── platform chat → agent identity + live root session (Agent DB) ──
+extend type hub_db_chats
+  @dependency(name: "hub.db")
+  @dependency(name: "hub.agent.db")
+{
+  "Agent this chat talks to — the Agent DB identity row (single-element list)."
+  agent: [hub_agent_db_agents]
+    @join(
+      references_name: "hub_agent_db_agents"
+      source_fields: ["agent_id"]
+      references_fields: ["id"]
+    )
+
+  "The hugen root session this chat drives — Agent DB (single-element list)."
+  root_session: [hub_agent_db_sessions]
+    @join(
+      references_name: "hub_agent_db_sessions"
+      source_fields: ["root_session_id"]
+      references_fields: ["id"]
+    )
+}
+
+# ── who-talks-to-which-agent grant → agent identity (Agent DB) ──
+extend type hub_db_user_agents
+  @dependency(name: "hub.db")
+  @dependency(name: "hub.agent.db")
+{
+  "Agent this access grant is for — the Agent DB identity row (single-element list)."
+  agent: [hub_agent_db_agents]
+    @join(
+      references_name: "hub_agent_db_agents"
+      source_fields: ["agent_id"]
+      references_fields: ["id"]
+    )
+}
+
+# ── reverse: from an Agent DB agent back to platform chats / access grants ──
+extend type hub_agent_db_agents
+  @dependency(name: "hub.agent.db")
+  @dependency(name: "hub.db")
+{
+  "Platform chats that talk to this agent."
+  chats: [hub_db_chats]
+    @join(
+      references_name: "hub_db_chats"
+      source_fields: ["id"]
+      references_fields: ["agent_id"]
+    )
+
+  "User access grants for this agent (who may talk to it)."
+  access_grants: [hub_db_user_agents]
+    @join(
+      references_name: "hub_db_user_agents"
+      source_fields: ["id"]
+      references_fields: ["agent_id"]
+    )
+}
+
+# ── flat chat-list surface for the web app (one query, both sources) ──
+#
+# A cross-source @view assembles a chat with its agent identity (Agent DB) and
+# live root-session status into one flat, filterable/sortable row — what the chat
+# sidebar renders. Unlike a @join sub-query, a raw @view reads the underlying
+# tables, which BYPASSES the data-object RLS floor (RLS is injected at the
+# GraphQL planner, not at the physical read). So the view SELF-SCOPES in SQL via
+# the `[$auth.user_id]` context placeholder — resolved to the caller's principal
+# server-side (perm.AuthVars), so a client cannot spoof it. No @args is needed:
+# the planner substitutes embedded [$auth.*] placeholders in an argless
+# @view(sql:) template (node_select SQLHasContextPlaceholder path).
+#
+# Cross-source table references use the explicit `<data_source>.<schema>.<table>`
+# form. A Postgres source attaches into DuckDB under its dotted data_sources name
+# quoted — `ATTACH '' AS "hub.db"` — so tables are `"hub.db".public.<t>` /
+# `"hub.agent.db".public.<t>`. (The `[type]` bracket form is for SAME-source
+# views; cross-source extension views name the attached source explicitly, per
+# the engine's cross-source view docs.) `[$auth.user_id]` is a context
+# placeholder, distinct from these physical table names.
+type chat_overview
+  @view(
+    name: "chat_overview"
+    sql: """
+      SELECT
+        c.id              AS chat_id,
+        c.title           AS title,
+        c.user_id         AS user_id,
+        c.project_id      AS project_id,
+        c.agent_id        AS agent_id,
+        a.name            AS agent_display_name,
+        a.role            AS agent_hugr_role,
+        c.root_session_id AS root_session_id,
+        s.status          AS session_status,
+        s.updated_at      AS session_last_activity,
+        c.last_active_at  AS last_active_at
+      FROM "hub.db".public.chats c
+      LEFT JOIN "hub.agent.db".public.agents   a ON c.agent_id       = a.id
+      LEFT JOIN "hub.agent.db".public.sessions s ON c.root_session_id = s.id
+      WHERE c.user_id = [$auth.user_id]
+    """
+  )
+  @dependency(name: "hub.db")
+  @dependency(name: "hub.agent.db")
+{
+  "Chat ID (platform thread)."
+  chat_id: String! @pk
+  "Display title."
+  title: String!
+  "Owner user."
+  user_id: String!
+  "Project grouping (null = ungrouped)."
+  project_id: String
+  "Agent this chat talks to."
+  agent_id: String!
+  "Agent display name (Agent DB identity)."
+  agent_display_name: String
+  "Agent Hugr role (Agent DB identity)."
+  agent_hugr_role: String
+  "Driven hugen root session (Agent DB)."
+  root_session_id: String
+  "Root session lifecycle: active|completed|abandoned|failed."
+  session_status: String
+  "Root session last activity."
+  session_last_activity: Timestamp
+  "Chat last activity."
+  last_active_at: Timestamp
+}
