@@ -193,6 +193,12 @@ func (a *HubApp) Init(ctx context.Context) error {
 	// Seed default agent types
 	a.seedAgentTypes(ctx)
 
+	// RLS floor for agent roles (data-object permissions) — fail-closed: without
+	// it a second agent reads the first one's store (Hugr is allow-by-default).
+	if err := a.seedAgentRoles(ctx); err != nil {
+		return fmt.Errorf("agent role RLS seed: %w", err)
+	}
+
 	// LLM router — graceful when no models configured
 	router := llmrouter.New(a.client, a.logger)
 	// Intent routing from LLM_ROUTING_* env vars (Spec F / US4).
