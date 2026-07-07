@@ -1,3 +1,18 @@
+# Hub Service platform GraphQL schema.
+#
+# HB6 store-prune (2026-07-06): the ADK-era transcript/memory types were
+# removed (conversations, agent_sessions, agent_messages, message_summary_items,
+# agent_memory, query_registry, tool_calls, agent_runs, agent_results, llm_usage,
+# conversation_context). The agent's real store lives in the Agent DB
+# (hub.agent.db); this platform schema holds only the organization of hub
+# users' interaction. `chats.agent_id` / `chats.root_session_id` are LOGICAL
+# references into the Agent DB — the cross-source relation fields (chat →
+# session / agent) are declared by a separate extension source (HB-EXT), not
+# here, so this schema stays decoupled from the Agent DB.
+#
+# `agents` / `agent_types` are kept as the legacy Docker-spawn identity
+# registry (duplicate of the Agent DB canon); they die in HB4.
+
 """Platform users synced from OIDC provider via JupyterHub login."""
 type users @table(name: "users") {
   """OIDC username (preferred_username claim)"""
@@ -16,63 +31,8 @@ type users @table(name: "users") {
   metadata: JSON
 }
 
-"""Persistent chat thread belonging to a user. Supports three modes: llm, tools, agent."""
-type conversations @table(name: "conversations", soft_delete: true, soft_delete_cond: "deleted_at IS NULL", soft_delete_set: "deleted_at = NOW()") {
-  """Conversation ID"""
-  id: String! @pk
-  """Owner user"""
-  user_id: String! @field_references(
-    name: "conv_user_ref"
-    references_name: "users"
-    field: "id"
-    query: "user"
-    description: "User who owns this conversation"
-    references_query: "conversations"
-    references_description: "Conversations owned by this user"
-  )
-  """Display title"""
-  title: String!
-  """Folder for grouping (nullable)"""
-  folder: String
-  """Chat mode: llm, tools, or agent"""
-  mode: String!
-  """Agent type (for mode=agent) — stable across instance restarts"""
-  agent_type_id: String
-  """Agent identity"""
-  agent_id: String @field_references(
-    name: "conv_agent_ref"
-    references_name: "agents"
-    field: "id"
-    query: "agent"
-    description: "Agent linked to this conversation"
-    references_query: "conversations"
-    references_description: "Conversations using this agent"
-  )
-  """LLM model override (for mode=llm)"""
-  model: String
-  """Parent conversation (for threading — null = root)"""
-  parent_id: String @field_references(
-    name: "conv_parent_ref"
-    references_name: "conversations"
-    field: "id"
-    query: "parent"
-    description: "Parent conversation this was branched from"
-    references_query: "branches"
-    references_description: "Conversations branched from this one"
-  )
-  """Message in parent where this branch starts"""
-  branch_point_message_id: String
-  """User-specified label for this branch"""
-  branch_label: String
-  """Soft delete timestamp (null = active)"""
-  deleted_at: Timestamp
-  """Creation timestamp"""
-  created_at: Timestamp @default(insert_exp: "NOW()")
-  """Last activity timestamp"""
-  updated_at: Timestamp @default(insert_exp: "NOW()", update_exp: "NOW()")
-}
-
-"""Predefined agent configurations — image, capabilities, skills, and policies."""
+"""Predefined agent configurations — image, capabilities, skills, and policies.
+LEGACY: canon lives in the Agent DB (hub.agent.db.agent_types); dies in HB4."""
 type agent_types @table(name: "agent_types") {
   """Unique type identifier (e.g. data-analyst, openclaw)"""
   id: String! @pk
@@ -98,7 +58,8 @@ type agent_types @table(name: "agent_types") {
   metadata: JSON
 }
 
-"""Agent identity — persistent entity with Hugr credentials and display info. Runtime state (container_id, auth_token) is in Hub Service memory."""
+"""Agent identity registry for the legacy Docker-spawn path.
+LEGACY: canon lives in the Agent DB (hub.agent.db.agents); dies in HB4."""
 type agents @table(name: "agents") {
   """Agent UUID"""
   id: String! @pk
@@ -130,7 +91,7 @@ type agents @table(name: "agents") {
   metadata: JSON
 }
 
-"""User-Agent access grant. M:N relationship with owner/member roles."""
+"""User-Agent access grant — who may talk to which agent. M:N with owner/member roles."""
 type user_agents @table(name: "user_agents") {
   """User granted access"""
   user_id: String! @pk @field_references(
@@ -142,303 +103,81 @@ type user_agents @table(name: "user_agents") {
     references_query: "agent_access"
     references_description: "Agent access grants for this user"
   )
-  """Agent being accessed"""
-  agent_id: String! @pk @field_references(
-    name: "ua_agent_ref"
-    references_name: "agents"
-    field: "id"
-    query: "agent"
-    description: "Agent this access grant is for"
-    references_query: "user_access"
-    references_description: "User access grants for this agent"
-  )
+  """Agent being accessed (logical reference to the Agent DB agent id)"""
+  agent_id: String! @pk
   """Access level: owner (manage + chat) or member (chat only)"""
   role: String!
   """When access was granted"""
   created_at: Timestamp @default(insert_exp: "NOW()")
 }
 
-"""Agent session — a conversation between a user and their agent."""
-type agent_sessions @table(name: "agent_sessions") {
-  """Session UUID"""
-  id: String! @pk
-  """User who owns this session"""
-  user_id: String! @field_references(
-    name: "sessions_user_ref"
-    references_name: "users"
-    field: "id"
-    query: "user"
-    description: "User who owns this session"
-    references_query: "agent_sessions"
-    references_description: "Agent sessions for this user"
-  )
-  """Agent running this session"""
-  agent_id: String @field_references(
-    name: "sessions_agent_ref"
-    references_name: "agents"
-    field: "id"
-    query: "agent"
-    description: "Agent running this session"
-    references_query: "sessions"
-    references_description: "Sessions on this agent"
-  )
-  """Session start timestamp"""
-  started_at: Timestamp @default(insert_exp: "NOW()")
-  """Session end timestamp (null if active)"""
-  ended_at: Timestamp
-  """Session metadata"""
-  metadata: JSON
-}
-
-"""Individual message in an agent conversation."""
-type agent_messages @table(name: "agent_messages") {
-  """Message UUID"""
-  id: String! @pk
-  """Parent session (legacy, nullable)"""
-  session_id: String @field_references(
-    name: "messages_session_ref"
-    references_name: "agent_sessions"
-    field: "id"
-    query: "session"
-    description: "Session this message belongs to"
-    references_query: "messages"
-    references_description: "Messages in this session"
-  )
-  """Conversation this message belongs to"""
-  conversation_id: String @field_references(
-    name: "messages_conv_ref"
-    references_name: "conversations"
-    field: "id"
-    query: "conversation"
-    description: "Conversation this message belongs to"
-    references_query: "messages"
-    references_description: "Messages in this conversation"
-  )
-  """Sender role: user, assistant, system, or tool"""
-  role: String!
-  """Message text content"""
-  content: String!
-  """Tool calls made by assistant (JSON array)"""
-  tool_calls: JSON
-  """Tool call ID for tool result messages"""
-  tool_call_id: String
-  """LLM tokens consumed for this message"""
-  tokens_used: Int
-  """LLM model used to generate this message"""
-  model: String
-  """Reference to summary message that replaces this one (when this message has been summarized)"""
-  summarized_by: String @field_references(
-    name: "messages_summary_ref"
-    references_name: "agent_messages"
-    field: "id"
-    query: "summary"
-    description: "Summary message that replaces this one"
-    references_query: "summarized_messages"
-    references_description: "Original messages this summary directly replaces"
-  )
-  """True if this message is a summary of other messages"""
-  is_summary: Boolean
-  """Channel type: final, status, analysis, tool_call, tool_result, plan, sub_agent, dive, hitl, hud, error"""
-  channel: String
-  """Channel-specific structured data (tool args, plan steps, etc.)"""
-  payload: JSON
-  """Estimated token count for this message"""
-  token_count: Int
-  """Which AI model produced this message"""
-  model_used: String
-  """Filesystem path to context snapshot at this point (for branching)"""
-  context_snapshot_ref: String
-  """When the message was created"""
-  created_at: Timestamp @default(insert_exp: "NOW()")
-}
-
-"""Junction linking a summary message to the original messages it covers.
-Use it to fetch full original messages from a summary in one GraphQL query, in order."""
-type message_summary_items @table(name: "message_summary_items") {
-  """Summary message that aggregates the originals"""
-  summary_message_id: String! @pk @field_references(
-    name: "msi_summary_ref"
-    references_name: "agent_messages"
-    field: "id"
-    query: "summary_message"
-    description: "Summary message containing this item"
-    references_query: "summary_items"
-    references_description: "Original messages covered by this summary, in order"
-  )
-  """Original message included in the summary"""
-  original_message_id: String! @pk @field_references(
-    name: "msi_original_ref"
-    references_name: "agent_messages"
-    field: "id"
-    query: "original_message"
-    description: "Original message included in the summary"
-    references_query: "summary_links"
-    references_description: "Summaries that include this message as an original"
-  )
-  """Position of the original message inside the summary (preserves chronological order)"""
-  position: Int!
-}
-
-"""Learned information stored with semantic embedding for similarity search."""
-type agent_memory @table(name: "agent_memory") @embeddings(
-  model: "{{.EmbedderName}}"
-  vector: "embedding"
-  distance: Cosine
-) {
-  """Memory entry UUID"""
+"""Project — a user-owned grouping of chats. Project artifacts (shared into
+agent session context) attach here in a later phase."""
+type projects @table(name: "projects") {
+  """Project ID"""
   id: String! @pk
   """Owner user"""
-  user_id: String! @field_references(
-    name: "memory_user_ref"
+  owner_user_id: String! @field_references(
+    name: "projects_owner_ref"
     references_name: "users"
     field: "id"
-    query: "user"
-    description: "User who owns this memory"
-    references_query: "memories"
-    references_description: "Stored memories for this user"
+    query: "owner"
+    description: "User who owns this project"
+    references_query: "projects"
+    references_description: "Projects owned by this user"
   )
-  """Memory content (schema description, query pattern, user preference)"""
-  content: String!
-  """Semantic embedding vector for similarity search"""
-  embedding: Vector @dim(len: {{.VectorSize}})
-  """Category: schema, query_template, user_pattern, general"""
-  category: String
-  """Origin of this memory (session ID, tool name, etc.)"""
-  source: String
-  """When stored"""
-  created_at: Timestamp @default(insert_exp: "NOW()")
-}
-
-"""Saved query patterns with tags and usage tracking."""
-type query_registry @table(name: "query_registry") {
-  """Registry entry UUID"""
-  id: String! @pk
-  """Owner user"""
-  user_id: String! @field_references(
-    name: "registry_user_ref"
-    references_name: "users"
-    field: "id"
-    query: "user"
-    description: "User who saved this query"
-    references_query: "saved_queries"
-    references_description: "Saved queries by this user"
-  )
-  """Query name"""
+  """Project name"""
   name: String!
-  """GraphQL query text"""
-  query: String!
-  """Human description of what this query does"""
-  description: String
-  """Tags for categorization and search"""
-  tags: [String]
-  """Number of times this query was reused"""
-  usage_count: Int
-  """When first saved"""
+  """Creation timestamp"""
   created_at: Timestamp @default(insert_exp: "NOW()")
-  """When last modified"""
+  """Last update timestamp"""
   updated_at: Timestamp @default(insert_exp: "NOW()", update_exp: "NOW()")
 }
 
-"""Audit record of every tool invocation by an agent."""
-type tool_calls @table(name: "tool_calls") {
-  """Tool call UUID"""
+"""Chat — the user-facing conversation thread. 1—1 with a hugen ROOT session,
+1—N with its full session tree. `agent_id` and `root_session_id` are LOGICAL
+references into the Agent DB (hub.agent.db); the transcript is never copied
+here. Cross-source fields (chat → session / agent) are added by the HB-EXT
+extension source. MVP: one user + one agent."""
+type chats @table(name: "chats") {
+  """Chat ID"""
   id: String! @pk
-  """Agent session that triggered this call"""
-  session_id: String @field_references(
-    name: "toolcalls_session_ref"
-    references_name: "agent_sessions"
+  """Project this chat belongs to (null = ungrouped)"""
+  project_id: String @field_references(
+    name: "chats_project_ref"
+    references_name: "projects"
     field: "id"
-    query: "session"
-    description: "Session that triggered this tool call"
-    references_query: "tool_calls"
-    references_description: "Tool calls made during this session"
+    query: "project"
+    description: "Project this chat belongs to"
+    references_query: "chats"
+    references_description: "Chats in this project"
   )
-  """User who triggered the call"""
-  user_id: String!
-  """MCP tool name (e.g. data-inline_graphql_result)"""
-  tool_name: String!
-  """Tool arguments as JSON"""
-  arguments: JSON
-  """Brief summary of the result"""
-  result_summary: String
-  """Execution duration in milliseconds"""
-  duration_ms: Int
-  """Input tokens consumed (for LLM tools)"""
-  tokens_in: Int
-  """Output tokens consumed (for LLM tools)"""
-  tokens_out: Int
-  """When the tool was called"""
-  created_at: Timestamp @default(insert_exp: "NOW()")
-}
-
-"""Per-turn run record for a conversation. One row per user message → assistant response cycle.
-Tracks timing, resource consumption, model breakdown by intent, and status."""
-type agent_runs @table(name: "agent_runs") {
-  """Run ID (e.g. run-{nanos})"""
-  id: String! @pk
-  """Conversation this run belongs to"""
-  conversation_id: String! @field_references(
-    name: "runs_conv_ref"
-    references_name: "conversations"
+  """Owner user"""
+  user_id: String! @field_references(
+    name: "chats_user_ref"
+    references_name: "users"
     field: "id"
-    query: "conversation"
-    description: "Conversation this run belongs to"
-    references_query: "runs"
-    references_description: "Turn runs for this conversation"
+    query: "user"
+    description: "User who owns this chat"
+    references_query: "chats"
+    references_description: "Chats owned by this user"
   )
-  """Sequential turn number within conversation"""
-  turn_index: Int!
-  """Run status: running, done, crashed, awaiting_hitl"""
-  status: String!
-  """When the turn began"""
-  started_at: Timestamp!
-  """When the turn completed (null if still running)"""
-  finished_at: Timestamp
-  """Total input tokens across all LLM calls in this turn"""
-  tokens_in: Int
-  """Total output tokens"""
-  tokens_out: Int
-  """Per-intent breakdown: {intent: {model, tokens_in, tokens_out}}"""
-  model_breakdown: JSON
-  """Filesystem path to L1 turn directory (for recovery)"""
-  context_ref: String
-  """Error message if status=crashed"""
-  error: String
-  """When this record was created"""
+  """Agent this chat talks to (logical reference to the Agent DB agent id)"""
+  agent_id: String!
+  """Display title"""
+  title: String!
+  """The hugen root session this chat drives (logical reference into hub.agent.db.sessions)"""
+  root_session_id: String
+  """Creation timestamp"""
   created_at: Timestamp @default(insert_exp: "NOW()")
-}
-
-"""Saved query result metadata — mirrors what agents write to disk.
-Enables cross-process lookups without filesystem walks."""
-type agent_results @table(name: "agent_results") {
-  """Result name (user-chosen identifier)"""
-  name: String! @pk
-  """Agent that created this result"""
-  agent_id: String! @pk @field_references(
-    name: "results_agent_ref"
-    references_name: "agents"
-    field: "id"
-    query: "agent"
-    description: "Agent that created this result"
-    references_query: "results"
-    references_description: "Saved results for this agent"
-  )
-  """Conversation context (nullable — results can outlive conversations)"""
-  conversation_id: String
-  """Total row count across all parts"""
-  total_rows: Int
-  """Total disk size in bytes"""
-  total_bytes: BigInt
-  """Arrow schema summary"""
-  schema: JSON
-  """If true, result survives conversation deletion"""
-  pinned: Boolean
-  """When result was saved"""
-  created_at: Timestamp @default(insert_exp: "NOW()")
+  """Last update timestamp"""
+  updated_at: Timestamp @default(insert_exp: "NOW()", update_exp: "NOW()")
+  """Last activity timestamp"""
+  last_active_at: Timestamp @default(insert_exp: "NOW()", update_exp: "NOW()")
 }
 
 """Token and request budget limits per user, role, or global scope.
-LLM providers are now Hugr data sources (llm-openai, llm-anthropic, llm-gemini).
+LLM providers are Hugr data sources (llm-openai, llm-anthropic, llm-gemini).
 provider_id references the data source name (e.g. claude, gpt4)."""
 type llm_budgets @table(name: "llm_budgets") {
   """Budget rule UUID"""
@@ -457,95 +196,6 @@ type llm_budgets @table(name: "llm_budgets") {
   max_requests: Int
   """When this budget rule was created"""
   created_at: Timestamp @default(insert_exp: "NOW()")
-}
-
-"""Per-request LLM token usage record for tracking and budget enforcement.
-provider_id references the LLM data source name."""
-type llm_usage @table(name: "llm_usage") {
-  """Usage record UUID"""
-  id: String! @pk
-  """User who made the request"""
-  user_id: String!
-  """LLM data source name (e.g. claude, gpt4)"""
-  provider_id: String!
-  """Agent session (if from agent, null for direct API)"""
-  session_id: String @field_references(
-    name: "usage_session_ref"
-    references_name: "agent_sessions"
-    field: "id"
-    query: "session"
-    description: "Agent session for this usage"
-    references_query: "llm_usage"
-    references_description: "LLM usage records for this session"
-  )
-  """Input tokens consumed"""
-  tokens_in: Int!
-  """Output tokens produced"""
-  tokens_out: Int!
-  """Request duration in milliseconds"""
-  duration_ms: Int
-  """Period bucket key (e.g. 2026-04-02/hour/14)"""
-  period_key: String!
-  """Intent type that triggered routing (default, planning, tool_calling, summarization, classification)"""
-  intent: String
-  """Actual model used after intent routing and fallback"""
-  resolved_model: String
-  """When the request was made"""
-  created_at: Timestamp @default(insert_exp: "NOW()")
-}
-
-"""Conversation context — recursive view that resolves messages across branched conversations."""
-input conversation_context_args {
-  conversation_id: String!
-}
-
-type conversation_context @view(
-  name: "conversation_context"
-  sql: """
-  WITH RECURSIVE conv_chain AS (
-    SELECT id, parent_id, branch_point_message_id, 0 AS depth
-    FROM conversations WHERE id = [$conversation_id]
-    UNION ALL
-    SELECT c.id, c.parent_id, c.branch_point_message_id, cc.depth + 1
-    FROM conversations c
-    JOIN conv_chain cc ON c.id = cc.parent_id
-    WHERE cc.depth < 3
-  )
-  SELECT m.id, m.conversation_id, m.role, m.content,
-         m.tool_calls, m.tool_call_id, m.tokens_used, m.model,
-         m.is_summary, m.summarized_by, m.created_at
-  FROM agent_messages m
-  JOIN conv_chain cc ON m.conversation_id = cc.id
-  WHERE cc.branch_point_message_id IS NULL
-     OR m.created_at <= (
-       SELECT created_at FROM agent_messages
-       WHERE id = cc.branch_point_message_id
-     )
-  ORDER BY m.created_at
-  """
-) @args(name: "conversation_context_args", required: true) {
-  """Message ID"""
-  id: String!
-  """Conversation this message belongs to"""
-  conversation_id: String!
-  """Sender role"""
-  role: String!
-  """Message content"""
-  content: String!
-  """Tool calls (JSON)"""
-  tool_calls: JSON
-  """Tool call ID"""
-  tool_call_id: String
-  """Tokens used"""
-  tokens_used: Int
-  """Model used"""
-  model: String
-  """Whether this is a summary message"""
-  is_summary: Boolean
-  """Reference to summary that replaces this message"""
-  summarized_by: String
-  """Creation timestamp"""
-  created_at: Timestamp!
 }
 
 """One-shot agent bootstrap secrets (spec-hub-side §1.5): sha256 hex of the spawn-time secret; consumed on first redeem at /agent/token. Plaintext is never stored."""

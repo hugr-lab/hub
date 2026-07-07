@@ -1,7 +1,16 @@
--- Hub Service database schema
--- Template parameters (expanded by Hugr provisioner):
---   {{.VectorSize}} — embedding vector dimensions
---   {{.EmbedderName}} — configured embedding source name
+-- Hub Service platform database schema.
+--
+-- HB6 store-prune (2026-07-06): the ADK-era transcript/memory tables were
+-- removed — the agent's real store lives in the Agent DB (hugen-owned,
+-- source `hub.agent.db`). This platform DB now holds ONLY the organization
+-- of hub users' interaction: users, access grants, projects, chats, budgets,
+-- and spawn secrets. `chats` is the user-facing thread; it REFERENCES agent
+-- sessions in the Agent DB (logical cross-source relation via an extension
+-- source), it does not duplicate the transcript.
+--
+-- `agents` / `agent_types` are kept for now as the legacy Docker-spawn
+-- identity registry; they are the duplicate of the Agent DB canon and die in
+-- HB4 when the spawn contract rewires agent identity onto `hub.agent.db`.
 
 CREATE EXTENSION IF NOT EXISTS vector;
 
@@ -16,7 +25,8 @@ CREATE TABLE IF NOT EXISTS users (
   metadata JSONB DEFAULT '{}'
 );
 
--- Agent types (predefined configurations)
+-- Agent types (predefined configurations). LEGACY — canon lives in the Agent
+-- DB (hub.agent.db.agent_types); kept until HB4 spawn rewire.
 CREATE TABLE IF NOT EXISTS agent_types (
   id TEXT PRIMARY KEY,
   display_name TEXT NOT NULL,
@@ -31,7 +41,8 @@ CREATE TABLE IF NOT EXISTS agent_types (
   metadata JSONB DEFAULT '{}'
 );
 
--- Agents (identity only — runtime state lives in Hub Service memory)
+-- Agents (identity registry for the legacy Docker-spawn path). LEGACY — canon
+-- lives in the Agent DB (hub.agent.db.agents); kept until HB4 spawn rewire.
 CREATE TABLE IF NOT EXISTS agents (
   id TEXT PRIMARY KEY,
   agent_type_id TEXT NOT NULL REFERENCES agent_types(id),
@@ -45,139 +56,41 @@ CREATE TABLE IF NOT EXISTS agents (
   metadata JSONB DEFAULT '{}'
 );
 
--- User-Agent access (M:N with owner/member roles)
+-- User-Agent access (M:N with owner/member roles) — who may talk to which agent.
 CREATE TABLE IF NOT EXISTS user_agents (
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  agent_id TEXT NOT NULL,
   role TEXT NOT NULL DEFAULT 'member',
   created_at TIMESTAMPTZ DEFAULT now(),
   PRIMARY KEY (user_id, agent_id)
 );
 
--- Conversations (persistent chat threads with threading support)
-CREATE TABLE IF NOT EXISTS conversations (
+-- Projects — user-owned grouping of chats. Artifacts attached to a project
+-- (shared into agent session context) land here in a later phase.
+CREATE TABLE IF NOT EXISTS projects (
   id TEXT PRIMARY KEY,
+  owner_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Chats — the user-facing conversation thread. A chat is 1—1 with a hugen
+-- ROOT session and 1—N with its full session tree; `root_session_id` is a
+-- LOGICAL reference into the Agent DB (hub.agent.db.sessions), NOT a physical
+-- FK. `agent_id` is likewise a logical reference to the Agent DB agent. The
+-- authoritative transcript lives in the Agent DB; the chat never copies it.
+-- MVP: one user + one agent (group chats = N users × N agents come later).
+CREATE TABLE IF NOT EXISTS chats (
+  id TEXT PRIMARY KEY,
+  project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  agent_id TEXT NOT NULL,
   title TEXT NOT NULL DEFAULT 'New Chat',
-  folder TEXT,
-  mode TEXT NOT NULL DEFAULT 'tools',
-  agent_type_id TEXT REFERENCES agent_types(id),
-  agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL,
-  model TEXT,
-  parent_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
-  branch_point_message_id TEXT,
-  branch_label TEXT,
-  deleted_at TIMESTAMPTZ,
+  root_session_id TEXT,
   created_at TIMESTAMPTZ DEFAULT now(),
-  updated_at TIMESTAMPTZ DEFAULT now()
-);
-
--- Agent sessions
-CREATE TABLE IF NOT EXISTS agent_sessions (
-  id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL,
-  started_at TIMESTAMPTZ DEFAULT now(),
-  ended_at TIMESTAMPTZ,
-  metadata JSONB DEFAULT '{}'
-);
-
--- Agent messages (with summarization + channel protocol support)
-CREATE TABLE IF NOT EXISTS agent_messages (
-  id TEXT PRIMARY KEY,
-  session_id TEXT REFERENCES agent_sessions(id) ON DELETE SET NULL,
-  conversation_id TEXT REFERENCES conversations(id) ON DELETE CASCADE,
-  role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system', 'tool')),
-  content TEXT NOT NULL,
-  tool_calls JSONB,
-  tool_call_id TEXT,
-  tokens_used INT,
-  model TEXT,
-  summarized_by TEXT,
-  is_summary BOOLEAN DEFAULT false,
-  channel TEXT DEFAULT 'final',
-  payload JSONB,
-  token_count INT,
-  model_used TEXT,
-  context_snapshot_ref TEXT,
-  created_at TIMESTAMPTZ DEFAULT now()
-);
-
--- Junction table for message summarization: links a summary message to the originals it covers.
--- When is_summary=true on agent_messages, the originals are listed here.
--- Symmetric reverse: agent_messages.summarized_by points back to the summary.
-CREATE TABLE IF NOT EXISTS message_summary_items (
-  summary_message_id  TEXT NOT NULL REFERENCES agent_messages(id) ON DELETE CASCADE,
-  original_message_id TEXT NOT NULL REFERENCES agent_messages(id) ON DELETE CASCADE,
-  position INT NOT NULL,
-  PRIMARY KEY (summary_message_id, original_message_id)
-);
-
--- Agent memory (with vector search)
-CREATE TABLE IF NOT EXISTS agent_memory (
-  id TEXT PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  content TEXT NOT NULL,
-  embedding VECTOR({{.VectorSize}}),
-  category TEXT DEFAULT 'general',
-  source TEXT,
-  created_at TIMESTAMPTZ DEFAULT now()
-);
-
--- Query registry
-CREATE TABLE IF NOT EXISTS query_registry (
-  id TEXT PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  name TEXT NOT NULL,
-  query TEXT NOT NULL,
-  description TEXT,
-  tags TEXT[],
-  usage_count INT DEFAULT 0,
-  created_at TIMESTAMPTZ DEFAULT now(),
-  updated_at TIMESTAMPTZ DEFAULT now()
-);
-
--- Tool calls (audit)
-CREATE TABLE IF NOT EXISTS tool_calls (
-  id TEXT PRIMARY KEY DEFAULT gen_random_uuid(),
-  session_id TEXT REFERENCES agent_sessions(id) ON DELETE SET NULL,
-  user_id TEXT NOT NULL,
-  tool_name TEXT NOT NULL,
-  arguments JSONB,
-  result_summary TEXT,
-  duration_ms INT,
-  tokens_in INT,
-  tokens_out INT,
-  created_at TIMESTAMPTZ DEFAULT now()
-);
-
--- Agent runs (one row per conversation turn, lightweight index — payloads on disk)
-CREATE TABLE IF NOT EXISTS agent_runs (
-  id TEXT PRIMARY KEY,
-  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-  turn_index INT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'running',
-  started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  finished_at TIMESTAMPTZ,
-  tokens_in INT DEFAULT 0,
-  tokens_out INT DEFAULT 0,
-  model_breakdown JSONB,
-  context_ref TEXT,
-  error TEXT,
-  created_at TIMESTAMPTZ DEFAULT now()
-);
-
--- Result store metadata (mirrors agent disk state for cross-process queries)
-CREATE TABLE IF NOT EXISTS agent_results (
-  name TEXT NOT NULL,
-  agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
-  conversation_id TEXT,
-  total_rows INT,
-  total_bytes BIGINT,
-  schema JSONB,
-  pinned BOOLEAN DEFAULT false,
-  created_at TIMESTAMPTZ DEFAULT now(),
-  PRIMARY KEY (agent_id, name)
+  updated_at TIMESTAMPTZ DEFAULT now(),
+  last_active_at TIMESTAMPTZ DEFAULT now()
 );
 
 -- LLM budgets (provider_id references Hugr data source name, no FK)
@@ -189,21 +102,6 @@ CREATE TABLE IF NOT EXISTS llm_budgets (
   max_tokens_in BIGINT,
   max_tokens_out BIGINT,
   max_requests INT,
-  created_at TIMESTAMPTZ DEFAULT now()
-);
-
--- LLM usage tracking (provider_id references Hugr data source name, no FK)
-CREATE TABLE IF NOT EXISTS llm_usage (
-  id TEXT PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id TEXT NOT NULL,
-  provider_id TEXT NOT NULL,
-  session_id TEXT REFERENCES agent_sessions(id) ON DELETE SET NULL,
-  tokens_in INT NOT NULL,
-  tokens_out INT NOT NULL,
-  duration_ms INT,
-  period_key TEXT NOT NULL,
-  intent TEXT,
-  resolved_model TEXT,
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
@@ -221,19 +119,9 @@ CREATE TABLE IF NOT EXISTS agent_bootstrap_secrets (
 
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_bootstrap_secret_hash ON agent_bootstrap_secrets(secret_hash);
-CREATE INDEX IF NOT EXISTS idx_conversations_user ON conversations(user_id, deleted_at);
-CREATE INDEX IF NOT EXISTS idx_conversations_parent ON conversations(parent_id);
-CREATE INDEX IF NOT EXISTS idx_agent_messages_conv ON agent_messages(conversation_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_messages_summarized ON agent_messages(summarized_by);
-CREATE INDEX IF NOT EXISTS idx_msi_original ON message_summary_items(original_message_id);
 CREATE INDEX IF NOT EXISTS idx_user_agents_user ON user_agents(user_id);
 CREATE INDEX IF NOT EXISTS idx_user_agents_agent ON user_agents(agent_id);
-CREATE INDEX IF NOT EXISTS idx_agent_sessions_user ON agent_sessions(user_id);
-CREATE INDEX IF NOT EXISTS idx_agent_memory_user ON agent_memory(user_id);
-CREATE INDEX IF NOT EXISTS idx_agent_memory_category ON agent_memory(user_id, category);
-CREATE INDEX IF NOT EXISTS idx_query_registry_user ON query_registry(user_id);
-CREATE INDEX IF NOT EXISTS idx_tool_calls_session ON tool_calls(session_id);
-CREATE INDEX IF NOT EXISTS idx_agent_runs_conv ON agent_runs(conversation_id);
-CREATE INDEX IF NOT EXISTS idx_agent_runs_status ON agent_runs(status) WHERE status = 'running';
-CREATE INDEX IF NOT EXISTS idx_agent_results_conv ON agent_results(conversation_id);
-CREATE INDEX IF NOT EXISTS idx_llm_usage_period ON llm_usage(user_id, provider_id, period_key);
+CREATE INDEX IF NOT EXISTS idx_projects_owner ON projects(owner_user_id);
+CREATE INDEX IF NOT EXISTS idx_chats_user ON chats(user_id);
+CREATE INDEX IF NOT EXISTS idx_chats_agent ON chats(agent_id);
+CREATE INDEX IF NOT EXISTS idx_chats_project ON chats(project_id);
