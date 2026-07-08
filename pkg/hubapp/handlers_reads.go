@@ -34,12 +34,10 @@ func isNoData(err error) bool {
 // registerReadFunctions registers the read-side table functions.
 // Call from registerCatalog().
 func (a *HubApp) registerReadFunctions() error {
-	if err := a.registerMyConversations(); err != nil {
-		return err
-	}
-	if err := a.registerMyConversationMessages(); err != nil {
-		return err
-	}
+	// HB6 store-prune: my_conversations / my_conversation_messages removed with
+	// the ADK transcript tables. my_agent_instances stays until HB4 rewires the
+	// agent-identity read off the (dropped-in-HB4) hub.db.agents duplicate onto
+	// the Agent DB (then it becomes an extension-declared cross-source field).
 	if err := a.registerMyAgentInstances(); err != nil {
 		return err
 	}
