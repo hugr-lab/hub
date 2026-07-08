@@ -49,9 +49,9 @@ type agentInfo struct {
 
 func (v *AgentTokenValidator) getAgentIdentity(ctx context.Context, agentID string) (agentInfo, error) {
 	res, err := v.hugrClient.Query(ctx,
-		`query($id: String!) { hub { db { agents(
+		`query($id: String!) { hub { agent { db { agents(
 			filter: { id: { eq: $id } } limit: 1
-		) { hugr_user_id hugr_user_name hugr_role } } } }`,
+		) { id name role } } } } }`,
 		map[string]any{"id": agentID},
 	)
 	if err != nil {
@@ -62,9 +62,18 @@ func (v *AgentTokenValidator) getAgentIdentity(ctx context.Context, agentID stri
 		return agentInfo{}, res.Err()
 	}
 
-	var agents []agentInfo
-	if err := res.ScanData("hub.db.agents", &agents); err != nil || len(agents) == 0 {
+	// The agent's Hugr principal is itself (user_id == agent_id, D8).
+	var agents []struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+		Role string `json:"role"`
+	}
+	if err := res.ScanData("hub.agent.db.agents", &agents); err != nil || len(agents) == 0 {
 		return agentInfo{}, fmt.Errorf("agent %q not found", agentID)
 	}
-	return agents[0], nil
+	return agentInfo{
+		HugrUserID:   agents[0].ID,
+		HugrUserName: agents[0].Name,
+		HugrRole:     agents[0].Role,
+	}, nil
 }

@@ -2,6 +2,7 @@ package agentmgr
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 
@@ -85,10 +86,9 @@ type agentTypeInfo struct {
 
 func (m *Manager) getAgentIdentity(ctx context.Context, agentID string) (AgentIdentity, error) {
 	res, err := m.hugrClient.Query(ctx,
-		`query($id: String!) { hub { db { agents(
+		`query($id: String!) { hub { agent { db { agents(
 			filter: { id: { eq: $id } } limit: 1
-		) { id agent_type_id display_name hugr_user_id hugr_user_name hugr_role
-		   agent_type { image } } } } }`,
+		) { id agent_type_id name role agent_type { config } } } } } }`,
 		map[string]any{"id": agentID},
 	)
 	if err != nil {
@@ -100,27 +100,27 @@ func (m *Manager) getAgentIdentity(ctx context.Context, agentID string) (AgentId
 	}
 
 	var agents []struct {
-		ID           string `json:"id"`
-		AgentTypeID  string `json:"agent_type_id"`
-		DisplayName  string `json:"display_name"`
-		HugrUserID   string `json:"hugr_user_id"`
-		HugrUserName string `json:"hugr_user_name"`
-		HugrRole     string `json:"hugr_role"`
-		AgentType    struct {
-			Image string `json:"image"`
+		ID          string `json:"id"`
+		AgentTypeID string `json:"agent_type_id"`
+		Name        string `json:"name"`
+		Role        string `json:"role"`
+		AgentType   struct {
+			Config json.RawMessage `json:"config"`
 		} `json:"agent_type"`
 	}
-	if err := res.ScanData("hub.db.agents", &agents); err != nil || len(agents) == 0 {
+	if err := res.ScanData("hub.agent.db.agents", &agents); err != nil || len(agents) == 0 {
 		return AgentIdentity{}, fmt.Errorf("agent %q not found", agentID)
 	}
 	a := agents[0]
+	// The agent's Hugr principal is itself (user_id == agent_id, D8); the image
+	// comes from agent_type.config.orchestration.
 	return AgentIdentity{
 		ID:           a.ID,
 		AgentTypeID:  a.AgentTypeID,
-		DisplayName:  a.DisplayName,
-		HugrUserID:   a.HugrUserID,
-		HugrUserName: a.HugrUserName,
-		HugrRole:     a.HugrRole,
-		Image:        a.AgentType.Image,
+		DisplayName:  a.Name,
+		HugrUserID:   a.ID,
+		HugrUserName: a.Name,
+		HugrRole:     a.Role,
+		Image:        ImageFromConfig(a.AgentType.Config),
 	}, nil
 }
