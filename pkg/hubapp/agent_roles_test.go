@@ -106,6 +106,8 @@ func TestAgentRoleRows_PlatformDeniesPresent(t *testing.T) {
 		"_module_hub_query|db", "_module_hub_mutation|db",
 		"_module_hub_mut_function|start_agent", "_module_hub_mut_function|stop_agent",
 		"_module_hub_mut_function|delete_agent",
+		"_module_hub_mut_function|create_agent", "_module_hub_mut_function|update_agent",
+		"_module_hub_mut_function|disable_agent",
 		"_module_hub_agent_mut_function|bootstrap_token",
 	} {
 		r, ok := seen[key]

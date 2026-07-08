@@ -66,6 +66,13 @@ func platformDenyRows() []schema.RolePermission {
 		deny("_module_hub_mut_function", "stop_agent"),
 		deny("_module_hub_mut_function", "delete_agent"),
 
+		// hub agent-provisioning mutations (HB2) — admin only. An agent minting
+		// or editing an identity (its own role especially) is privilege
+		// escalation; the handlers also enforce, this is the RLS floor.
+		deny("_module_hub_mut_function", "create_agent"),
+		deny("_module_hub_mut_function", "update_agent"),
+		deny("_module_hub_mut_function", "disable_agent"),
+
 		// bootstrap-secret mint — admin only (handler also enforces).
 		// function.hub.agent.info stays open — it is the agent identity call.
 		deny("_module_hub_agent_mut_function", "bootstrap_token"),
