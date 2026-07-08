@@ -23,8 +23,5 @@ func (a *HubApp) registerCatalog() error {
 	if err := a.registerAgentBootstrap(); err != nil {
 		return err
 	}
-	if err := a.registerModelFunctions(); err != nil {
-		return err
-	}
 	return nil
 }
