@@ -19,6 +19,7 @@ services:
     environment:
       HUB_CONNECT_IP: hub
       HUB_SERVICE_URL: http://host.docker.internal:8082
+      HUB_STORAGE_PATH: "${PWD}/hub-storage"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - hub-data:/srv/jupyterhub

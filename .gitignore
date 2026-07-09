@@ -64,3 +64,12 @@ Thumbs.db
 # Work directory (user data, not tracked)
 work/
 
+
+# Local dev secrets (agent JWT signing key etc.)
+.local/
+
+# Delve / VS Code debug binaries
+__debug_bin*
+
+# Local shared/ runtime data (DuckDB dumps etc.); README.txt stays tracked
+shared/

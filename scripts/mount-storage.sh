@@ -134,5 +134,14 @@ BFEOF
     esac
 done
 
+# Fix ownership on bind-mount roots. When a host path doesn't exist,
+# the Docker daemon creates it as root:root — jovyan (UID 1000) then
+# can't write into /home/jovyan/work or /home/jovyan/agents/*.
+# Non-recursive on purpose: only the mount root can be wrong; the
+# contents were written by jovyan on earlier runs.
+for d in /home/jovyan/work /home/jovyan/agents/*/; do
+    [ -d "$d" ] && chown jovyan:users "$d" 2>/dev/null || true
+done
+
 echo "[mount-storage] Storage init complete — starting application"
 exec "$@"

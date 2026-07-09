@@ -5,8 +5,8 @@
 # and JupyterLab extensions from PyPI.
 # =============================================================================
 
-ARG HUGR_KERNEL_VERSION=v0.2.20
-ARG DUCKDB_KERNEL_VERSION=v0.3.5
+ARG HUGR_KERNEL_VERSION=v0.2.23
+ARG DUCKDB_KERNEL_VERSION=v0.3.6
 
 # -----------------------------------------------------------------------------
 # Stage 0: Build hub-agent + MCP server binaries (Go)
@@ -115,7 +115,7 @@ RUN pip install --no-cache-dir --break-system-packages \
 # JupyterLab extensions + hugr packages
 # hugr-client v0.2.0+ has keplergl as optional [viz] — no --no-deps needed
 RUN pip install --no-cache-dir --break-system-packages \
-   "hugr-client>=0.2.3" \
+   "hugr-client>=0.3.0" \
    "hugr-perspective-viewer==${DUCKDB_KERNEL_VERSION#v}" \
    "hugr-graphql-ide==${HUGR_KERNEL_VERSION#v}" \
    "hugr-duckdb-explorer==${DUCKDB_KERNEL_VERSION#v}" \
