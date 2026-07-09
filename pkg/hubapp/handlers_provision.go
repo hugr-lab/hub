@@ -21,11 +21,20 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/hugr-lab/query-engine/client/app"
 )
+
+// agentIDPattern constrains a caller-supplied agent id: it becomes the container
+// name, the agent-network DNS host, and a /data bind path segment, so it must be
+// a safe DNS label with no path-traversal characters (spec-agent-orchestration
+// §3). 41 chars max keeps hub-agent-<id> within Docker's name limits.
+const agentIDPattern = "^[a-z0-9][a-z0-9-]{0,40}$"
+
+var agentIDRe = regexp.MustCompile(agentIDPattern)
 
 // agentProvisionType is what create_agent returns: the new identity plus a
 // one-shot bootstrap secret for its first /agent/token exchange. The secret is
@@ -134,6 +143,12 @@ func (a *HubApp) handleCreateAgent(w *app.Result, r *app.Request) error {
 	ownerUserID := strings.TrimSpace(r.String("owner_user_id"))
 	if id == "" {
 		return errors.New("agent_id is required")
+	}
+	// The id becomes the container name (hub-agent-<id>), its DNS host on the
+	// agent network, AND a path segment of the /data bind — so it must be a safe
+	// DNS label with no path-traversal characters (spec-agent-orchestration §3).
+	if !agentIDRe.MatchString(id) {
+		return fmt.Errorf("agent_id %q is invalid: must match %s (lowercase alphanumerics + hyphens, 1-41 chars, no leading hyphen)", id, agentIDPattern)
 	}
 	if typeID == "" {
 		return errors.New("agent_type_id is required")

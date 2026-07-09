@@ -18,6 +18,35 @@ func TestRegisterProvisioningMutations(t *testing.T) {
 	}
 }
 
+// TestAgentIDPattern pins the create_agent grammar gate: the id becomes a
+// container name, a DNS host, and a /data path segment, so it must reject
+// path-traversal, uppercase, spaces, leading hyphens, and over-length ids.
+func TestAgentIDPattern(t *testing.T) {
+	valid := []string{"a", "data-agent", "agent1", "a1", "x-y-z", "0abc"}
+	for _, id := range valid {
+		if !agentIDRe.MatchString(id) {
+			t.Errorf("agentIDRe rejected valid id %q", id)
+		}
+	}
+	invalid := []string{
+		"",          // empty
+		"-lead",     // leading hyphen
+		"Upper",     // uppercase
+		"has space", // space
+		"a/b",       // path traversal
+		"../etc",    // path traversal
+		"a_b",       // underscore
+		"a.b",       // dot
+		"agent!",    // punctuation
+		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", // 43 chars (>41)
+	}
+	for _, id := range invalid {
+		if agentIDRe.MatchString(id) {
+			t.Errorf("agentIDRe accepted invalid id %q", id)
+		}
+	}
+}
+
 // shortIDFromAgentID derives the NOT-NULL short_id alias from a caller-supplied
 // agent id. The DB-coupled provisioning handlers are exercised at the live M2
 // gate; this pins the one bit of pure logic they depend on.

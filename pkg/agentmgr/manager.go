@@ -113,7 +113,8 @@ func (m *Manager) getAgentIdentity(ctx context.Context, agentID string) (AgentId
 	}
 	a := agents[0]
 	// The agent's Hugr principal is itself (user_id == agent_id, D8); the image
-	// comes from agent_type.config.orchestration.
+	// and resource caps come from agent_type.config.orchestration.
+	orch := OrchestrationFromConfig(a.AgentType.Config)
 	return AgentIdentity{
 		ID:           a.ID,
 		AgentTypeID:  a.AgentTypeID,
@@ -121,6 +122,9 @@ func (m *Manager) getAgentIdentity(ctx context.Context, agentID string) (AgentId
 		HugrUserID:   a.ID,
 		HugrUserName: a.Name,
 		HugrRole:     a.Role,
-		Image:        ImageFromConfig(a.AgentType.Config),
+		Image:        orch.Image,
+		MemoryBytes:  orch.MemoryBytes,
+		NanoCPUs:     orch.NanoCPUs,
+		PidsLimit:    orch.PidsLimit,
 	}, nil
 }

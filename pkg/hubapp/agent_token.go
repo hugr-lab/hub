@@ -542,6 +542,44 @@ func (a *HubApp) mintBootstrapForAgent(ctx context.Context, agentID string) (str
 	return secret, expiresAt, nil
 }
 
+// mintSpawnSecret is the SecretMinter the DockerRuntime calls at each spawn
+// (spec-agent-orchestration §3). It invalidates the agent's prior unconsumed
+// bootstrap secrets FIRST, then mints a fresh one — so a recreate can never
+// redeem the credential baked into the previous container's env (a stale /data
+// wipe would otherwise leave a live secret in docker-inspect). Invalidation is
+// best-effort: on failure the prior secrets still expire at their TTL and the
+// supervisor tick GCs them; the fresh secret is what matters for this boot.
+func (a *HubApp) mintSpawnSecret(ctx context.Context, agentID string) (string, time.Time, error) {
+	if err := a.invalidatePriorBootstrapSecrets(ctx, agentID); err != nil {
+		a.logger.Warn("invalidate prior bootstrap secrets failed (non-fatal)", "agent", agentID, "error", err)
+	}
+	return a.mintBootstrapForAgent(ctx, agentID)
+}
+
+// invalidatePriorBootstrapSecrets marks every unconsumed bootstrap secret for
+// agentID consumed, so the redeem path rejects it ("already consumed"). Called
+// before minting a fresh spawn secret.
+func (a *HubApp) invalidatePriorBootstrapSecrets(ctx context.Context, agentID string) error {
+	res, err := a.client.Query(ctx,
+		`mutation($aid: String!, $data: hub_db_agent_bootstrap_secrets_mut_data!) {
+			hub { db { update_agent_bootstrap_secrets(
+				filter: { agent_id: { eq: $aid }, consumed_at: { is_null: true } }
+				data: $data
+			) { affected_rows } } } }`,
+		map[string]any{
+			"aid": agentID,
+			"data": map[string]any{
+				"consumed_at": time.Now().UTC().Format(time.RFC3339Nano),
+			},
+		},
+	)
+	if err != nil {
+		return err
+	}
+	defer res.Close()
+	return res.Err()
+}
+
 func newBootstrapID() string {
 	b := make([]byte, 8)
 	_, _ = rand.Read(b)

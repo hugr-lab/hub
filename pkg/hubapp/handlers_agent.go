@@ -222,6 +222,7 @@ func (a *HubApp) lookupAgentIdentity(ctx context.Context, agentID string) (agent
 		return agentmgr.AgentIdentity{}, fmt.Errorf("agent %q not found", agentID)
 	}
 
+	orch := agentmgr.OrchestrationFromConfig(agents[0].AgentType.Config)
 	return agentmgr.AgentIdentity{
 		ID:           agents[0].ID,
 		AgentTypeID:  agents[0].AgentTypeID,
@@ -229,6 +230,9 @@ func (a *HubApp) lookupAgentIdentity(ctx context.Context, agentID string) (agent
 		HugrUserID:   agents[0].ID,
 		HugrUserName: agents[0].Name,
 		HugrRole:     agents[0].Role,
-		Image:        agentmgr.ImageFromConfig(agents[0].AgentType.Config),
+		Image:        orch.Image,
+		MemoryBytes:  orch.MemoryBytes,
+		NanoCPUs:     orch.NanoCPUs,
+		PidsLimit:    orch.PidsLimit,
 	}, nil
 }
