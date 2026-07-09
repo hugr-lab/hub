@@ -102,11 +102,16 @@ func TestAgentRoleRows_PlatformDeniesPresent(t *testing.T) {
 	// wildcard: a (type,*) wildcard on a module-navigation field (e.g.
 	// _module_hub_query/db) was observed NOT to deny it.
 	for _, key := range []string{
-		"Query|core", "Mutation|core", "MutationFunction|core", "Subscription|core",
+		"Query|core", "Mutation|core", "MutationFunction|core",
 		"_module_hub_query|db", "_module_hub_mutation|db",
 		"_module_hub_mut_function|start_agent", "_module_hub_mut_function|stop_agent",
 		"_module_hub_mut_function|delete_agent",
+		"_module_hub_mut_function|create_agent", "_module_hub_mut_function|update_agent",
+		"_module_hub_mut_function|disable_agent",
 		"_module_hub_agent_mut_function|bootstrap_token",
+		// Subscription|core stays open for models.chat_completion, but core.store
+		// (pub-sub subscribe/watch) is scoped out with an exact sub-field deny.
+		"_module_core_subscription|store",
 	} {
 		r, ok := seen[key]
 		if !ok {
@@ -120,10 +125,12 @@ func TestAgentRoleRows_PlatformDeniesPresent(t *testing.T) {
 			t.Errorf("platform deny %q uses a field wildcard — use an exact field", key)
 		}
 	}
-	// The agent store path and agent identity must NOT be denied here.
-	for _, key := range []string{"_module_hub_query|agent", "_module_hub_agent_mut_function|info"} {
+	// The agent store path, agent identity, and the LLM subscription must NOT be
+	// denied here. Subscription|core is the agent's chat_completion path — denying
+	// it (as an earlier HB3 seed did) breaks every model call in remote mode.
+	for _, key := range []string{"_module_hub_query|agent", "_module_hub_agent_mut_function|info", "Subscription|core"} {
 		if _, ok := seen[key]; ok {
-			t.Errorf("%q must stay open (agent store / identity call)", key)
+			t.Errorf("%q must stay open (agent store / identity / LLM subscription)", key)
 		}
 	}
 

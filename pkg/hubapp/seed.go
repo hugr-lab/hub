@@ -2,27 +2,45 @@ package hubapp
 
 import "context"
 
+// defaultAgentImage is the container image stamped into a seeded agent_type's
+// orchestration block until an admin authors a real one. The hugen image is
+// built in M3 (Dockerfile); HB4's DockerRuntime reads it back via
+// agentmgr.ImageFromConfig(agent_type.config).
+const defaultAgentImage = "hugen:latest"
+
+// seedAgentTypes seeds the default agent types into the Agent DB
+// (hub.agent.db.agent_types — the hugen-owned canon; the legacy platform
+// hub.db.agent_types is dropped in S4). A type's `config` is the agent runtime
+// config hugen reads via agent_info (agent_type.config ⊕ config_override); its
+// `orchestration` sub-block is hub-only spawn metadata (image/cpu/mem/mounts)
+// that hugen's config loader ignores (it pulls only the keys it knows) and
+// HB4's DockerRuntime reads for the container spawn.
 func (a *HubApp) seedAgentTypes(ctx context.Context) {
 	types := []struct {
-		ID, DisplayName, Description, Image, RuntimeContext string
+		ID, Name, Description string
+		Config                map[string]any
 	}{
-		{"personal-assistant", "Personal Assistant", "Default workspace agent with data exploration, memory, query registry, result store, and kernel access", "hub-agent:latest", "local"},
-		{"data-analyst", "Data Analyst", "Hugr data exploration agent with discovery, query, and visualization skills", "hub-agent:latest", "remote"},
-		{"openclaw", "OpenClaw Agent", "Third-party OpenClaw agent runtime using Hub Service OpenAI-compatible endpoint", "openclaw/agent:latest", "remote"},
+		{
+			ID:          "data-analyst",
+			Name:        "Data Analyst",
+			Description: "Hugr data-exploration agent: discovery, query, and analysis skills over the mesh.",
+			Config: map[string]any{
+				"orchestration": map[string]any{"image": defaultAgentImage},
+			},
+		},
 	}
 
 	for _, t := range types {
-		a.seedOneAgentType(ctx, t.ID, t.DisplayName, t.Description, t.Image, t.RuntimeContext)
+		a.seedOneAgentType(ctx, t.ID, t.Name, t.Description, t.Config)
 	}
 }
 
-// seedOneAgentType seeds a single agent type. Extracted from the loop so each
-// iteration gets its own deferred Close() and we don't accumulate result
-// handles until seedAgentTypes returns.
-func (a *HubApp) seedOneAgentType(ctx context.Context, id, displayName, description, image, runtimeContext string) {
-	// Check if exists
+// seedOneAgentType seeds a single agent type into the Agent DB (idempotent —
+// existing types are left untouched so admin edits survive a restart). Extracted
+// from the loop so each iteration gets its own deferred Close().
+func (a *HubApp) seedOneAgentType(ctx context.Context, id, name, description string, config map[string]any) {
 	res, err := a.client.Query(ctx,
-		`query($id: String!) { hub { db { agent_types(filter: { id: { eq: $id } }) { id } } } }`,
+		`query($id: String!) { hub { agent { db { agent_types(filter: { id: { eq: $id } } limit: 1) { id } } } } }`,
 		map[string]any{"id": id},
 	)
 	if err != nil {
@@ -38,20 +56,19 @@ func (a *HubApp) seedOneAgentType(ctx context.Context, id, displayName, descript
 	var existing []struct {
 		ID string `json:"id"`
 	}
-	_ = res.ScanData("hub.db.agent_types", &existing)
+	_ = res.ScanData("hub.agent.db.agent_types", &existing)
 	if len(existing) > 0 {
 		a.logger.Info("agent type already exists, skipping", "id", id)
 		return
 	}
 
-	// Insert
 	res2, err := a.client.Query(ctx,
-		`mutation($id: String!, $name: String!, $desc: String!, $img: String!, $ctx: String!) {
-			hub { db { insert_agent_types(
-				data: { id: $id, display_name: $name, description: $desc, image: $img, runtime_context: $ctx }
-			) { id } } }
+		`mutation($id: String!, $name: String!, $desc: String!, $cfg: JSON) {
+			hub { agent { db { insert_agent_types(
+				data: { id: $id, name: $name, description: $desc, config: $cfg }
+			) { id } } } }
 		}`,
-		map[string]any{"id": id, "name": displayName, "desc": description, "img": image, "ctx": runtimeContext},
+		map[string]any{"id": id, "name": name, "desc": description, "cfg": config},
 	)
 	if err != nil {
 		a.logger.Warn("failed to seed agent type", "id", id, "error", err)
@@ -62,5 +79,5 @@ func (a *HubApp) seedOneAgentType(ctx context.Context, id, displayName, descript
 		a.logger.Warn("seed agent type error", "id", id, "error", res2.Err())
 		return
 	}
-	a.logger.Info("agent type seeded", "id", id)
+	a.logger.Info("agent type seeded", "id", id, "image", defaultAgentImage)
 }

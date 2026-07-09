@@ -2,6 +2,7 @@ package hubapp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/hugr-lab/hub/pkg/agentmgr"
@@ -190,13 +191,14 @@ func (a *HubApp) handleDeleteAgent(w *app.Result, r *app.Request) error {
 	return w.Set(agentID)
 }
 
-// lookupAgentIdentity fetches agent identity (display_name, hugr_*, image) from hub.db.agents.
+// lookupAgentIdentity fetches agent identity + container image from the Agent DB
+// (hub.agent.db.agents, the canon). The agent's Hugr principal is itself
+// (user_id == agent_id, D8); the image lives in agent_type.config.orchestration.
 func (a *HubApp) lookupAgentIdentity(ctx context.Context, agentID string) (agentmgr.AgentIdentity, error) {
 	res, err := a.client.Query(ctx,
-		`query($id: String!) { hub { db { agents(
+		`query($id: String!) { hub { agent { db { agents(
 			filter: { id: { eq: $id } } limit: 1
-		) { id agent_type_id display_name hugr_user_id hugr_user_name hugr_role
-		   agent_type { image } } } } }`,
+		) { id agent_type_id name role agent_type { config } } } } } }`,
 		map[string]any{"id": agentID},
 	)
 	if err != nil {
@@ -208,27 +210,25 @@ func (a *HubApp) lookupAgentIdentity(ctx context.Context, agentID string) (agent
 	}
 
 	var agents []struct {
-		ID           string `json:"id"`
-		AgentTypeID  string `json:"agent_type_id"`
-		DisplayName  string `json:"display_name"`
-		HugrUserID   string `json:"hugr_user_id"`
-		HugrUserName string `json:"hugr_user_name"`
-		HugrRole     string `json:"hugr_role"`
-		AgentType    struct {
-			Image string `json:"image"`
+		ID          string `json:"id"`
+		AgentTypeID string `json:"agent_type_id"`
+		Name        string `json:"name"`
+		Role        string `json:"role"`
+		AgentType   struct {
+			Config json.RawMessage `json:"config"`
 		} `json:"agent_type"`
 	}
-	if err := res.ScanData("hub.db.agents", &agents); err != nil || len(agents) == 0 {
+	if err := res.ScanData("hub.agent.db.agents", &agents); err != nil || len(agents) == 0 {
 		return agentmgr.AgentIdentity{}, fmt.Errorf("agent %q not found", agentID)
 	}
 
 	return agentmgr.AgentIdentity{
 		ID:           agents[0].ID,
 		AgentTypeID:  agents[0].AgentTypeID,
-		DisplayName:  agents[0].DisplayName,
-		HugrUserID:   agents[0].HugrUserID,
-		HugrUserName: agents[0].HugrUserName,
-		HugrRole:     agents[0].HugrRole,
-		Image:        agents[0].AgentType.Image,
+		DisplayName:  agents[0].Name,
+		HugrUserID:   agents[0].ID,
+		HugrUserName: agents[0].Name,
+		HugrRole:     agents[0].Role,
+		Image:        agentmgr.ImageFromConfig(agents[0].AgentType.Config),
 	}, nil
 }

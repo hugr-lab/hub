@@ -2,8 +2,27 @@ package agentmgr
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 )
+
+// ImageFromConfig extracts the container image from an agent_type.config JSON
+// blob — orchestration fields live under `config.orchestration` (image, cpu,
+// mem, mounts), hub-written into the hugen-owned config. Returns "" if absent.
+func ImageFromConfig(config json.RawMessage) string {
+	if len(config) == 0 {
+		return ""
+	}
+	var c struct {
+		Orchestration struct {
+			Image string `json:"image"`
+		} `json:"orchestration"`
+	}
+	if err := json.Unmarshal(config, &c); err != nil {
+		return ""
+	}
+	return c.Orchestration.Image
+}
 
 // AgentRuntime manages agent container lifecycle.
 // Runtime state (container_id, auth_token, status) lives in memory.
@@ -25,7 +44,10 @@ type AgentRuntime interface {
 	ListRunning() []RuntimeState
 }
 
-// AgentIdentity contains persistent agent data from DB.
+// AgentIdentity contains persistent agent data from the Agent DB
+// (hub.agent.db.agents). DisplayName/HugrRole map to the store's name/role; the
+// Hugr principal is the agent itself (HugrUserID/HugrUserName == the agent id/
+// name, D8).
 type AgentIdentity struct {
 	ID           string
 	AgentTypeID  string
@@ -33,7 +55,7 @@ type AgentIdentity struct {
 	HugrUserID   string
 	HugrUserName string
 	HugrRole     string
-	Image        string // from agent_types
+	Image        string // agent_type.config.orchestration.image
 }
 
 // RuntimeState contains ephemeral state for a running agent.

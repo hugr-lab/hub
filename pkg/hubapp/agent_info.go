@@ -55,7 +55,16 @@ func (a *HubApp) handleAgentInfo(w *app.Result, r *app.Request) error {
 		return err
 	}
 	aid := u.ID // agent principal: user_id == agent_id (D11)
-	ctx := withIdentity(r.Context(), u)
+
+	// Resolve the calling agent's row as the hub-service's OWN principal — do
+	// NOT impersonate the agent (no withIdentity). The lookup is already
+	// self-scoped: aid is the authenticated agent id (JWT sub, via AuthUserID),
+	// which the caller cannot spoof, so a service-principal read filtered by
+	// aid returns exactly the calling agent's row — equivalent in security to
+	// an impersonated read. Impersonating here also FAILS: the agent's hugr
+	// role denies core.* (HB3 RLS floor), and the engine's impersonation
+	// perm-load then trips "impersonation failed: original role ...: forbidden".
+	ctx := r.Context()
 
 	// Read the agent + its type from the Agent DB and merge configs. A DB-level
 	// failure (query / result / scan) PROPAGATES as an error — it must not be

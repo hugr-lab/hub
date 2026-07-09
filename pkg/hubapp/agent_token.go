@@ -323,6 +323,13 @@ func (a *HubApp) agentForToken(ctx context.Context, agentID string) (agentTokenI
 		Role   string `json:"role"`
 	}
 	if err := res.ScanData("hub.agent.db.agents", &agents); err != nil {
+		// The hugr client reports an empty filtered result as ErrNoData — that
+		// is "no such agent" (terminal), not a scan failure. The token path
+		// needs it as errAgentNotRegistered (→ 403 for a deleted agent), and
+		// create_agent reads it as "the id is free".
+		if errors.Is(err, types.ErrNoData) {
+			return agentTokenInfo{}, fmt.Errorf("agent %q: %w", agentID, errAgentNotRegistered)
+		}
 		return agentTokenInfo{}, fmt.Errorf("agent lookup %q: scan: %w", agentID, err)
 	}
 	if len(agents) == 0 {
@@ -484,9 +491,35 @@ func (a *HubApp) handleMintBootstrap(w *app.Result, r *app.Request) error {
 		return err
 	}
 
-	secret, err := newBootstrapSecret()
+	secret, expiresAt, err := a.mintBootstrapForAgent(ctx, agentID)
 	if err != nil {
 		return err
+	}
+
+	return w.SetJSON(map[string]any{
+		"agent_id":   agentID,
+		"secret":     secret,
+		"expires_at": expiresAt.Format(time.RFC3339Nano),
+	})
+}
+
+// mintBootstrapForAgent generates a one-shot spawn secret for agentID, stores
+// only its sha256 hash in the platform DB, and returns the plaintext plus its
+// expiry. The caller MUST have already verified admin authority and that the
+// agent exists (a secret for a ghost agent 503s forever at redeem time).
+//
+// It requires the token issuer (HUB_AGENT_JWT_KEY): a secret minted while the
+// issuer is disabled could never be redeemed, since /agent/token is not
+// mounted — so it fails loudly rather than handing back a dead credential.
+// Shared by the standalone bootstrap_token mint and create_agent's
+// provision-and-boot path.
+func (a *HubApp) mintBootstrapForAgent(ctx context.Context, agentID string) (string, time.Time, error) {
+	if a.config.AgentJWTKeyFile == "" {
+		return "", time.Time{}, errors.New("agent token issuer disabled (HUB_AGENT_JWT_KEY not set)")
+	}
+	secret, err := newBootstrapSecret()
+	if err != nil {
+		return "", time.Time{}, err
 	}
 	expiresAt := time.Now().UTC().Add(a.config.AgentBootstrapTTL)
 	res, err := a.client.Query(ctx,
@@ -500,18 +533,13 @@ func (a *HubApp) handleMintBootstrap(w *app.Result, r *app.Request) error {
 		}},
 	)
 	if err != nil {
-		return fmt.Errorf("store bootstrap secret: %w", err)
+		return "", time.Time{}, fmt.Errorf("store bootstrap secret: %w", err)
 	}
 	defer res.Close()
 	if res.Err() != nil {
-		return fmt.Errorf("store bootstrap secret: %w", res.Err())
+		return "", time.Time{}, fmt.Errorf("store bootstrap secret: %w", res.Err())
 	}
-
-	return w.SetJSON(map[string]any{
-		"agent_id":   agentID,
-		"secret":     secret,
-		"expires_at": expiresAt.Format(time.RFC3339Nano),
-	})
+	return secret, expiresAt, nil
 }
 
 func newBootstrapID() string {

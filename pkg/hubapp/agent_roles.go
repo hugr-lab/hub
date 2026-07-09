@@ -49,11 +49,20 @@ func platformDenyRows() []schema.RolePermission {
 	}
 	rows := []schema.RolePermission{
 		// core.* — roles / permissions / api_keys / data sources. Reads leak
-		// secrets; writes are privilege escalation. function.core stays open.
+		// secrets; writes are privilege escalation. function.core stays open
+		// (cache/meta/embeddings/version).
 		deny("Query", "core"),
 		deny("Mutation", "core"),
 		deny("MutationFunction", "core"),
-		deny("Subscription", "core"),
+		// Subscription|core stays OPEN for the agent's LLM path
+		// (`subscription { core { models { chat_completion }}}`, pkg/models/hugr.go
+		// — the only way to reach a model in remote mode). But SCOPE it: the core
+		// subscription module (`_module_core_subscription`) also exposes `store` =
+		// the always-attached core.store pub-sub (`subscribe`/`watch`), which would
+		// let an agent stream hub-wide keyspace events / cross-agent pub-sub. Deny
+		// that sub-field EXACTLY (type,field, not a module-nav wildcard); `models`
+		// stays reachable, `store` does not.
+		deny("_module_core_subscription", "store"),
 
 		// hub platform DB (users / user_agents / projects / chats / budgets /
 		// bootstrap secrets) — the agent reaches platform data only via the hub
@@ -65,6 +74,13 @@ func platformDenyRows() []schema.RolePermission {
 		deny("_module_hub_mut_function", "start_agent"),
 		deny("_module_hub_mut_function", "stop_agent"),
 		deny("_module_hub_mut_function", "delete_agent"),
+
+		// hub agent-provisioning mutations (HB2) — admin only. An agent minting
+		// or editing an identity (its own role especially) is privilege
+		// escalation; the handlers also enforce, this is the RLS floor.
+		deny("_module_hub_mut_function", "create_agent"),
+		deny("_module_hub_mut_function", "update_agent"),
+		deny("_module_hub_mut_function", "disable_agent"),
 
 		// bootstrap-secret mint — admin only (handler also enforces).
 		// function.hub.agent.info stays open — it is the agent identity call.

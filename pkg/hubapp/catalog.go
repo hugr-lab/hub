@@ -17,6 +17,9 @@ func (a *HubApp) registerCatalog() error {
 	if err := a.registerAgentMutations(); err != nil {
 		return err
 	}
+	if err := a.registerProvisioningMutations(); err != nil {
+		return err
+	}
 	if err := a.registerAgentInfo(); err != nil {
 		return err
 	}
