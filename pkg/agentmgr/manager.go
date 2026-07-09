@@ -3,10 +3,12 @@ package agentmgr
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 
 	"github.com/hugr-lab/query-engine/client"
+	"github.com/hugr-lab/query-engine/types"
 )
 
 // Manager orchestrates agent lifecycle using AgentRuntime for containers
@@ -105,16 +107,31 @@ func (m *Manager) getAgentIdentity(ctx context.Context, agentID string) (AgentId
 		Name        string `json:"name"`
 		Role        string `json:"role"`
 		AgentType   struct {
-			Config json.RawMessage `json:"config"`
+			// config is a JSON column the engine returns as Arrow utf8; it does
+			// NOT scan into json.RawMessage ([]byte). Scan into a map and
+			// re-marshal for OrchestrationFromConfig.
+			Config map[string]any `json:"config"`
 		} `json:"agent_type"`
 	}
-	if err := res.ScanData("hub.agent.db.agents", &agents); err != nil || len(agents) == 0 {
+	if err := res.ScanData("hub.agent.db.agents", &agents); err != nil {
+		// Empty filtered result → ErrNoData → genuinely "not found"; any other
+		// scan error is a real failure and MUST NOT be masked as not-found.
+		if errors.Is(err, types.ErrNoData) {
+			return AgentIdentity{}, fmt.Errorf("agent %q not found", agentID)
+		}
+		return AgentIdentity{}, fmt.Errorf("get agent %q: scan: %w", agentID, err)
+	}
+	if len(agents) == 0 {
 		return AgentIdentity{}, fmt.Errorf("agent %q not found", agentID)
 	}
 	a := agents[0]
 	// The agent's Hugr principal is itself (user_id == agent_id, D8); the image
 	// and resource caps come from agent_type.config.orchestration.
-	orch := OrchestrationFromConfig(a.AgentType.Config)
+	cfg, err := json.Marshal(a.AgentType.Config)
+	if err != nil {
+		return AgentIdentity{}, fmt.Errorf("get agent %q: marshal agent_type config: %w", agentID, err)
+	}
+	orch := OrchestrationFromConfig(cfg)
 	return AgentIdentity{
 		ID:           a.ID,
 		AgentTypeID:  a.AgentTypeID,

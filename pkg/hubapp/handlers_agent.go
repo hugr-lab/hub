@@ -3,10 +3,12 @@ package hubapp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/hugr-lab/hub/pkg/agentmgr"
 	"github.com/hugr-lab/query-engine/client/app"
+	"github.com/hugr-lab/query-engine/types"
 )
 
 // agentRuntimeStateType is the Struct() return for start/stop mutations — gives
@@ -79,18 +81,30 @@ func (a *HubApp) handleStartAgent(w *app.Result, r *app.Request) error {
 		return fmt.Errorf("docker runtime unavailable")
 	}
 
-	ctx := withIdentity(r.Context(), u)
-
-	if err := a.checkAgentAccess(ctx, u, agentID, "owner"); err != nil {
+	// The access check impersonates the caller (client.AsUser) — it must see the
+	// world as the caller to evaluate their user_agents grant.
+	if err := a.checkAgentAccess(withIdentity(r.Context(), u), u, agentID, "owner"); err != nil {
 		return err
 	}
 
-	identity, err := a.lookupAgentIdentity(ctx, agentID)
+	// The spawn itself is a PRIVILEGED hub operation: read the agent catalog and
+	// mint/start as the service principal, NOT impersonating the caller. A
+	// non-admin owner's hugr role is denied the Agent DB by the HB3 RLS floor, so
+	// an impersonated read returns 0 rows ("not found"). agent_info reads
+	// un-impersonated for exactly this reason; the access check above already
+	// gated the caller.
+	svcCtx := r.Context()
+
+	rec, err := a.readAgentRecord(svcCtx, agentID)
+	if err != nil {
+		return fmt.Errorf("lookup agent: %w", err)
+	}
+	identity, err := agentIdentityFromRecord(rec)
 	if err != nil {
 		return fmt.Errorf("lookup agent: %w", err)
 	}
 
-	if err := a.dockerRuntime.Start(ctx, identity); err != nil {
+	if err := a.dockerRuntime.Start(svcCtx, identity); err != nil {
 		return fmt.Errorf("start agent: %w", err)
 	}
 
@@ -191,45 +205,100 @@ func (a *HubApp) handleDeleteAgent(w *app.Result, r *app.Request) error {
 	return w.Set(agentID)
 }
 
-// lookupAgentIdentity fetches agent identity + container image from the Agent DB
-// (hub.agent.db.agents, the canon). The agent's Hugr principal is itself
-// (user_id == agent_id, D8); the image lives in agent_type.config.orchestration.
-func (a *HubApp) lookupAgentIdentity(ctx context.Context, agentID string) (agentmgr.AgentIdentity, error) {
+// agentRecord is an agent's identity plus its EFFECTIVE config — the agent_type
+// config merged with the per-instance config_override (override wins), the same
+// shape agent_info resolves.
+type agentRecord struct {
+	ID          string
+	AgentTypeID string
+	ShortID     string
+	Name        string
+	Status      string
+	Role        string
+	Config      map[string]any // agent_type.config ⊕ config_override
+}
+
+// readAgentRecord reads an agent's identity and effective config from the Agent
+// DB (hub.agent.db.agents, the canon), merging agent_type.config with
+// config_override exactly as agent_info does.
+//
+// The caller MUST pass an un-impersonated (service-principal) ctx: a non-admin
+// caller's hugr role is denied the Agent DB catalog by the HB3 RLS floor, so an
+// impersonated read returns 0 rows. config is a JSON column the engine returns
+// as Arrow utf8 — it scans into a map, NOT json.RawMessage ([]byte). Only a
+// genuinely empty result (ErrNoData) is "not found"; every other query/scan
+// error propagates rather than being masked as not-found.
+func (a *HubApp) readAgentRecord(ctx context.Context, agentID string) (agentRecord, error) {
 	res, err := a.client.Query(ctx,
 		`query($id: String!) { hub { agent { db { agents(
 			filter: { id: { eq: $id } } limit: 1
-		) { id agent_type_id name role agent_type { config } } } } } }`,
+		) { id agent_type_id short_id name status role config_override agent_type { config } } } } } }`,
 		map[string]any{"id": agentID},
 	)
 	if err != nil {
-		return agentmgr.AgentIdentity{}, err
+		return agentRecord{}, fmt.Errorf("read agent %q: %w", agentID, err)
 	}
 	defer res.Close()
 	if res.Err() != nil {
-		return agentmgr.AgentIdentity{}, res.Err()
+		return agentRecord{}, fmt.Errorf("read agent %q: %w", agentID, res.Err())
 	}
 
-	var agents []struct {
-		ID          string `json:"id"`
-		AgentTypeID string `json:"agent_type_id"`
-		Name        string `json:"name"`
-		Role        string `json:"role"`
-		AgentType   struct {
-			Config json.RawMessage `json:"config"`
+	var rows []struct {
+		ID             string         `json:"id"`
+		AgentTypeID    string         `json:"agent_type_id"`
+		ShortID        string         `json:"short_id"`
+		Name           string         `json:"name"`
+		Status         string         `json:"status"`
+		Role           string         `json:"role"`
+		ConfigOverride map[string]any `json:"config_override"`
+		AgentType      struct {
+			Config map[string]any `json:"config"`
 		} `json:"agent_type"`
 	}
-	if err := res.ScanData("hub.agent.db.agents", &agents); err != nil || len(agents) == 0 {
-		return agentmgr.AgentIdentity{}, fmt.Errorf("agent %q not found", agentID)
+	if err := res.ScanData("hub.agent.db.agents", &rows); err != nil {
+		if errors.Is(err, types.ErrNoData) {
+			return agentRecord{}, fmt.Errorf("agent %q not found", agentID)
+		}
+		return agentRecord{}, fmt.Errorf("read agent %q: scan: %w", agentID, err)
+	}
+	if len(rows) == 0 {
+		return agentRecord{}, fmt.Errorf("agent %q not found", agentID)
 	}
 
-	orch := agentmgr.OrchestrationFromConfig(agents[0].AgentType.Config)
+	row := rows[0]
+	merged := make(map[string]any, len(row.AgentType.Config)+len(row.ConfigOverride))
+	for k, v := range row.AgentType.Config { // base: the type's config
+		merged[k] = v
+	}
+	for k, v := range row.ConfigOverride { // per-instance override wins
+		merged[k] = v
+	}
+	return agentRecord{
+		ID:          row.ID,
+		AgentTypeID: row.AgentTypeID,
+		ShortID:     row.ShortID,
+		Name:        row.Name,
+		Status:      row.Status,
+		Role:        row.Role,
+		Config:      merged,
+	}, nil
+}
+
+// agentIdentityFromRecord derives the container spawn identity (image + resource
+// caps from the EFFECTIVE orchestration block) from an agent record.
+func agentIdentityFromRecord(rec agentRecord) (agentmgr.AgentIdentity, error) {
+	cfg, err := json.Marshal(rec.Config)
+	if err != nil {
+		return agentmgr.AgentIdentity{}, fmt.Errorf("marshal agent %q config: %w", rec.ID, err)
+	}
+	orch := agentmgr.OrchestrationFromConfig(cfg)
 	return agentmgr.AgentIdentity{
-		ID:           agents[0].ID,
-		AgentTypeID:  agents[0].AgentTypeID,
-		DisplayName:  agents[0].Name,
-		HugrUserID:   agents[0].ID,
-		HugrUserName: agents[0].Name,
-		HugrRole:     agents[0].Role,
+		ID:           rec.ID,
+		AgentTypeID:  rec.AgentTypeID,
+		DisplayName:  rec.Name,
+		HugrUserID:   rec.ID,
+		HugrUserName: rec.Name,
+		HugrRole:     rec.Role,
 		Image:        orch.Image,
 		MemoryBytes:  orch.MemoryBytes,
 		NanoCPUs:     orch.NanoCPUs,
