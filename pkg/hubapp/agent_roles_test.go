@@ -109,6 +109,9 @@ func TestAgentRoleRows_PlatformDeniesPresent(t *testing.T) {
 		"_module_hub_mut_function|create_agent", "_module_hub_mut_function|update_agent",
 		"_module_hub_mut_function|disable_agent",
 		"_module_hub_agent_mut_function|bootstrap_token",
+		// Subscription|core stays open for models.chat_completion, but core.store
+		// (pub-sub subscribe/watch) is scoped out with an exact sub-field deny.
+		"_module_core_subscription|store",
 	} {
 		r, ok := seen[key]
 		if !ok {
