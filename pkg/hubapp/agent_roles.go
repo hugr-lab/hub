@@ -49,11 +49,14 @@ func platformDenyRows() []schema.RolePermission {
 	}
 	rows := []schema.RolePermission{
 		// core.* — roles / permissions / api_keys / data sources. Reads leak
-		// secrets; writes are privilege escalation. function.core stays open.
+		// secrets; writes are privilege escalation. function.core stays open
+		// (cache/meta/embeddings/version). Subscription|core stays OPEN too: the
+		// agent's LLM access is `subscription { core { models { chat_completion }}}`
+		// (pkg/models/hugr.go) — the agent's only path to a model in remote mode,
+		// same model-access category as the open function.core.models.embedding.
 		deny("Query", "core"),
 		deny("Mutation", "core"),
 		deny("MutationFunction", "core"),
-		deny("Subscription", "core"),
 
 		// hub platform DB (users / user_agents / projects / chats / budgets /
 		// bootstrap secrets) — the agent reaches platform data only via the hub
