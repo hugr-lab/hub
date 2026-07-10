@@ -37,6 +37,10 @@ type HubApp struct {
 
 	supervisor       *supervisor        // desired-state reconcile loop (spec §4); nil when Docker is absent
 	supervisorCancel context.CancelFunc // stops the supervisor goroutine on Shutdown
+
+	// accessCheck overrides the gateway's user_agents authz lookup in tests;
+	// nil → checkAgentAccess (gateway.go).
+	accessCheck func(ctx context.Context, u auth.UserInfo, agentID string) error
 }
 
 func New(cfg Config, logger *slog.Logger, c *client.Client) *HubApp {
@@ -287,6 +291,11 @@ func (a *HubApp) Init(ctx context.Context) error {
 	//   /hugr     Hugr GraphQL proxy
 	mux := http.NewServeMux()
 	mux.HandleFunc("/hugr", a.hugrProxyHandler())
+
+	// HB5 gateway transport plane — raw pass-through to the agent's native
+	// HTTP API (spec-hub-gateway §4). Registered unconditionally; the handler
+	// answers 503 when no agent runtime is wired.
+	mux.HandleFunc("/api/v1/agents/{id}/hugen/{path...}", a.agentProxyHandler)
 
 	// Agent management — DockerRuntime is initialized in Catalog() (if Docker available).
 	if a.agentRuntime != nil {
