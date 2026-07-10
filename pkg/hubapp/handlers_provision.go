@@ -115,7 +115,7 @@ func (a *HubApp) registerProvisioningMutations() error {
 		app.ArgFromContext("auth_type", app.String, app.AuthType),
 		app.Return(agentIdentityType()),
 		app.Mutation(),
-		app.Desc("Edit an agent identity in the Agent DB. All args are required by the framework; an empty string / empty {} leaves that field unchanged, so pass only what you want to change (name / hugr_role / status / config_override). hugr_role changes are privilege-sensitive. Returns the resulting identity. Admin only."),
+		app.Desc("Edit an agent identity in the Agent DB. All args are required by the framework; an empty string / empty {} leaves that field unchanged, so pass only what you want to change (name / hugr_role / status / config_override). status ∈ {active, manual, paused, disabled}; setting 'manual' STOPS a running container (manual baseline — start_agent relaunches it, restart-policy 'no'). hugr_role changes are privilege-sensitive. Returns the resulting identity. Admin only."),
 	); err != nil {
 		return err
 	}
@@ -248,7 +248,8 @@ func (a *HubApp) handleUpdateAgent(w *app.Result, r *app.Request) error {
 	if agentID == "" {
 		return errors.New("agent_id is required")
 	}
-	if _, err := a.agentForToken(ctx, agentID); err != nil {
+	before, err := a.agentForToken(ctx, agentID)
+	if err != nil {
 		return err // errAgentNotRegistered → clear "no such agent"
 	}
 
@@ -284,6 +285,20 @@ func (a *HubApp) handleUpdateAgent(w *app.Result, r *app.Request) error {
 
 	if err := a.updateAgentIdentity(ctx, agentID, data); err != nil {
 		return fmt.Errorf("update agent: %w", err)
+	}
+
+	// Transition INTO 'manual' brings the agent to its manual baseline — STOP any
+	// running container. The supervisor is hands-off for manual (decide=actNone),
+	// so it would otherwise leave a container that was created while 'active' still
+	// running with restart-policy 'unless-stopped' — a crash would auto-revive,
+	// defeating the manual contract. start_agent relaunches it (restart-policy
+	// 'no') when the operator wants it up. Only on a real transition (was ≠ manual).
+	if s, _ := data["status"].(string); s == "manual" && before.Status != "manual" {
+		if a.supervisor != nil {
+			_ = a.supervisor.stopManual(r.Context(), agentID)
+		} else if a.dockerRuntime != nil {
+			_ = a.dockerRuntime.Stop(r.Context(), agentID)
+		}
 	}
 
 	info, err := a.agentForToken(ctx, agentID)

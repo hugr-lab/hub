@@ -106,16 +106,25 @@ func (a *HubApp) handleStartAgent(w *app.Result, r *app.Request) error {
 
 	if rec.Status == "manual" {
 		// Manual is hands-off (spec §4): launch the container explicitly WITHOUT
-		// flipping to 'active' — the supervisor must keep ignoring it. One-shot
-		// start with a pre-Remove (clear a stale carcass / states-cache entry, the
-		// C1 guard) and restart-policy 'no' (agentIdentityFromRecord sets Manual).
-		identity, err := agentIdentityFromRecord(rec)
-		if err != nil {
-			return fmt.Errorf("start agent: %w", err)
-		}
-		_ = a.dockerRuntime.Remove(svcCtx, agentID)
-		if err := a.dockerRuntime.Start(svcCtx, identity); err != nil {
-			return fmt.Errorf("start agent (manual): %w", err)
+		// flipping to 'active' — the supervisor keeps ignoring it. Route through
+		// supervisor.startManual, which serializes against the tick (per-agent
+		// lock), re-reads live status (aborts if a concurrent revoke moved it off
+		// 'manual'), is idempotent on an already-running container, and Removes a
+		// stale carcass before Start (C1). The container gets restart-policy 'no'.
+		if a.supervisor != nil {
+			if err := a.supervisor.startManual(svcCtx, agentID); err != nil {
+				return fmt.Errorf("start agent (manual): %w", err)
+			}
+		} else {
+			// Defensive fallback (the supervisor runs whenever dockerRuntime != nil).
+			identity, err := agentIdentityFromRecord(rec)
+			if err != nil {
+				return fmt.Errorf("start agent: %w", err)
+			}
+			_ = a.dockerRuntime.Remove(svcCtx, agentID)
+			if err := a.dockerRuntime.Start(svcCtx, identity); err != nil {
+				return fmt.Errorf("start agent (manual): %w", err)
+			}
 		}
 		state := a.dockerRuntime.Status(agentID)
 		containerShort := shortID(state.ContainerID)
@@ -206,9 +215,13 @@ func (a *HubApp) handleStopAgent(w *app.Result, r *app.Request) error {
 
 	if rec.Status == "manual" {
 		// Manual is hands-off: stop the container but keep status 'manual' (do NOT
-		// flip to 'paused' — that would make it supervisor-managed). A later
-		// start_agent relaunches it.
-		_ = a.dockerRuntime.Stop(svcCtx, agentID)
+		// flip to 'paused' — that would make it supervisor-managed). Serialized
+		// against the tick via supervisor.stopManual. A later start_agent relaunches.
+		if a.supervisor != nil {
+			_ = a.supervisor.stopManual(svcCtx, agentID)
+		} else {
+			_ = a.dockerRuntime.Stop(svcCtx, agentID)
+		}
 		a.logger.Info("manual agent stopped via mutation", "agent", agentID, "by", u.ID)
 		return w.SetJSON(map[string]any{
 			"id":           agentID,

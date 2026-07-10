@@ -5,7 +5,8 @@ package hubapp
 //
 //	active   → a container must be running          (owner run-state)
 //	manual   → hands-off: never auto-started/recreated; runs only via an explicit
-//	           start_agent (restart-policy 'no' — a crash stays down)
+//	           start_agent (restart-policy 'no' — a crash stays down). A transition
+//	           INTO manual (update_agent) stops any running container → baseline.
 //	paused   → no container                         (owner run-state)
 //	disabled → no container; admin-only revocation   (only update_agent leaves it)
 //
@@ -25,6 +26,7 @@ package hubapp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -307,6 +309,53 @@ func decide(desired string, obs agentmgr.Observation, tr *agentTrack, now time.T
 // calling request goroutine reads the runtime state right after.
 func (s *supervisor) kick(ctx context.Context, agentID, desired string) {
 	s.reconcileAgent(ctx, agentID, desired)
+}
+
+// startManual launches a 'manual' agent's container explicitly (the supervisor
+// never does — decide(manual)=actNone). It runs through the SAME per-agent lock
+// the tick uses (so a manual start can't race a tick or another manual start)
+// and applies the same guards spawn() does:
+//   - re-read LIVE status and abort unless still 'manual' — a concurrent
+//     disable/pause/delete must not be overridden by a stale start (the revoke
+//     invariant the active path also holds);
+//   - idempotent: no-op if a container is already running (don't churn a live
+//     one / burn a fresh mint on a redundant start_agent);
+//   - Remove any stale carcass before Start (the C1 stale-states-cache guard).
+// The container is created with restart-policy 'no' (agentIdentityFromRecord
+// sets AgentIdentity.Manual from the 'manual' status).
+func (s *supervisor) startManual(ctx context.Context, agentID string) error {
+	tr := s.trackFor(agentID)
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+
+	info, err := s.app.agentForToken(ctx, agentID)
+	if err != nil {
+		return err
+	}
+	if info.Status != "manual" {
+		return fmt.Errorf("agent %q is not manual (status %q) — start aborted", agentID, info.Status)
+	}
+	obs, err := s.app.dockerRuntime.Observe(ctx, agentID)
+	if err != nil {
+		return err
+	}
+	if obs.Present && obs.Running {
+		return nil // already up — idempotent (stop_agent then start_agent to recreate)
+	}
+	if err := s.app.dockerRuntime.Remove(ctx, agentID); err != nil {
+		s.app.logger.Warn("manual start: pre-start remove failed", "agent", agentID, "error", err)
+	}
+	return s.app.startContainer(ctx, agentID)
+}
+
+// stopManual stops a 'manual' agent's container, serialized against the tick via
+// the per-agent lock. Used by stop_agent and by the active→manual transition
+// (update_agent), which brings the agent to its manual baseline (not running).
+func (s *supervisor) stopManual(ctx context.Context, agentID string) error {
+	tr := s.trackFor(agentID)
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	return s.app.dockerRuntime.Stop(ctx, agentID)
 }
 
 // trackRestart maintains a sliding RestartCount window and reports whether the
