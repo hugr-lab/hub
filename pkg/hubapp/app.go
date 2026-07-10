@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 
@@ -31,7 +32,9 @@ type HubApp struct {
 	server        *http.Server
 	tokenServer   *http.Server // dedicated /agent/token listener (HUB_AGENT_TOKEN_LISTEN), nil in shared mode
 	dockerRuntime *agentmgr.DockerRuntime
-	agentMgr      *agentmgr.Manager
+
+	supervisor       *supervisor        // desired-state reconcile loop (spec §4); nil when Docker is absent
+	supervisorCancel context.CancelFunc // stops the supervisor goroutine on Shutdown
 }
 
 func New(cfg Config, logger *slog.Logger, c *client.Client) *HubApp {
@@ -61,7 +64,7 @@ func (a *HubApp) Catalog(ctx context.Context) (catalog.Catalog, error) {
 	// Reconstruct() is called later in Init() once the Docker daemon is reachable.
 	if a.dockerRuntime == nil {
 		agentNetwork := envOrDefault("HUB_AGENT_NETWORK", "hub-dev-network")
-		rt, err := agentmgr.NewDockerRuntime(agentNetwork, a.config.StoragePath, a.config.InternalURL, a.logger)
+		rt, err := agentmgr.NewDockerRuntime(a.agentRuntimeConfig(agentNetwork), a.logger)
 		if err != nil {
 			a.logger.Warn("Docker runtime unavailable", "error", err)
 		} else {
@@ -72,6 +75,62 @@ func (a *HubApp) Catalog(ctx context.Context) (catalog.Catalog, error) {
 		return nil, fmt.Errorf("register catalog: %w", err)
 	}
 	return a.mux, nil
+}
+
+// agentRuntimeConfig assembles the container spawn config (spec-agent-
+// orchestration §3) from hub config. HugrURL is the agent-network view of hugr;
+// TokenURL is derived listener-aware. An empty HugrIssuer is not fatal here
+// (Docker may be absent at Catalog time) — DockerRuntime.Start fails loudly at
+// spawn time instead.
+func (a *HubApp) agentRuntimeConfig(network string) agentmgr.RuntimeConfig {
+	hugrURL := a.config.AgentHugrURL
+	if hugrURL == "" {
+		// Fall back to the hub's own hugr base (correct only when hub + agents
+		// share a network view — a dev convenience, not a production default).
+		hugrURL = strings.TrimSuffix(a.config.HugrURL, "/ipc")
+	}
+	if a.config.AgentHugrIssuer == "" {
+		a.logger.Warn("HUB_AGENT_HUGR_ISSUER unset — agent spawns will fail (hugen serve requires HUGR_ISSUER)")
+	}
+	return agentmgr.RuntimeConfig{
+		Network:            network,
+		StoragePath:        a.config.StoragePath,
+		HugrURL:            hugrURL,
+		HugrIssuer:         a.config.AgentHugrIssuer,
+		TokenURL:           a.agentTokenURL(),
+		LogLevel:           os.Getenv("HUGEN_LOG_LEVEL"),
+		PublishAPI:         a.config.AgentPublishAPI,
+		DefaultMemoryBytes: a.config.AgentMemoryBytes,
+		DefaultNanoCPUs:    a.config.AgentNanoCPUs,
+		DefaultPidsLimit:   a.config.AgentPidsLimit,
+	}
+}
+
+// agentTokenURL is the /agent/token URL a spawned container redeems its
+// bootstrap secret at (→ HUGR_TOKEN_URL). Explicit HUB_AGENT_TOKEN_URL wins.
+// Otherwise it derives from InternalURL, and — crucially — when a dedicated
+// token listener is set (HUB_AGENT_TOKEN_LISTEN), /agent/token exists ONLY there
+// (see the token-listener branch in Init), so the shared InternalURL port is
+// wrong: swap in the dedicated listener's port on the InternalURL host. The
+// InternalURL default (hub-service:8082) must itself be reachable from the agent
+// network and its :8082 disagrees with ListenAddr :10000 outside dev compose —
+// set HUB_SERVICE_INTERNAL_URL / HUB_AGENT_TOKEN_URL explicitly in prod.
+func (a *HubApp) agentTokenURL() string {
+	if a.config.AgentTokenURL != "" {
+		return a.config.AgentTokenURL
+	}
+	base := strings.TrimRight(a.config.InternalURL, "/")
+	if listen := a.config.AgentTokenListen; listen != "" {
+		if _, port, err := net.SplitHostPort(listen); err == nil && port != "" {
+			if u, err := url.Parse(base); err == nil && u.Host != "" {
+				u.Host = net.JoinHostPort(u.Hostname(), port)
+				base = strings.TrimRight(u.String(), "/")
+				a.logger.Info("agent token URL derived from dedicated listener port",
+					"token_url", base+"/agent/token", "listen", listen)
+			}
+		}
+	}
+	return base + "/agent/token"
 }
 
 // agentSchemaParams are the template vars the hub renders the agent-store
@@ -230,7 +289,19 @@ func (a *HubApp) Init(ctx context.Context) error {
 	// Agent management — DockerRuntime is initialized in Catalog() (if Docker available).
 	if a.dockerRuntime != nil {
 		a.dockerRuntime.Reconstruct(ctx)
-		a.agentMgr = agentmgr.NewManager(a.dockerRuntime, a.client, a.logger)
+		// The spawn-secret minter wraps the agent-token issuer, wired below —
+		// inject it now so Start can mint-at-spawn. Without the issuer, Start
+		// fails loudly (an agent cannot boot without a redeemable secret).
+		if a.config.AgentJWTKeyFile != "" {
+			a.dockerRuntime.SetSecretMinter(a.mintSpawnSecret)
+		} else {
+			a.logger.Warn("agent secret minter disabled (HUB_AGENT_JWT_KEY not set) — agents cannot be spawned")
+		}
+		// Desired-state supervisor (spec §4): reconcile managed containers to
+		// agents.status on a tick + on start/stop_agent kicks. With Reconstruct()
+		// above, active agents revive after a hub restart. Started after the minter
+		// so its first pass can spawn.
+		a.startSupervisor()
 	}
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -266,25 +337,18 @@ func (a *HubApp) Init(ctx context.Context) error {
 		a.logger.Warn("agent token issuer disabled (HUB_AGENT_JWT_KEY not set) — agents cannot refresh tokens")
 	}
 
-	// Auth middleware — validates JWT, agent tokens, or secret key
+	// Auth middleware — validates the user OIDC JWT or the management secret key.
+	// Agents never present a token to this HTTP surface (they talk to hugr
+	// directly; /agent/token is self-authenticating), so the legacy agent-token
+	// validator is gone (O3). See the note in pkg/auth/middleware.go.
 	hugrBase := strings.TrimSuffix(a.config.HugrURL, "/ipc")
 	jwksProvider := auth.NewJWKSProvider(hugrBase)
 	jwtValidator := auth.NewJWTValidator(jwksProvider)
 
-	// Agent token validator — uses AgentRuntime.ValidateToken (O(1) in-memory)
-	var validateFunc func(string) (string, bool)
-	if a.dockerRuntime != nil {
-		validateFunc = a.dockerRuntime.ValidateToken
-	} else {
-		validateFunc = func(string) (string, bool) { return "", false }
-	}
-	agentValidator := auth.NewAgentTokenValidator(a.client, validateFunc)
-
 	handler := auth.Middleware(mux, auth.AuthConfig{
-		SecretKey:      a.config.HugrSecretKey,
-		JWTValidator:   jwtValidator,
-		AgentValidator: agentValidator,
-		Logger:         a.logger,
+		SecretKey:    a.config.HugrSecretKey,
+		JWTValidator: jwtValidator,
+		Logger:       a.logger,
 	})
 
 	a.server = &http.Server{Addr: a.config.ListenAddr, Handler: handler}
@@ -300,6 +364,9 @@ func (a *HubApp) Init(ctx context.Context) error {
 
 func (a *HubApp) Shutdown(ctx context.Context) error {
 	a.logger.Info("hub app shutting down")
+	if a.supervisorCancel != nil {
+		a.supervisorCancel()
+	}
 	if a.tokenServer != nil {
 		if err := a.tokenServer.Shutdown(ctx); err != nil && err != http.ErrServerClosed {
 			a.logger.Warn("agent token listener shutdown", "error", err)

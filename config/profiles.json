@@ -134,13 +134,6 @@
         "auth": "shared",
         "credentials_ref": "minio",
         "bucket": "iceberg-warehouse"
-      },
-      "azure-testdata": {
-        "type": "azure",
-        "auth": "shared",
-        "credentials_ref": "azure-hugrhubtest",
-        "account": "hugrhubtest",
-        "container": "testdata"
       }
     },
     "credentials": {

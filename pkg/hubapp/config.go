@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -40,33 +41,66 @@ type Config struct {
 	// AgentTokenListen, when set, serves /agent/token on a dedicated internal
 	// listener (container network only); empty mounts it on the shared listener.
 	AgentTokenListen string // HUB_AGENT_TOKEN_LISTEN
-	RedisURL      string // Redis URL for per-user rate limiting (required)
-	StoragePath   string // Root directory for persistent storage (HUB_STORAGE_PATH)
-	QueryTimeout      time.Duration // Timeout for Hugr GraphQL queries (HUGR_QUERY_TIMEOUT)
-	SubscriptionPool  int           // Max WebSocket connections for subscriptions (HUB_SUBSCRIPTION_POOL_MAX)
-	LogLevel          slog.Level
+
+	// Agent spawn contract (spec-agent-orchestration §3) — the remote-mode env
+	// the DockerRuntime bakes into every agent container.
+	//
+	// AgentHugrURL is hugr's BASE url AS SEEN FROM THE AGENT NETWORK (NO /ipc —
+	// hugen appends it). It differs from HugrURL (hub's own view): on macOS dev
+	// the agent reaches the host via host.docker.internal. Empty falls back to
+	// HugrURL with /ipc trimmed (correct only when hub and agents share a view).
+	AgentHugrURL string // HUB_AGENT_HUGR_URL
+	// AgentHugrIssuer is the user-token issuer hugen's API verifies against
+	// (same issuer hugr trusts). Boot-fatal in hugen if empty — Start refuses to
+	// spawn without it.
+	AgentHugrIssuer string // HUB_AGENT_HUGR_ISSUER
+	// AgentTokenURL is the /agent/token URL the container redeems its bootstrap
+	// secret at (→ HUGR_TOKEN_URL). Empty derives it listener-aware from
+	// InternalURL / AgentTokenListen (see HubApp.agentTokenURL).
+	AgentTokenURL string // HUB_AGENT_TOKEN_URL
+	// AgentPublishAPI publishes each agent's API port on an ephemeral host port
+	// (dev only; prod-forbidden — agents are reached container-network-only).
+	AgentPublishAPI bool // HUB_AGENT_PUBLISH_API
+	// Per-agent resource caps applied when agent_type.config.orchestration omits
+	// them (0 = unlimited).
+	AgentMemoryBytes int64 // HUB_AGENT_MEMORY_BYTES
+	AgentNanoCPUs    int64 // HUB_AGENT_NANO_CPUS
+	AgentPidsLimit   int64 // HUB_AGENT_PIDS_LIMIT
+
+	RedisURL         string        // Redis URL for per-user rate limiting (required)
+	StoragePath      string        // Root directory for persistent storage (HUB_STORAGE_PATH)
+	QueryTimeout     time.Duration // Timeout for Hugr GraphQL queries (HUGR_QUERY_TIMEOUT)
+	SubscriptionPool int           // Max WebSocket connections for subscriptions (HUB_SUBSCRIPTION_POOL_MAX)
+	LogLevel         slog.Level
 }
 
 func LoadConfig() Config {
 	cfg := Config{
-		HugrURL:       envOrDefault("HUGR_URL", "http://localhost:15004"),
-		HugrSecretKey: envOrDefault("HUGR_SECRET_KEY", ""),
-		ListenAddr:    envOrDefault("HUB_SERVICE_LISTEN", ":10000"),
-		FlightAddr:    envOrDefault("HUB_SERVICE_FLIGHT", ":10001"),
-		DatabaseDSN:      envOrDefault("HUB_DATABASE_DSN", "postgres://hugr:hugr_password@localhost:18032/hub"),
-		AgentDatabaseDSN: envOrDefault("HUB_AGENT_DATABASE_DSN", "postgres://hugr:hugr_password@localhost:18032/agent"),
-		AgentEmbedder:    envOrDefault("HUB_AGENT_EMBEDDER", "gemma-embedding"),
-		AgentVectorSize:  envInt("HUB_AGENT_VECTOR_SIZE", 768),
+		HugrURL:           envOrDefault("HUGR_URL", "http://localhost:15004"),
+		HugrSecretKey:     envOrDefault("HUGR_SECRET_KEY", ""),
+		ListenAddr:        envOrDefault("HUB_SERVICE_LISTEN", ":10000"),
+		FlightAddr:        envOrDefault("HUB_SERVICE_FLIGHT", ":10001"),
+		DatabaseDSN:       envOrDefault("HUB_DATABASE_DSN", "postgres://hugr:hugr_password@localhost:18032/hub"),
+		AgentDatabaseDSN:  envOrDefault("HUB_AGENT_DATABASE_DSN", "postgres://hugr:hugr_password@localhost:18032/agent"),
+		AgentEmbedder:     envOrDefault("HUB_AGENT_EMBEDDER", "gemma-embedding"),
+		AgentVectorSize:   envInt("HUB_AGENT_VECTOR_SIZE", 768),
 		AgentJWTKeyFile:   envOrDefault("HUB_AGENT_JWT_KEY", ""),
 		AgentJWTIssuer:    envOrDefault("HUB_AGENT_JWT_ISSUER", "hub-agents"),
 		AgentTokenTTL:     envDuration("HUB_AGENT_TOKEN_TTL", 30*time.Minute),
 		AgentBootstrapTTL: envDuration("HUB_AGENT_BOOTSTRAP_TTL", 10*time.Minute),
 		AgentTokenListen:  envOrDefault("HUB_AGENT_TOKEN_LISTEN", ""),
-		InternalURL:   envOrDefault("HUB_SERVICE_INTERNAL_URL", "http://hub-service:8082"),
-		RedisURL:      envOrDefault("HUB_REDIS_URL", "redis://localhost:6379/0"),
-		StoragePath:   envOrDefault("HUB_STORAGE_PATH", "/var/hub-storage"),
-		QueryTimeout:     envDuration("HUGR_QUERY_TIMEOUT", 5*time.Minute),
-		SubscriptionPool: envInt("HUB_SUBSCRIPTION_POOL_MAX", 20),
+		AgentHugrURL:      envOrDefault("HUB_AGENT_HUGR_URL", ""),
+		AgentHugrIssuer:   envOrDefault("HUB_AGENT_HUGR_ISSUER", ""),
+		AgentTokenURL:     envOrDefault("HUB_AGENT_TOKEN_URL", ""),
+		AgentPublishAPI:   envBool("HUB_AGENT_PUBLISH_API", false),
+		AgentMemoryBytes:  envInt64("HUB_AGENT_MEMORY_BYTES", 0),
+		AgentNanoCPUs:     envInt64("HUB_AGENT_NANO_CPUS", 0),
+		AgentPidsLimit:    envInt64("HUB_AGENT_PIDS_LIMIT", 0),
+		InternalURL:       envOrDefault("HUB_SERVICE_INTERNAL_URL", "http://hub-service:8082"),
+		RedisURL:          envOrDefault("HUB_REDIS_URL", "redis://localhost:6379/0"),
+		StoragePath:       envOrDefault("HUB_STORAGE_PATH", "/var/hub-storage"),
+		QueryTimeout:      envDuration("HUGR_QUERY_TIMEOUT", 5*time.Minute),
+		SubscriptionPool:  envInt("HUB_SUBSCRIPTION_POOL_MAX", 20),
 	}
 
 	switch os.Getenv("LOG_LEVEL") {
@@ -110,4 +144,32 @@ func envDuration(key string, def time.Duration) time.Duration {
 		}
 	}
 	return def
+}
+
+func envInt64(key string, def int64) int64 {
+	if v := os.Getenv(key); v != "" {
+		var n int64
+		// Accept an explicit 0 (a valid "unlimited" value); only a negative or
+		// unparseable value falls back to the default.
+		if _, err := fmt.Sscanf(v, "%d", &n); err == nil && n >= 0 {
+			return n
+		}
+	}
+	return def
+}
+
+// envBool reads a boolean env var. True values: 1, t, true, yes, on
+// (case-insensitive); anything else (including unset) yields def when unset, or
+// false when set to a non-true value.
+func envBool(key string, def bool) bool {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "t", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }

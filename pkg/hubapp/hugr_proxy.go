@@ -13,7 +13,7 @@ import (
 //
 // Route: /hugr (registered in app.go)
 // Method: POST (GraphQL query/mutation in JSON body)
-// Auth: Bearer token (OIDC JWT or AGENT_TOKEN) — resolved by auth middleware
+// Auth: Bearer token (user OIDC JWT) or x-hugr-secret-key — resolved by auth middleware
 func (a *HubApp) hugrProxyHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {

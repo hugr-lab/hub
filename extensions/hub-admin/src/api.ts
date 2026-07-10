@@ -241,7 +241,7 @@ export async function deleteCatalogSource(name: string): Promise<void> {
 export async function linkCatalog(catalogName: string, dataSourceName: string): Promise<void> {
   await hugrQuery(
     `mutation($data: core_catalogs_mut_input_data!) {
-      core { insert_catalogs(data: $data) { catalog_name } }
+      core { insert_catalogs(data: $data) { affected_rows success message } }
     }`,
     { data: { catalog_name: catalogName, data_source_name: dataSourceName } },
   );

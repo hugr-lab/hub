@@ -69,9 +69,6 @@ func (a *HubApp) handleMyAgentInstances(w *app.Result, r *app.Request) error {
 	}
 	ctx := withIdentity(r.Context(), u)
 
-	// Ensure personal agent exists for this user (lazy creation).
-	a.ensurePersonalAgent(ctx, u.ID, u.Name, u.Role)
-
 	type row struct {
 		id, agentTypeID, displayName, hugrRole, accessRole string
 	}
@@ -79,13 +76,16 @@ func (a *HubApp) handleMyAgentInstances(w *app.Result, r *app.Request) error {
 
 	// Only engine-internal management auth lists everything. Everyone else —
 	// including OIDC users whose deployment calls them "admin" — goes through
-	// hub.db.user_agents grants. Cross-user listing for the admin panel is
-	// done via direct `hub.db.agents` queries that Hugr RBAC gates.
+	// hub.db.user_agents grants. The management-auth branch lists the whole Agent
+	// DB (hub.agent.db.agents); Hugr RBAC gates the principal.
 	if u.AuthType == "management" {
+		// Identity canon is the Agent DB (hub.agent.db.agents), NOT the legacy
+		// platform hub.db.agents duplicate (dropped in HB6). name/role map to the
+		// display_name/hugr_role columns this table function exposes.
 		res, err := a.client.Query(ctx,
-			`{ hub { db { agents {
-				id agent_type_id display_name hugr_role
-			} } } }`, nil,
+			`{ hub { agent { db { agents {
+				id agent_type_id name role
+			} } } } }`, nil,
 		)
 		if err != nil {
 			return fmt.Errorf("list agents: %w", err)
@@ -97,20 +97,24 @@ func (a *HubApp) handleMyAgentInstances(w *app.Result, r *app.Request) error {
 		var agents []struct {
 			ID          string `json:"id"`
 			AgentTypeID string `json:"agent_type_id"`
-			DisplayName string `json:"display_name"`
-			HugrRole    string `json:"hugr_role"`
+			Name        string `json:"name"`
+			Role        string `json:"role"`
 		}
-		if err := res.ScanData("hub.db.agents", &agents); err != nil && !isNoData(err) {
+		if err := res.ScanData("hub.agent.db.agents", &agents); err != nil && !isNoData(err) {
 			return fmt.Errorf("scan agents: %w", err)
 		}
 		for _, ag := range agents {
-			rows = append(rows, row{ag.ID, ag.AgentTypeID, ag.DisplayName, ag.HugrRole, "admin"})
+			rows = append(rows, row{ag.ID, ag.AgentTypeID, ag.Name, ag.Role, "admin"})
 		}
 	} else {
+		// The `agent` field is the cross-source @join (graph.graphql) from the
+		// platform grant into the Agent DB identity — LIST-typed (single element),
+		// so scan a slice and take the first. Grants pointing at a deleted agent
+		// (empty join) are skipped. name/role → display_name/hugr_role columns.
 		res, err := a.client.Query(ctx,
 			`query($uid: String!) { hub { db { user_agents(
 				filter: { user_id: { eq: $uid } }
-			) { role agent { id agent_type_id display_name hugr_role } } } } }`,
+			) { role agent { id agent_type_id name role } } } } }`,
 			map[string]any{"uid": u.ID},
 		)
 		if err != nil {
@@ -122,25 +126,29 @@ func (a *HubApp) handleMyAgentInstances(w *app.Result, r *app.Request) error {
 		}
 		var access []struct {
 			Role  string `json:"role"`
-			Agent struct {
+			Agent []struct {
 				ID          string `json:"id"`
 				AgentTypeID string `json:"agent_type_id"`
-				DisplayName string `json:"display_name"`
-				HugrRole    string `json:"hugr_role"`
+				Name        string `json:"name"`
+				Role        string `json:"role"`
 			} `json:"agent"`
 		}
 		if err := res.ScanData("hub.db.user_agents", &access); err != nil && !isNoData(err) {
 			return fmt.Errorf("scan user_agents: %w", err)
 		}
 		for _, ua := range access {
-			rows = append(rows, row{ua.Agent.ID, ua.Agent.AgentTypeID, ua.Agent.DisplayName, ua.Agent.HugrRole, ua.Role})
+			if len(ua.Agent) == 0 {
+				continue // grant to a deleted agent — no identity to show
+			}
+			ag := ua.Agent[0]
+			rows = append(rows, row{ag.ID, ag.AgentTypeID, ag.Name, ag.Role, ua.Role})
 		}
 	}
 
 	for _, rr := range rows {
 		status := "stopped"
-		if a.agentMgr != nil {
-			st := a.agentMgr.AgentStatus(rr.id)
+		if a.dockerRuntime != nil {
+			st := a.dockerRuntime.Status(rr.id)
 			if st.Status != "" {
 				status = st.Status
 			}

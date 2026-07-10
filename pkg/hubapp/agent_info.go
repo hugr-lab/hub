@@ -56,66 +56,22 @@ func (a *HubApp) handleAgentInfo(w *app.Result, r *app.Request) error {
 	}
 	aid := u.ID // agent principal: user_id == agent_id (D11)
 
-	// Resolve the calling agent's row as the hub-service's OWN principal — do
-	// NOT impersonate the agent (no withIdentity). The lookup is already
-	// self-scoped: aid is the authenticated agent id (JWT sub, via AuthUserID),
-	// which the caller cannot spoof, so a service-principal read filtered by
-	// aid returns exactly the calling agent's row — equivalent in security to
-	// an impersonated read. Impersonating here also FAILS: the agent's hugr
-	// role denies core.* (HB3 RLS floor), and the engine's impersonation
-	// perm-load then trips "impersonation failed: original role ...: forbidden".
-	ctx := r.Context()
-
-	// Read the agent + its type from the Agent DB and merge configs. A DB-level
-	// failure (query / result / scan) PROPAGATES as an error — it must not be
-	// misreported as "agent not registered"; only a genuinely empty result is.
-	res, err := a.client.Query(ctx,
-		`query($aid: String!) { hub { agent { db { agents(
-			filter: { id: { eq: $aid } } limit: 1
-		) { id agent_type_id short_id name status config_override agent_type { config } } } } } }`,
-		map[string]any{"aid": aid},
-	)
+	// Resolve the calling agent's row via the shared service-principal reader (do
+	// NOT impersonate the agent — its hugr role is denied the Agent DB by the HB3
+	// RLS floor). The lookup is self-scoped: aid is the authenticated agent id
+	// (JWT sub, unspoofable), so a service-principal read filtered by aid returns
+	// exactly the calling agent's row. readAgentRecord propagates real query/scan
+	// errors and returns "not found" only on a genuinely empty result.
+	rec, err := a.readAgentRecord(r.Context(), aid)
 	if err != nil {
-		return fmt.Errorf("agent_info: Agent DB lookup failed for %q: %w", aid, err)
+		return fmt.Errorf("agent_info: %w", err)
 	}
-	defer res.Close()
-	if res.Err() != nil {
-		return fmt.Errorf("agent_info: Agent DB query error for %q: %w", aid, res.Err())
-	}
-	var agents []struct {
-		ID             string         `json:"id"`
-		AgentTypeID    string         `json:"agent_type_id"`
-		ShortID        string         `json:"short_id"`
-		Name           string         `json:"name"`
-		Status         string         `json:"status"`
-		ConfigOverride map[string]any `json:"config_override"`
-		AgentType      struct {
-			Config map[string]any `json:"config"`
-		} `json:"agent_type"`
-	}
-	if scanErr := res.ScanData("hub.agent.db.agents", &agents); scanErr != nil {
-		return fmt.Errorf("agent_info: scan agents for %q: %w", aid, scanErr)
-	}
-	if len(agents) > 0 {
-		ag := agents[0]
-		merged := make(map[string]any, len(ag.AgentType.Config)+len(ag.ConfigOverride))
-		for k, v := range ag.AgentType.Config { // base: the type's config
-			merged[k] = v
-		}
-		for k, v := range ag.ConfigOverride { // per-instance override wins
-			merged[k] = v
-		}
-		return w.SetJSON(map[string]any{
-			"id":            ag.ID,
-			"agent_type_id": ag.AgentTypeID,
-			"short_id":      ag.ShortID,
-			"name":          ag.Name,
-			"status":        ag.Status,
-			"config":        merged,
-		})
-	}
-
-	// Not found — config lives only in hub.agent.db; there is no file fallback.
-	// Registration (deferred) seeds the row.
-	return fmt.Errorf("agent_info: agent %q not registered in hub.agent.db", aid)
+	return w.SetJSON(map[string]any{
+		"id":            rec.ID,
+		"agent_type_id": rec.AgentTypeID,
+		"short_id":      rec.ShortID,
+		"name":          rec.Name,
+		"status":        rec.Status,
+		"config":        rec.Config,
+	})
 }

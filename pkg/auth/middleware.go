@@ -8,14 +8,20 @@ import (
 
 // AuthConfig configures the auth middleware.
 type AuthConfig struct {
-	SecretKey      string // x-hugr-secret-key for management auth
-	JWTValidator   *JWTValidator
-	AgentValidator *AgentTokenValidator
-	Logger         *slog.Logger
+	SecretKey    string // x-hugr-secret-key for management auth
+	JWTValidator *JWTValidator
+	Logger       *slog.Logger
 }
 
-// Middleware authenticates requests via secret key, JWT, or agent token.
-// Sets UserInfo in context. Skips /health endpoint.
+// Middleware authenticates requests via secret key or user OIDC JWT. Sets
+// UserInfo in context. Skips /health endpoint.
+//
+// NOTE (O3): the legacy in-memory agent-token path is gone — spawned agents
+// talk to hugr directly (they never present a token to hub-service HTTP), and
+// /agent/token is self-authenticating (body token IS the credential). Any
+// FUTURE agent-facing hub endpoint (e.g. hub-mcp) must verify agent JWTs
+// against the agent-token issuer's OWN public key — the user-OIDC JWKS branch
+// below cannot validate hub-minted agent tokens.
 func Middleware(next http.Handler, cfg AuthConfig) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Skip health check and the agent token endpoints — /agent/token is
@@ -48,10 +54,9 @@ func Middleware(next http.Handler, cfg AuthConfig) http.Handler {
 			return
 		}
 
-		// 2. Bearer token (JWT or agent token)
+		// 2. Bearer token (user OIDC JWT)
 		bearer := extractBearer(r)
 		if bearer != "" {
-			// Try JWT first
 			if IsJWT(bearer) && cfg.JWTValidator != nil {
 				user, err := cfg.JWTValidator.Validate(bearer)
 				if err == nil {
@@ -61,19 +66,6 @@ func Middleware(next http.Handler, cfg AuthConfig) http.Handler {
 				}
 				if cfg.Logger != nil {
 					cfg.Logger.Warn("JWT validation failed", "error", err)
-				}
-			}
-
-			// Try agent token
-			if !IsJWT(bearer) && cfg.AgentValidator != nil {
-				user, err := cfg.AgentValidator.Validate(r.Context(), bearer)
-				if err == nil {
-					ctx := ContextWithUser(r.Context(), *user)
-					next.ServeHTTP(w, r.WithContext(ctx))
-					return
-				}
-				if cfg.Logger != nil {
-					cfg.Logger.Warn("agent token validation failed", "error", err)
 				}
 			}
 		}
