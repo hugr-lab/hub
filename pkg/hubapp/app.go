@@ -32,7 +32,9 @@ type HubApp struct {
 	server        *http.Server
 	tokenServer   *http.Server // dedicated /agent/token listener (HUB_AGENT_TOKEN_LISTEN), nil in shared mode
 	dockerRuntime *agentmgr.DockerRuntime
-	agentMgr      *agentmgr.Manager
+
+	supervisor       *supervisor        // desired-state reconcile loop (spec §4); nil when Docker is absent
+	supervisorCancel context.CancelFunc // stops the supervisor goroutine on Shutdown
 }
 
 func New(cfg Config, logger *slog.Logger, c *client.Client) *HubApp {
@@ -287,7 +289,6 @@ func (a *HubApp) Init(ctx context.Context) error {
 	// Agent management — DockerRuntime is initialized in Catalog() (if Docker available).
 	if a.dockerRuntime != nil {
 		a.dockerRuntime.Reconstruct(ctx)
-		a.agentMgr = agentmgr.NewManager(a.dockerRuntime, a.client, a.logger)
 		// The spawn-secret minter wraps the agent-token issuer, wired below —
 		// inject it now so Start can mint-at-spawn. Without the issuer, Start
 		// fails loudly (an agent cannot boot without a redeemable secret).
@@ -296,6 +297,11 @@ func (a *HubApp) Init(ctx context.Context) error {
 		} else {
 			a.logger.Warn("agent secret minter disabled (HUB_AGENT_JWT_KEY not set) — agents cannot be spawned")
 		}
+		// Desired-state supervisor (spec §4): reconcile managed containers to
+		// agents.status on a tick + on start/stop_agent kicks. With Reconstruct()
+		// above, active agents revive after a hub restart. Started after the minter
+		// so its first pass can spawn.
+		a.startSupervisor()
 	}
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -331,25 +337,18 @@ func (a *HubApp) Init(ctx context.Context) error {
 		a.logger.Warn("agent token issuer disabled (HUB_AGENT_JWT_KEY not set) — agents cannot refresh tokens")
 	}
 
-	// Auth middleware — validates JWT, agent tokens, or secret key
+	// Auth middleware — validates the user OIDC JWT or the management secret key.
+	// Agents never present a token to this HTTP surface (they talk to hugr
+	// directly; /agent/token is self-authenticating), so the legacy agent-token
+	// validator is gone (O3). See the note in pkg/auth/middleware.go.
 	hugrBase := strings.TrimSuffix(a.config.HugrURL, "/ipc")
 	jwksProvider := auth.NewJWKSProvider(hugrBase)
 	jwtValidator := auth.NewJWTValidator(jwksProvider)
 
-	// Agent token validator — uses AgentRuntime.ValidateToken (O(1) in-memory)
-	var validateFunc func(string) (string, bool)
-	if a.dockerRuntime != nil {
-		validateFunc = a.dockerRuntime.ValidateToken
-	} else {
-		validateFunc = func(string) (string, bool) { return "", false }
-	}
-	agentValidator := auth.NewAgentTokenValidator(a.client, validateFunc)
-
 	handler := auth.Middleware(mux, auth.AuthConfig{
-		SecretKey:      a.config.HugrSecretKey,
-		JWTValidator:   jwtValidator,
-		AgentValidator: agentValidator,
-		Logger:         a.logger,
+		SecretKey:    a.config.HugrSecretKey,
+		JWTValidator: jwtValidator,
+		Logger:       a.logger,
 	})
 
 	a.server = &http.Server{Addr: a.config.ListenAddr, Handler: handler}
@@ -365,6 +364,9 @@ func (a *HubApp) Init(ctx context.Context) error {
 
 func (a *HubApp) Shutdown(ctx context.Context) error {
 	a.logger.Info("hub app shutting down")
+	if a.supervisorCancel != nil {
+		a.supervisorCancel()
+	}
 	if a.tokenServer != nil {
 		if err := a.tokenServer.Shutdown(ctx); err != nil && err != http.ErrServerClosed {
 			a.logger.Warn("agent token listener shutdown", "error", err)

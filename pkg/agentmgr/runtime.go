@@ -97,9 +97,6 @@ type AgentRuntime interface {
 	// Status returns the current runtime state for an agent.
 	Status(agentID string) RuntimeState
 
-	// ValidateToken checks if token belongs to a running agent.
-	ValidateToken(token string) (agentID string, ok bool)
-
 	// ListRunning returns runtime state for all currently running agents.
 	ListRunning() []RuntimeState
 }
@@ -127,8 +124,7 @@ type RuntimeState struct {
 	DisplayName string    `json:"display_name"`
 	AgentTypeID string    `json:"agent_type_id"`
 	ContainerID string    `json:"container_id"`
-	AuthToken   string    `json:"-"`                   // never expose in API (legacy — dies in O3)
 	HostPort    string    `json:"host_port,omitempty"` // published API host port (HUB_AGENT_PUBLISH_API only)
-	Status      string    `json:"status"`              // starting, running, error, stopped
+	Status      string    `json:"status"`              // starting, running, unhealthy, error, stopped
 	StartedAt   time.Time `json:"started_at"`
 }

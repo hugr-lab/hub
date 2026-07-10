@@ -33,7 +33,7 @@ func (a *HubApp) registerAgentMutations() error {
 		app.ArgFromContext("auth_type", app.String, app.AuthType),
 		app.Return(agentRuntimeStateType()),
 		app.Mutation(),
-		app.Desc("Start an agent container. Returns the new runtime state {id, status, container_id}. Requires owner access on the agent (or admin)."),
+		app.Desc("Start an agent: set desired status='active' and converge (the supervisor spawns the container). Returns the runtime state {id, status, container_id}. Fails if the agent is admin-'disabled'. Requires owner access (or admin)."),
 	); err != nil {
 		return err
 	}
@@ -46,7 +46,7 @@ func (a *HubApp) registerAgentMutations() error {
 		app.ArgFromContext("auth_type", app.String, app.AuthType),
 		app.Return(agentRuntimeStateType()),
 		app.Mutation(),
-		app.Desc("Stop a running agent container. Returns the resulting runtime state {id, status='stopped', container_id=''}. Requires owner access (or admin)."),
+		app.Desc("Stop an agent: set desired status='paused' and converge (the supervisor removes the container). Returns {id, status='paused', container_id=''}. Fails if the agent is admin-'disabled'. Requires owner access (or admin)."),
 	); err != nil {
 		return err
 	}
@@ -67,7 +67,11 @@ func (a *HubApp) registerAgentMutations() error {
 	return nil
 }
 
-// handleStartAgent looks up agent identity from DB and starts a container via DockerRuntime.
+// handleStartAgent is an owner-gated desired-state WRITER: it flips agents.status
+// to 'active' and kicks an immediate converge (spec §4). The supervisor owns the
+// actual Start; the kick makes the effect immediate so the response reflects the
+// running container. An admin-disabled agent cannot be resurrected here — only
+// update_agent (admin) leaves 'disabled'.
 func (a *HubApp) handleStartAgent(w *app.Result, r *app.Request) error {
 	u := userFromArgs(r)
 	if err := requireUser(u); err != nil {
@@ -87,32 +91,43 @@ func (a *HubApp) handleStartAgent(w *app.Result, r *app.Request) error {
 		return err
 	}
 
-	// The spawn itself is a PRIVILEGED hub operation: read the agent catalog and
-	// mint/start as the service principal, NOT impersonating the caller. A
-	// non-admin owner's hugr role is denied the Agent DB by the HB3 RLS floor, so
-	// an impersonated read returns 0 rows ("not found"). agent_info reads
-	// un-impersonated for exactly this reason; the access check above already
-	// gated the caller.
+	// Everything below is a PRIVILEGED hub op — read/write the Agent DB as the
+	// service principal (admin, RLS-exempt), NOT impersonating the caller: a
+	// non-admin owner's role is denied the Agent DB by the HB3 RLS floor.
 	svcCtx := r.Context()
 
 	rec, err := a.readAgentRecord(svcCtx, agentID)
 	if err != nil {
-		return fmt.Errorf("lookup agent: %w", err)
+		return fmt.Errorf("start agent: %w", err)
 	}
-	identity, err := agentIdentityFromRecord(rec)
-	if err != nil {
-		return fmt.Errorf("lookup agent: %w", err)
+	if rec.Status == "disabled" {
+		return fmt.Errorf("agent %q is disabled; an administrator must re-enable it (update_agent status=active)", agentID)
 	}
 
-	if err := a.dockerRuntime.Start(svcCtx, identity); err != nil {
-		return fmt.Errorf("start agent: %w", err)
+	if rec.Status != "active" {
+		if err := a.updateAgentIdentity(svcCtx, agentID, map[string]any{"status": "active"}); err != nil {
+			return fmt.Errorf("start agent: set status active: %w", err)
+		}
+	}
+
+	// Converge now. Prefer the supervisor kick (single owner of container
+	// lifecycle); fall back to a direct Start only if Docker is up but the
+	// supervisor somehow isn't (defensive — startSupervisor runs whenever
+	// dockerRuntime != nil).
+	if a.supervisor != nil {
+		a.supervisor.kick(svcCtx, agentID, "active")
+	} else {
+		identity, err := agentIdentityFromRecord(rec)
+		if err != nil {
+			return fmt.Errorf("start agent: %w", err)
+		}
+		if err := a.dockerRuntime.Start(svcCtx, identity); err != nil {
+			return fmt.Errorf("start agent: %w", err)
+		}
 	}
 
 	state := a.dockerRuntime.Status(agentID)
-	containerShort := state.ContainerID
-	if len(containerShort) > 12 {
-		containerShort = containerShort[:12]
-	}
+	containerShort := shortID(state.ContainerID)
 	a.logger.Info("agent started via mutation", "agent", agentID, "container", containerShort, "by", u.ID)
 	return w.SetJSON(map[string]any{
 		"id":           agentID,
@@ -121,7 +136,10 @@ func (a *HubApp) handleStartAgent(w *app.Result, r *app.Request) error {
 	})
 }
 
-// handleStopAgent stops an agent container via DockerRuntime.
+// handleStopAgent is an owner-gated desired-state WRITER: it flips agents.status
+// to 'paused' and kicks a converge that stops the container (spec §4). It refuses
+// to touch an admin-'disabled' agent — otherwise an owner could stop→paused then
+// start→active and bypass an admin revocation.
 func (a *HubApp) handleStopAgent(w *app.Result, r *app.Request) error {
 	u := userFromArgs(r)
 	if err := requireUser(u); err != nil {
@@ -135,20 +153,35 @@ func (a *HubApp) handleStopAgent(w *app.Result, r *app.Request) error {
 		return fmt.Errorf("docker runtime unavailable")
 	}
 
-	ctx := withIdentity(r.Context(), u)
-
-	if err := a.checkAgentAccess(ctx, u, agentID, "owner"); err != nil {
+	if err := a.checkAgentAccess(withIdentity(r.Context(), u), u, agentID, "owner"); err != nil {
 		return err
 	}
 
-	if err := a.dockerRuntime.Stop(ctx, agentID); err != nil {
+	// Privileged Agent-DB read/write as the service principal (RLS-exempt).
+	svcCtx := r.Context()
+	rec, err := a.readAgentRecord(svcCtx, agentID)
+	if err != nil {
 		return fmt.Errorf("stop agent: %w", err)
+	}
+	if rec.Status == "disabled" {
+		return fmt.Errorf("agent %q is disabled; only an administrator can change its run state", agentID)
+	}
+
+	if rec.Status != "paused" {
+		if err := a.updateAgentIdentity(svcCtx, agentID, map[string]any{"status": "paused"}); err != nil {
+			return fmt.Errorf("stop agent: set status paused: %w", err)
+		}
+	}
+	if a.supervisor != nil {
+		a.supervisor.kick(svcCtx, agentID, "paused")
+	} else {
+		_ = a.dockerRuntime.Stop(svcCtx, agentID)
 	}
 
 	a.logger.Info("agent stopped via mutation", "agent", agentID, "by", u.ID)
 	return w.SetJSON(map[string]any{
 		"id":           agentID,
-		"status":       "stopped",
+		"status":       "paused",
 		"container_id": "",
 	})
 }
@@ -163,34 +196,29 @@ func (a *HubApp) handleDeleteAgent(w *app.Result, r *app.Request) error {
 		return fmt.Errorf("agent_id is required")
 	}
 
-	ctx := withIdentity(r.Context(), u)
-
-	if err := a.requireAdmin(ctx, u); err != nil {
+	// The admin gate impersonates the caller to evaluate their capability.
+	if err := a.requireAdmin(withIdentity(r.Context(), u), u); err != nil {
 		return err
 	}
 
-	// Stop runtime (idempotent — no error if not running)
+	// Everything below is a PRIVILEGED hub op — read/write the Agent DB + stop the
+	// container as the service principal (admin, RLS-exempt), NOT impersonating the
+	// caller: a non-admin owner's role is denied the Agent DB by the HB3 RLS floor.
+	svcCtx := r.Context()
+
+	// Stop the runtime first (idempotent — no error if not running).
 	if a.dockerRuntime != nil {
-		_ = a.dockerRuntime.Stop(ctx, agentID)
+		_ = a.dockerRuntime.Stop(svcCtx, agentID)
 	}
 
-	// Delete user_agents grants
-	// Note: conversations.agent_id FK is ON DELETE SET NULL — no need to
-	// detach conversations manually, the DB nullifies them on agent delete.
-	if accessRes, err := a.client.Query(ctx,
-		`mutation($aid: String!) { hub { db { delete_user_agents(
-			filter: { agent_id: { eq: $aid } }
-		) { affected_rows } } } }`,
-		map[string]any{"aid": agentID},
-	); err == nil {
-		accessRes.Close()
-	}
-
-	// Delete agent identity
-	delRes, err := a.client.Query(ctx,
-		`mutation($id: String!) { hub { db { delete_agents(
+	// Delete the identity from the AGENT DB (hub.agent.db.agents, the canon) — NOT
+	// the platform hub.db.agents duplicate. Deleting the platform row left the real
+	// identity alive, so /agent/token kept minting and the supervisor would keep
+	// reviving the container (the bug the O2 smoke exposed live).
+	delRes, err := a.client.Query(svcCtx,
+		`mutation($id: String!) { hub { agent { db { delete_agents(
 			filter: { id: { eq: $id } }
-		) { affected_rows } } } }`,
+		) { affected_rows } } } } }`,
 		map[string]any{"id": agentID},
 	)
 	if err != nil {
@@ -199,6 +227,25 @@ func (a *HubApp) handleDeleteAgent(w *app.Result, r *app.Request) error {
 	defer delRes.Close()
 	if delRes.Err() != nil {
 		return fmt.Errorf("delete agent: %w", delRes.Err())
+	}
+
+	// Delete the owner grants — user_agents lives in the platform Hub DB
+	// (hub.db.user_agents), not the Agent DB. chats.agent_id FK is ON DELETE SET
+	// NULL, so chat threads detach themselves.
+	if accessRes, err := a.client.Query(svcCtx,
+		`mutation($aid: String!) { hub { db { delete_user_agents(
+			filter: { agent_id: { eq: $aid } }
+		) { affected_rows } } } }`,
+		map[string]any{"aid": agentID},
+	); err == nil {
+		accessRes.Close()
+	}
+
+	// Best-effort: invalidate any unconsumed bootstrap secrets so a stale spawn
+	// credential can never be redeemed after deletion (belt-and-suspenders — a
+	// deleted agent's secret already 403s at agentForToken since the row is gone).
+	if err := a.invalidatePriorBootstrapSecrets(svcCtx, agentID); err != nil {
+		a.logger.Warn("delete agent: invalidate bootstrap secrets failed (non-fatal)", "agent", agentID, "error", err)
 	}
 
 	a.logger.Info("agent deleted via mutation", "agent", agentID, "by", u.ID)
@@ -282,6 +329,16 @@ func (a *HubApp) readAgentRecord(ctx context.Context, agentID string) (agentReco
 		Role:        row.Role,
 		Config:      merged,
 	}, nil
+}
+
+// agentIdentity reads an agent's record (service principal) and derives its
+// container spawn identity. Shared by start_agent and the supervisor.
+func (a *HubApp) agentIdentity(ctx context.Context, agentID string) (agentmgr.AgentIdentity, error) {
+	rec, err := a.readAgentRecord(ctx, agentID)
+	if err != nil {
+		return agentmgr.AgentIdentity{}, err
+	}
+	return agentIdentityFromRecord(rec)
 }
 
 // agentIdentityFromRecord derives the container spawn identity (image + resource

@@ -6,8 +6,8 @@ package hubapp
 // handlers_agent.go, which drive the container): these own the DB identity.
 //
 //   create_agent   insert identity + optional owner grant + mint bootstrap → boot
-//   update_agent   admin edit of name / role / status / config_override
-//   disable_agent  revoke: status='paused' (token gate denies within one TTL) + stop
+//   update_agent   admin edit of name / role / status / config_override (only exit from 'disabled')
+//   disable_agent  admin revoke: status='disabled' (token gate denies within one TTL) + stop
 //
 // Agents are NEVER self-created — agent_info stays resolve-only (a container
 // minting its own identity is privilege escalation). Provisioning is an admin
@@ -35,6 +35,16 @@ import (
 const agentIDPattern = "^[a-z0-9][a-z0-9-]{0,40}$"
 
 var agentIDRe = regexp.MustCompile(agentIDPattern)
+
+// validAgentStatus reports whether s is a valid agents.status desired state
+// (spec §4): active / paused (owner run-state) or disabled (admin revocation).
+func validAgentStatus(s string) bool {
+	switch s {
+	case "active", "paused", "disabled":
+		return true
+	}
+	return false
+}
 
 // agentProvisionType is what create_agent returns: the new identity plus a
 // one-shot bootstrap secret for its first /agent/token exchange. The secret is
@@ -116,7 +126,7 @@ func (a *HubApp) registerProvisioningMutations() error {
 		app.ArgFromContext("auth_type", app.String, app.AuthType),
 		app.Return(agentIdentityType()),
 		app.Mutation(),
-		app.Desc("Revoke an agent: set status='paused' (its next /agent/token refresh is denied within one token TTL) and stop its container if running. Reverse via update_agent status='active'. Admin only."),
+		app.Desc("Revoke an agent (admin): set status='disabled' (its next /agent/token refresh is denied within one token TTL) and stop its container. An owner cannot reverse this — only update_agent status='active' can. Admin only."),
 	); err != nil {
 		return err
 	}
@@ -248,6 +258,12 @@ func (a *HubApp) handleUpdateAgent(w *app.Result, r *app.Request) error {
 		data["role"] = v
 	}
 	if v := strings.TrimSpace(r.String("status")); v != "" {
+		// update_agent is the only free-form status writer and the ONLY exit from
+		// 'disabled' (spec §4) — reject typos that would brick an agent (the
+		// supervisor treats an unknown desired status as a no-op).
+		if !validAgentStatus(v) {
+			return fmt.Errorf("invalid status %q: must be one of active, paused, disabled", v)
+		}
 		data["status"] = v
 	}
 	var configOverride map[string]any
@@ -281,8 +297,10 @@ func (a *HubApp) handleUpdateAgent(w *app.Result, r *app.Request) error {
 	})
 }
 
-// handleDisableAgent revokes an agent: flips status to 'paused' (the next
-// /agent/token refresh is denied within one token TTL) and stops its container.
+// handleDisableAgent is the ADMIN revocation: it flips status to 'disabled' (the
+// next /agent/token refresh is denied within one token TTL) and converges the
+// container down. Unlike owner stop_agent (→ 'paused'), only update_agent (admin)
+// can leave 'disabled' (spec §4), so an owner cannot un-revoke.
 func (a *HubApp) handleDisableAgent(w *app.Result, r *app.Request) error {
 	u := userFromArgs(r)
 	if err := requireUser(u); err != nil {
@@ -302,14 +320,17 @@ func (a *HubApp) handleDisableAgent(w *app.Result, r *app.Request) error {
 		return err
 	}
 
-	if err := a.updateAgentIdentity(ctx, agentID, map[string]any{"status": "paused"}); err != nil {
+	svcCtx := r.Context()
+	if err := a.updateAgentIdentity(svcCtx, agentID, map[string]any{"status": "disabled"}); err != nil {
 		return fmt.Errorf("disable agent: %w", err)
 	}
 
-	// Stop the container so a paused agent stops consuming resources. Idempotent
-	// — no error if it is not running.
-	if a.dockerRuntime != nil {
-		_ = a.dockerRuntime.Stop(ctx, agentID)
+	// Stop the container now (its next token refresh is already denied by the
+	// status gate; stopping frees resources immediately). Idempotent.
+	if a.supervisor != nil {
+		a.supervisor.kick(svcCtx, agentID, "disabled")
+	} else if a.dockerRuntime != nil {
+		_ = a.dockerRuntime.Stop(svcCtx, agentID)
 	}
 
 	a.logger.Info("agent disabled", "agent", agentID, "by", u.ID)
@@ -317,7 +338,7 @@ func (a *HubApp) handleDisableAgent(w *app.Result, r *app.Request) error {
 		"id":     info.ID,
 		"name":   info.Name,
 		"role":   info.Role,
-		"status": "paused",
+		"status": "disabled",
 	})
 }
 

@@ -23,9 +23,8 @@ const agentAPIPort = "10200/tcp"
 // DockerRuntime manages agent containers via Docker API.
 // Runtime state lives in memory maps, reconstructed on startup.
 type DockerRuntime struct {
-	mu         sync.RWMutex
-	states     map[string]*RuntimeState // agentID → state
-	tokenIndex map[string]string        // token → agentID (legacy ADK path — dies in O3)
+	mu     sync.RWMutex
+	states map[string]*RuntimeState // agentID → state
 
 	docker     *dockerclient.Client
 	cfg        RuntimeConfig
@@ -43,11 +42,10 @@ func NewDockerRuntime(cfg RuntimeConfig, logger *slog.Logger) (*DockerRuntime, e
 		return nil, fmt.Errorf("docker client: %w", err)
 	}
 	rt := &DockerRuntime{
-		states:     make(map[string]*RuntimeState),
-		tokenIndex: make(map[string]string),
-		docker:     cli,
-		cfg:        cfg,
-		logger:     logger,
+		states: make(map[string]*RuntimeState),
+		docker: cli,
+		cfg:    cfg,
+		logger: logger,
 	}
 	return rt, nil
 }
@@ -137,7 +135,7 @@ func (rt *DockerRuntime) Start(ctx context.Context, agent AgentIdentity) error {
 		}
 	}
 
-	containerName := fmt.Sprintf("hub-agent-%s", agent.ID)
+	containerName := containerNameFor(agent.ID)
 	// Remove any stale container with the same name (a prior crashed spawn).
 	_ = rt.docker.ContainerRemove(ctx, containerName, container.RemoveOptions{Force: true})
 
@@ -271,16 +269,6 @@ func (rt *DockerRuntime) Status(agentID string) RuntimeState {
 	return RuntimeState{AgentID: agentID, Status: "stopped"}
 }
 
-// ValidateToken is the legacy ADK in-memory token check; tokenIndex is no longer
-// populated (agents authenticate via the user-token/JWT flow). Kept until the O3
-// legacy sweep removes the auth-middleware wiring that references it.
-func (rt *DockerRuntime) ValidateToken(token string) (string, bool) {
-	rt.mu.RLock()
-	defer rt.mu.RUnlock()
-	agentID, ok := rt.tokenIndex[token]
-	return agentID, ok
-}
-
 func (rt *DockerRuntime) ListRunning() []RuntimeState {
 	rt.mu.RLock()
 	defer rt.mu.RUnlock()
@@ -289,6 +277,96 @@ func (rt *DockerRuntime) ListRunning() []RuntimeState {
 		result = append(result, *s)
 	}
 	return result
+}
+
+// Observation is a point-in-time view of an agent's managed container, read via
+// ContainerInspect on every supervisor tick. It is the source of truth the
+// in-memory states map is NOT — states mutates only on Start/Stop, so it cannot
+// see a crash, a restart loop, or an unhealthy healthcheck. Health is the raw
+// Docker healthcheck status ("", "none", "starting", "healthy", "unhealthy").
+type Observation struct {
+	Present      bool   // a container named hub-agent-<id> exists (any state)
+	Running      bool   // State.Running
+	Restarting   bool   // State.Restarting (mid restart-policy bounce)
+	Health       string // State.Health.Status ("" when the image declares no healthcheck / not yet reported)
+	RestartCount int    // daemon restart counter — grows while a crash loop bounces the container
+}
+
+// Observe inspects the agent's managed container by name. A missing container is
+// NOT an error — it yields Present:false so the desired-state loop decides to
+// Start rather than treating absence as a failure.
+func (rt *DockerRuntime) Observe(ctx context.Context, agentID string) (Observation, error) {
+	insp, err := rt.docker.ContainerInspect(ctx, containerNameFor(agentID))
+	if err != nil {
+		if dockerclient.IsErrNotFound(err) {
+			return Observation{Present: false}, nil
+		}
+		return Observation{}, err
+	}
+	obs := Observation{Present: true, RestartCount: insp.RestartCount}
+	if insp.State != nil {
+		obs.Running = insp.State.Running
+		obs.Restarting = insp.State.Restarting
+		if insp.State.Health != nil {
+			obs.Health = insp.State.Health.Status
+		}
+	}
+	return obs, nil
+}
+
+// ManagedRef identifies a hub-managed container by its agent id — what the
+// supervisor diffs against the Agent-DB agent set to find orphans.
+type ManagedRef struct {
+	AgentID     string
+	ContainerID string
+	Running     bool
+}
+
+// ListManaged returns every container carrying the hub.managed label (including
+// exited ones). The supervisor subtracts the live Agent-DB agent set to find
+// orphans — managed containers whose identity row is gone (e.g. a deleted agent).
+func (rt *DockerRuntime) ListManaged(ctx context.Context) ([]ManagedRef, error) {
+	containers, err := rt.docker.ContainerList(ctx, container.ListOptions{
+		All:     true,
+		Filters: filters.NewArgs(filters.Arg("label", "hub.managed=true")),
+	})
+	if err != nil {
+		return nil, err
+	}
+	refs := make([]ManagedRef, 0, len(containers))
+	for _, c := range containers {
+		id := c.Labels["hub.agent-id"]
+		if id == "" {
+			continue
+		}
+		refs = append(refs, ManagedRef{AgentID: id, ContainerID: c.ID, Running: c.State == "running"})
+	}
+	return refs, nil
+}
+
+// Remove force-removes the agent's container (by name) and drops its in-memory
+// state. Used to evict an orphan (no Agent-DB row) and to clear a stuck/unhealthy
+// container before a fresh recreate (Start's running-guard would otherwise no-op
+// on a still-"running" but unhealthy container). Idempotent — a missing
+// container is not an error.
+func (rt *DockerRuntime) Remove(ctx context.Context, agentID string) error {
+	rt.mu.Lock()
+	delete(rt.states, agentID)
+	rt.mu.Unlock()
+	if err := rt.docker.ContainerRemove(ctx, containerNameFor(agentID), container.RemoveOptions{Force: true}); err != nil {
+		if dockerclient.IsErrNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+// containerNameFor is the single derivation of an agent's container name — also
+// its DNS host on the agent network. agent_id is validated at create_agent
+// (^[a-z0-9][a-z0-9-]{0,40}$) so this is always a safe Docker name / DNS label.
+func containerNameFor(agentID string) string {
+	return "hub-agent-" + agentID
 }
 
 // firstHostPort returns the first host-side port bound to the given container
