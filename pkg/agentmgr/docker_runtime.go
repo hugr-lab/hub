@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -83,11 +84,23 @@ func (rt *DockerRuntime) Reconstruct(ctx context.Context) {
 		if c.State != "running" {
 			status = "stopped"
 		}
+		// Recover the published API host port (dev publish flag) — without it a
+		// hub restart would silently downgrade APIBaseURL to the in-network DNS
+		// name, unreachable from a dev host.
+		hostPort := ""
+		for _, p := range c.Ports {
+			if p.PublicPort != 0 && string(p.Type) == "tcp" &&
+				strconv.Itoa(int(p.PrivatePort)) == nat.Port(agentAPIPort).Port() {
+				hostPort = strconv.Itoa(int(p.PublicPort))
+				break
+			}
+		}
 		state := &RuntimeState{
 			AgentID:     agentID,
 			DisplayName: c.Labels["hub.agent-name"],
 			AgentTypeID: c.Labels["hub.agent-type"],
 			ContainerID: c.ID,
+			HostPort:    hostPort,
 			Status:      status,
 			StartedAt:   time.Unix(c.Created, 0),
 		}
@@ -374,6 +387,26 @@ func (rt *DockerRuntime) Remove(ctx context.Context, agentID string) error {
 // (^[a-z0-9][a-z0-9-]{0,40}$) so this is always a safe Docker name / DNS label.
 func containerNameFor(agentID string) string {
 	return "hub-agent-" + agentID
+}
+
+// APIBaseURL resolves the dial target for the agent's HTTP API from the local
+// state cache: the published host port when the container has one
+// (HUB_AGENT_PUBLISH_API — the hub runs on the host), else the container-name
+// DNS on the agent network (compose/prod — the hub is a container on the same
+// network; a dev host without the publish flag gets a connection error the
+// gateway maps downstream). A stopped container still resolves — the dial
+// failure carries the real signal.
+func (rt *DockerRuntime) APIBaseURL(agentID string) (string, error) {
+	rt.mu.RLock()
+	st, ok := rt.states[agentID]
+	rt.mu.RUnlock()
+	if !ok {
+		return "", fmt.Errorf("agent %q: no container", agentID)
+	}
+	if st.HostPort != "" {
+		return "http://127.0.0.1:" + st.HostPort, nil
+	}
+	return "http://" + containerNameFor(agentID) + ":" + nat.Port(agentAPIPort).Port(), nil
 }
 
 // firstHostPort returns the first host-side port bound to the given container

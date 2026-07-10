@@ -118,6 +118,13 @@ type AgentRuntime interface {
 	// the supervisor's orphan sweep compares this against the desired Agent-DB set.
 	ListManaged(ctx context.Context) ([]ManagedRef, error)
 
+	// APIBaseURL returns the dialable base URL of the agent's HTTP API — the
+	// gateway's dial target (spec-hub-gateway §6). The runtime resolves it from
+	// its own topology (published host port in dev, in-network DNS in prod, a
+	// Service address on k8s later); the gateway never learns orchestrator
+	// details. Error when the runtime holds no container for the agent.
+	APIBaseURL(agentID string) (string, error)
+
 	// SetSecretMinter injects the bootstrap-secret minter called at each spawn.
 	SetSecretMinter(m SecretMinter)
 
