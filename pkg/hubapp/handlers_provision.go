@@ -25,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hugr-lab/hub/pkg/auth"
 	"github.com/hugr-lab/query-engine/client/app"
 )
 
@@ -424,7 +425,9 @@ func (a *HubApp) updateAgentIdentity(ctx context.Context, agentID string, data m
 // grantAgentOwner ensures the user row exists (FK) then writes an owner grant in
 // the platform DB. Best-effort: logged, never fatal to provisioning.
 func (a *HubApp) grantAgentOwner(ctx context.Context, userID, agentID string) {
-	a.ensureUser(ctx, userID, "")
+	if err := a.ensureUser(ctx, auth.UserInfo{ID: userID}); err != nil {
+		a.logger.Warn("grant agent owner: user provision failed", "user", userID, "error", err)
+	}
 	res, err := a.client.Query(ctx,
 		`mutation($uid: String!, $aid: String!) {
 			hub { db { insert_user_agents(data: {

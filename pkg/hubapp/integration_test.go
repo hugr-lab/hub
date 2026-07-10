@@ -74,7 +74,9 @@ func TestIntegration_EnsureUser(t *testing.T) {
 	skipIfNoHugr(t)
 	userID := fmt.Sprintf("test-user-%d", time.Now().UnixNano())
 	app, ctx := testClient(t, userID)
-	app.ensureUser(ctx, userID, "user")
+	if err := app.ensureUser(ctx, auth.UserInfo{ID: userID, Role: "user"}); err != nil {
+		t.Fatalf("ensureUser: %v", err)
+	}
 
 	// Verify user exists
 	res, err := app.client.Query(ctx,

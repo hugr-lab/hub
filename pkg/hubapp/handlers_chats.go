@@ -27,6 +27,12 @@ import (
 
 const chatTitleDefault = "New Chat"
 
+// keysetMargin bounds the extra rows my_chats over-fetches to skip the
+// boundary group of a keyset page (equal last_active_at timestamps). More
+// than keysetMargin chats bumped in the same microsecond is not a real
+// workload; a page may come back short in that pathology, never duplicated.
+const keysetMargin = 100
+
 // chatProjection is the single column list every chat read uses.
 const chatProjection = `id project_id user_id agent_id title root_session_id created_at updated_at last_active_at archived_at`
 
@@ -219,9 +225,10 @@ func (a *HubApp) registerChatFunctions() error {
 	accessOpts := append(identityArgs(),
 		app.Arg("agent_id", app.String),
 		app.ColPK("user_id_grant", app.String),
+		app.Col("user_name", app.String),
 		app.Col("access_role", app.String),
 		app.Col("created_at", app.String),
-		app.Desc("List the users granted access to an agent. Admin only."),
+		app.Desc("List the users granted access to an agent (user_name from the users registry; a stub grant shows the id until first login). Admin only."),
 	)
 	return a.mux.HandleTableFunc("default", "agent_access", a.handleAgentAccess, accessOpts...)
 }
@@ -299,16 +306,24 @@ func (a *HubApp) handleMyChats(w *app.Result, r *app.Request) error {
 		filter["title"] = map[string]any{"like": "%" + v + "%"}
 	}
 	// Keyset page: everything strictly after (before_active_at, before_id) in
-	// (last_active_at DESC, id DESC) order.
+	// (last_active_at DESC, id DESC) order. hugr's StringFilter has no ordering
+	// ops, so the id tie-break cannot live in the SQL filter: fetch `lte` the
+	// boundary time with a margin and skip the at-or-before-boundary rows here.
 	bt := strings.TrimSpace(r.String("before_active_at"))
 	bi := strings.TrimSpace(r.String("before_id"))
-	if bt != "" && bi != "" {
-		filter["_or"] = []any{
-			map[string]any{"last_active_at": map[string]any{"lt": bt}},
-			map[string]any{
-				"last_active_at": map[string]any{"eq": bt},
-				"id":             map[string]any{"lt": bi},
-			},
+	var btT time.Time
+	fetchLimit := limit
+	if bt != "" {
+		var err error
+		btT, err = time.Parse(time.RFC3339Nano, bt)
+		if err != nil {
+			return fmt.Errorf("before_active_at %q is not RFC3339: %w", bt, err)
+		}
+		if bi != "" {
+			filter["last_active_at"] = map[string]any{"lte": bt}
+			fetchLimit = limit + keysetMargin
+		} else {
+			filter["last_active_at"] = map[string]any{"lt": bt}
 		}
 	}
 
@@ -319,7 +334,7 @@ func (a *HubApp) handleMyChats(w *app.Result, r *app.Request) error {
 				order_by: [{field: "last_active_at", direction: DESC}, {field: "id", direction: DESC}],
 				limit: $limit
 			) { `+chatProjection+` } } } }`,
-		map[string]any{"filter": filter, "limit": limit},
+		map[string]any{"filter": filter, "limit": fetchLimit},
 	)
 	if err != nil {
 		return fmt.Errorf("list chats: %w", err)
@@ -332,13 +347,23 @@ func (a *HubApp) handleMyChats(w *app.Result, r *app.Request) error {
 	if err := res.ScanData("hub.db.chats", &rows); err != nil && !isNoData(err) {
 		return fmt.Errorf("scan chats: %w", err)
 	}
+	emitted := 0
 	for _, c := range rows {
+		// Boundary skip: rows sharing the page-key timestamp whose id sorts
+		// at-or-before before_id (DESC) belong to the previous page.
+		if bi != "" && c.LastActiveAt.Equal(btT) && c.ID >= bi {
+			continue
+		}
 		if err := w.Append(
 			c.ID, strPtrOrNil(c.ProjectID), c.UserID, c.AgentID, c.Title,
 			strPtrOrNil(c.RootSessionID), fmtTime(c.CreatedAt), fmtTime(c.UpdatedAt),
 			fmtTime(c.LastActiveAt), fmtTimePtr(c.ArchivedAt),
 		); err != nil {
 			return err
+		}
+		emitted++
+		if emitted == limit {
+			break
 		}
 	}
 	return nil
@@ -363,6 +388,12 @@ func (a *HubApp) handleCreateChat(w *app.Result, r *app.Request) error {
 	// And the agent identity must exist (a grant may outlive a deleted agent).
 	if _, err := a.agentForToken(ctx, agentID); err != nil {
 		return fmt.Errorf("agent %q: %w", agentID, err)
+	}
+
+	// First touch may be the user's first entry — provision the users row from
+	// the token (chats.user_id FK target).
+	if err := a.ensureUser(ctx, u); err != nil {
+		return err
 	}
 
 	projectID := strings.TrimSpace(r.String("project_id"))
@@ -543,6 +574,9 @@ func (a *HubApp) handleCreateProject(w *app.Result, r *app.Request) error {
 	if name == "" {
 		return errors.New("name is required")
 	}
+	if err := a.ensureUser(r.Context(), u); err != nil {
+		return err
+	}
 	id := newProjectID()
 	res, err := a.client.Query(r.Context(),
 		`mutation($data: hub_db_projects_mut_input_data!) {
@@ -647,8 +681,9 @@ func (a *HubApp) handleGrantAgentAccess(w *app.Result, r *app.Request) error {
 	if role != "member" && role != "owner" {
 		return fmt.Errorf("access_role %q is invalid: member | owner", role)
 	}
-	// The user row must exist (FK) — fail with a clear message.
-	if err := a.userExists(ctx, userID); err != nil {
+	// The grant may precede the user's first login — lazily provision a stub
+	// users row (FK target); their first authenticated call upgrades the name.
+	if err := a.ensureUser(ctx, auth.UserInfo{ID: userID}); err != nil {
 		return err
 	}
 	if _, err := a.agentForToken(ctx, agentID); err != nil {
@@ -714,7 +749,9 @@ func (a *HubApp) handleAgentAccess(w *app.Result, r *app.Request) error {
 	}
 	res, err := a.client.Query(ctx,
 		`query($aid: String!) {
-			hub { db { user_agents(filter: { agent_id: { eq: $aid } }) { user_id role created_at } } } }`,
+			hub { db { user_agents(filter: { agent_id: { eq: $aid } }) {
+				user_id role created_at user { display_name }
+			} } } }`,
 		map[string]any{"aid": agentID},
 	)
 	if err != nil {
@@ -830,31 +867,6 @@ func (a *HubApp) updateChatRow(ctx context.Context, id string, data map[string]a
 	defer res.Close()
 	if res.Err() != nil {
 		return fmt.Errorf("update chat: %w", res.Err())
-	}
-	return nil
-}
-
-// userExists verifies a hub.db.users row (grant target).
-func (a *HubApp) userExists(ctx context.Context, userID string) error {
-	res, err := a.client.Query(ctx,
-		`query($id: String!) { hub { db { users(filter: { id: { eq: $id } }, limit: 1) { id } } } }`,
-		map[string]any{"id": userID},
-	)
-	if err != nil {
-		return fmt.Errorf("user lookup: %w", err)
-	}
-	defer res.Close()
-	if res.Err() != nil {
-		return fmt.Errorf("user lookup: %w", res.Err())
-	}
-	var rows []struct {
-		ID string `json:"id"`
-	}
-	if err := res.ScanData("hub.db.users", &rows); err != nil && !isNoData(err) {
-		return fmt.Errorf("user lookup: %w", err)
-	}
-	if len(rows) == 0 {
-		return fmt.Errorf("user %q not found", userID)
 	}
 	return nil
 }
