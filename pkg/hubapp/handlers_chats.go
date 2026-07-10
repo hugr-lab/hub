@@ -34,16 +34,27 @@ const chatProjection = `id project_id user_id agent_id title root_session_id cre
 // my_chats hands last_active_at/id back to the client as the opaque-enough
 // keyset page key.
 type chatRow struct {
-	ID            string  `json:"id"`
-	ProjectID     *string `json:"project_id"`
-	UserID        string  `json:"user_id"`
-	AgentID       string  `json:"agent_id"`
-	Title         string  `json:"title"`
-	RootSessionID *string `json:"root_session_id"`
-	CreatedAt     string  `json:"created_at"`
-	UpdatedAt     string  `json:"updated_at"`
-	LastActiveAt  string  `json:"last_active_at"`
-	ArchivedAt    *string `json:"archived_at"`
+	ID            string     `json:"id"`
+	ProjectID     *string    `json:"project_id"`
+	UserID        string     `json:"user_id"`
+	AgentID       string     `json:"agent_id"`
+	Title         string     `json:"title"`
+	RootSessionID *string    `json:"root_session_id"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
+	LastActiveAt  time.Time  `json:"last_active_at"`
+	ArchivedAt    *time.Time `json:"archived_at"`
+}
+
+// fmtTime / fmtTimePtr render row timestamps for the string-typed function
+// columns (the Flight scan yields time.Time; strings would fail the scan).
+func fmtTime(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
+
+func fmtTimePtr(t *time.Time) string {
+	if t == nil {
+		return ""
+	}
+	return fmtTime(*t)
 }
 
 func newChatID() string    { return "ch-" + randHex(9) }
@@ -324,8 +335,8 @@ func (a *HubApp) handleMyChats(w *app.Result, r *app.Request) error {
 	for _, c := range rows {
 		if err := w.Append(
 			c.ID, strPtrOrNil(c.ProjectID), c.UserID, c.AgentID, c.Title,
-			strPtrOrNil(c.RootSessionID), c.CreatedAt, c.UpdatedAt,
-			c.LastActiveAt, strPtrOrNil(c.ArchivedAt),
+			strPtrOrNil(c.RootSessionID), fmtTime(c.CreatedAt), fmtTime(c.UpdatedAt),
+			fmtTime(c.LastActiveAt), fmtTimePtr(c.ArchivedAt),
 		); err != nil {
 			return err
 		}
@@ -487,8 +498,8 @@ type projectRow struct {
 	ID          string `json:"id"`
 	OwnerUserID string `json:"owner_user_id"`
 	Name        string `json:"name"`
-	CreatedAt   string `json:"created_at"`
-	UpdatedAt   string `json:"updated_at"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 func (a *HubApp) handleMyProjects(w *app.Result, r *app.Request) error {
@@ -516,7 +527,7 @@ func (a *HubApp) handleMyProjects(w *app.Result, r *app.Request) error {
 		return fmt.Errorf("scan projects: %w", err)
 	}
 	for _, p := range rows {
-		if err := w.Append(p.ID, p.OwnerUserID, p.Name, p.CreatedAt, p.UpdatedAt); err != nil {
+		if err := w.Append(p.ID, p.OwnerUserID, p.Name, fmtTime(p.CreatedAt), fmtTime(p.UpdatedAt)); err != nil {
 			return err
 		}
 	}
@@ -716,13 +727,13 @@ func (a *HubApp) handleAgentAccess(w *app.Result, r *app.Request) error {
 	var rows []struct {
 		UserID    string `json:"user_id"`
 		Role      string `json:"role"`
-		CreatedAt string `json:"created_at"`
+		CreatedAt time.Time `json:"created_at"`
 	}
 	if err := res.ScanData("hub.db.user_agents", &rows); err != nil && !isNoData(err) {
 		return fmt.Errorf("scan access: %w", err)
 	}
 	for _, g := range rows {
-		if err := w.Append(g.UserID, g.Role, g.CreatedAt); err != nil {
+		if err := w.Append(g.UserID, g.Role, fmtTime(g.CreatedAt)); err != nil {
 			return err
 		}
 	}
@@ -871,7 +882,7 @@ func chatJSON(c chatRow) map[string]any {
 		"id": c.ID, "project_id": deref(c.ProjectID), "user_id": c.UserID,
 		"agent_id": c.AgentID, "title": c.Title,
 		"root_session_id": deref(c.RootSessionID),
-		"created_at":      c.CreatedAt, "updated_at": c.UpdatedAt,
-		"last_active_at": c.LastActiveAt, "archived_at": deref(c.ArchivedAt),
+		"created_at":      fmtTime(c.CreatedAt), "updated_at": fmtTime(c.UpdatedAt),
+		"last_active_at": fmtTime(c.LastActiveAt), "archived_at": fmtTimePtr(c.ArchivedAt),
 	}
 }
