@@ -160,27 +160,27 @@ func (s *supervisor) reconcileAgent(ctx context.Context, agentID, desired string
 
 	switch decide(desired, obs, tr, time.Now()) {
 	case actStart:
-		if err := s.app.startContainer(ctx, agentID); err != nil {
-			s.app.logger.Warn("supervisor: start failed", "agent", agentID, "error", err)
+		switch s.spawn(ctx, agentID) {
+		case spawnStarted:
+			s.app.logger.Info("supervisor: started agent", "agent", agentID)
+			resetBackoff(tr)
+		case spawnFailed:
 			bumpBackoff(tr, time.Now())
-			return
+		case spawnSkipped:
+			// Desired changed / agent gone under us — the next tick reconciles
+			// reality; not a failure, so no backoff.
 		}
-		s.app.logger.Info("supervisor: started agent", "agent", agentID)
-		resetBackoff(tr)
 
 	case actRecreate:
 		s.app.logger.Warn("supervisor: recreating agent", "agent", agentID,
 			"restart_count", obs.RestartCount, "unhealthy_streak", tr.unhealthyStreak, "health", obs.Health)
-		if err := rt.Remove(ctx, agentID); err != nil {
-			s.app.logger.Warn("supervisor: recreate remove failed", "agent", agentID, "error", err)
-		}
 		// Fresh window after a deliberate teardown (streak already reset by decide).
 		tr.windowStart = time.Time{}
-		if err := s.app.startContainer(ctx, agentID); err != nil {
-			s.app.logger.Warn("supervisor: recreate start failed", "agent", agentID, "error", err)
+		if s.spawn(ctx, agentID) != spawnSkipped {
+			// A recreate attempt (started OR failed) costs a backoff step; a
+			// healthy next tick resets it. A skip (desired changed) does not.
+			bumpBackoff(tr, time.Now())
 		}
-		// A recreate always costs a backoff step; a healthy next tick resets it.
-		bumpBackoff(tr, time.Now())
 
 	case actStop:
 		s.app.logger.Info("supervisor: stopping agent", "agent", agentID, "desired", desired)
@@ -190,6 +190,52 @@ func (s *supervisor) reconcileAgent(ctx context.Context, agentID, desired string
 
 	case actNone:
 	}
+}
+
+// spawnResult is the outcome of spawn().
+type spawnResult int
+
+const (
+	spawnStarted spawnResult = iota // a fresh container was created
+	spawnFailed                     // Start attempted but errored → back off
+	spawnSkipped                    // desired changed / agent gone → no-op, no back off
+)
+
+// spawn (re)creates the agent's container. It guards against two traps the
+// review surfaced:
+//
+//   - STALE DESIRED (M1 / the delete race): the tick's snapshot and a kick's
+//     desired can both be stale by the time we act. Re-read the LIVE status and
+//     skip if it is no longer 'active' or the agent is gone — a concurrent
+//     stop/disable/delete must not be overridden by a spurious start.
+//   - STALE STATE (C1): DockerRuntime.Start's idempotency guard trusts the
+//     in-memory states cache, which Observe has already shown to be wrong (e.g. a
+//     `docker rm` left states[id]=="running"). Remove() first clears that cache
+//     entry (and any exited carcass) so Start actually creates a fresh container.
+func (s *supervisor) spawn(ctx context.Context, agentID string) spawnResult {
+	info, err := s.app.agentForToken(ctx, agentID)
+	if err != nil {
+		if errors.Is(err, errAgentNotRegistered) {
+			s.app.logger.Info("supervisor: skip spawn — agent no longer registered", "agent", agentID)
+		} else {
+			s.app.logger.Warn("supervisor: skip spawn — status re-read failed", "agent", agentID, "error", err)
+		}
+		return spawnSkipped
+	}
+	if info.Status != "active" {
+		s.app.logger.Info("supervisor: skip spawn — desired no longer active", "agent", agentID, "status", info.Status)
+		return spawnSkipped
+	}
+	// Clear stale in-memory state + any exited carcass so Start's running-guard
+	// cannot no-op on a container Observe already reported absent/exited.
+	if err := s.app.dockerRuntime.Remove(ctx, agentID); err != nil {
+		s.app.logger.Warn("supervisor: pre-spawn remove failed", "agent", agentID, "error", err)
+	}
+	if err := s.app.startContainer(ctx, agentID); err != nil {
+		s.app.logger.Warn("supervisor: spawn start failed", "agent", agentID, "error", err)
+		return spawnFailed
+	}
+	return spawnStarted
 }
 
 // decide advances the per-agent state machine for one observation and returns the

@@ -105,8 +105,22 @@ func (a *HubApp) handleStartAgent(w *app.Result, r *app.Request) error {
 	}
 
 	if rec.Status != "active" {
-		if err := a.updateAgentIdentity(svcCtx, agentID, map[string]any{"status": "active"}); err != nil {
+		// Conditional flip — setAgentRunState only writes from an owner-writable
+		// state (active/paused), NEVER from 'disabled'. This makes the transition
+		// atomic against a concurrent admin disable_agent: an owner cannot
+		// reactivate a revoked agent by racing the read→write window (spec §4
+		// authority invariant).
+		if err := a.setAgentRunState(svcCtx, agentID, "active"); err != nil {
 			return fmt.Errorf("start agent: set status active: %w", err)
+		}
+		// hugr reports affected_rows unreliably, so confirm by re-read: a disable
+		// that raced our write leaves the row 'disabled' (the filter dropped it).
+		after, err := a.agentForToken(svcCtx, agentID)
+		if err != nil {
+			return fmt.Errorf("start agent: %w", err)
+		}
+		if after.Status == "disabled" {
+			return fmt.Errorf("agent %q was disabled concurrently; an administrator must re-enable it", agentID)
 		}
 	}
 
@@ -168,7 +182,10 @@ func (a *HubApp) handleStopAgent(w *app.Result, r *app.Request) error {
 	}
 
 	if rec.Status != "paused" {
-		if err := a.updateAgentIdentity(svcCtx, agentID, map[string]any{"status": "paused"}); err != nil {
+		// Conditional flip (see setAgentRunState) — the filter excludes a
+		// 'disabled' row, so an owner stop can never move a revoked agent to
+		// 'paused' (which would then be owner-startable), even under a race.
+		if err := a.setAgentRunState(svcCtx, agentID, "paused"); err != nil {
 			return fmt.Errorf("stop agent: set status paused: %w", err)
 		}
 	}
@@ -246,6 +263,13 @@ func (a *HubApp) handleDeleteAgent(w *app.Result, r *app.Request) error {
 	// deleted agent's secret already 403s at agentForToken since the row is gone).
 	if err := a.invalidatePriorBootstrapSecrets(svcCtx, agentID); err != nil {
 		a.logger.Warn("delete agent: invalidate bootstrap secrets failed (non-fatal)", "agent", agentID, "error", err)
+	}
+
+	// Drop supervisor tracking. The orphan sweep only forgets agents whose
+	// container it removes, so a deleted agent with no running container (e.g. a
+	// paused one) would otherwise leak its agentTrack forever.
+	if a.supervisor != nil {
+		a.supervisor.forget(agentID)
 	}
 
 	a.logger.Info("agent deleted via mutation", "agent", agentID, "by", u.ID)
@@ -329,6 +353,28 @@ func (a *HubApp) readAgentRecord(ctx context.Context, agentID string) (agentReco
 		Role:        row.Role,
 		Config:      merged,
 	}, nil
+}
+
+// setAgentRunState flips an agent's run-state to target ('active' or 'paused')
+// ONLY when it is currently an owner-writable state — the filter status ∈
+// {active,paused} EXCLUDES a 'disabled' row, so an owner start/stop can never
+// reactivate or alter an admin-revoked agent, even under a read→write race
+// (spec §4 authority invariant). hugr reports affected_rows unreliably (postgres
+// source quirk), so a caller that needs certainty re-reads the status.
+func (a *HubApp) setAgentRunState(ctx context.Context, agentID, target string) error {
+	res, err := a.client.Query(ctx,
+		`mutation($id: String!, $data: hub_agent_db_agents_mut_data!) {
+			hub { agent { db { update_agents(
+				filter: { id: { eq: $id }, status: { in: ["active", "paused"] } }
+				data: $data
+			) { affected_rows } } } } }`,
+		map[string]any{"id": agentID, "data": map[string]any{"status": target}},
+	)
+	if err != nil {
+		return err
+	}
+	defer res.Close()
+	return res.Err()
 }
 
 // agentIdentity reads an agent's record (service principal) and derives its
