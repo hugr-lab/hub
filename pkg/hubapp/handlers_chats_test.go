@@ -37,14 +37,31 @@ func TestNewChatProjectIDs(t *testing.T) {
 
 func TestChatJSONDerefsNilPointers(t *testing.T) {
 	got := chatJSON(chatRow{ID: "ch-x", UserID: "u1", AgentID: "a1", Title: "t"})
-	for _, k := range []string{"project_id", "root_session_id", "archived_at"} {
+	for _, k := range []string{"project_id", "root_session_id"} {
 		if got[k] != "" {
 			t.Fatalf("%s = %v, want empty string for nil column", k, got[k])
 		}
+	}
+	if got["archived"] != false {
+		t.Fatalf("archived = %v, want false", got["archived"])
 	}
 	p := "prj-1"
 	got = chatJSON(chatRow{ID: "ch-x", ProjectID: &p})
 	if got["project_id"] != "prj-1" {
 		t.Fatalf("project_id = %v, want prj-1", got["project_id"])
+	}
+}
+
+func TestLikeEscape(t *testing.T) {
+	cases := map[string]string{
+		`50%`:    `50\%`,
+		`a_c`:    `a\_c`,
+		`back\`: `back\\`,
+		`plain`:  `plain`,
+	}
+	for in, want := range cases {
+		if got := likeEscape(in); got != want {
+			t.Errorf("likeEscape(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

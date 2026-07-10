@@ -34,7 +34,7 @@ const chatTitleDefault = "New Chat"
 const keysetMargin = 100
 
 // chatProjection is the single column list every chat read uses.
-const chatProjection = `id project_id user_id agent_id title root_session_id created_at updated_at last_active_at archived_at`
+const chatProjection = `id project_id user_id agent_id title root_session_id created_at updated_at last_active_at archived`
 
 // chatRow mirrors hub.db.chats. Timestamps stay RFC3339 strings end-to-end —
 // my_chats hands last_active_at/id back to the client as the opaque-enough
@@ -46,21 +46,24 @@ type chatRow struct {
 	AgentID       string     `json:"agent_id"`
 	Title         string     `json:"title"`
 	RootSessionID *string    `json:"root_session_id"`
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
-	LastActiveAt  time.Time  `json:"last_active_at"`
-	ArchivedAt    *time.Time `json:"archived_at"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+	LastActiveAt  time.Time `json:"last_active_at"`
+	// Archived is a plain boolean, NOT an archived_at timestamp: hugr coerces a
+	// null Timestamp mutation value to the zero time instead of SQL NULL
+	// (query-engine ask #9), so "unarchive" could never be expressed.
+	Archived bool `json:"archived"`
 }
 
-// fmtTime / fmtTimePtr render row timestamps for the string-typed function
-// columns (the Flight scan yields time.Time; strings would fail the scan).
+// fmtTime renders row timestamps for the string-typed function columns (the
+// Flight scan yields time.Time; strings would fail the scan).
 func fmtTime(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
 
-func fmtTimePtr(t *time.Time) string {
-	if t == nil {
-		return ""
-	}
-	return fmtTime(*t)
+// likeEscape neutralizes LIKE metacharacters in user input so q is a literal
+// substring match ("50%" must not match everything).
+func likeEscape(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return r.Replace(s)
 }
 
 func newChatID() string    { return "ch-" + randHex(9) }
@@ -98,7 +101,7 @@ func (a *HubApp) registerChatFunctions() error {
 		app.Col("created_at", app.String),
 		app.Col("updated_at", app.String),
 		app.Col("last_active_at", app.String),
-		app.Col("archived_at", app.String),
+		app.Col("archived", app.Boolean),
 	}
 
 	// ── my_chats — keyset-paginated thread list ──
@@ -245,7 +248,7 @@ func chatStructType() app.Type {
 		Field("created_at", app.String).
 		Field("updated_at", app.String).
 		Field("last_active_at", app.String).
-		Field("archived_at", app.String).
+		Field("archived", app.Boolean).
 		AsType()
 }
 
@@ -293,8 +296,8 @@ func (a *HubApp) handleMyChats(w *app.Result, r *app.Request) error {
 	}
 
 	filter := map[string]any{
-		"user_id":     map[string]any{"eq": u.ID},
-		"archived_at": map[string]any{"is_null": !r.Bool("archived")},
+		"user_id":  map[string]any{"eq": u.ID},
+		"archived": map[string]any{"eq": r.Bool("archived")},
 	}
 	if v := strings.TrimSpace(r.String("project_id")); v != "" {
 		filter["project_id"] = map[string]any{"eq": v}
@@ -303,7 +306,7 @@ func (a *HubApp) handleMyChats(w *app.Result, r *app.Request) error {
 		filter["agent_id"] = map[string]any{"eq": v}
 	}
 	if v := strings.TrimSpace(r.String("q")); v != "" {
-		filter["title"] = map[string]any{"like": "%" + v + "%"}
+		filter["title"] = map[string]any{"ilike": "%" + likeEscape(v) + "%"}
 	}
 	// Keyset page: everything strictly after (before_active_at, before_id) in
 	// (last_active_at DESC, id DESC) order. hugr's StringFilter has no ordering
@@ -313,6 +316,9 @@ func (a *HubApp) handleMyChats(w *app.Result, r *app.Request) error {
 	bi := strings.TrimSpace(r.String("before_id"))
 	var btT time.Time
 	fetchLimit := limit
+	if bi != "" && bt == "" {
+		return errors.New("before_id requires before_active_at (pass BOTH fields of the last row)")
+	}
 	if bt != "" {
 		var err error
 		btT, err = time.Parse(time.RFC3339Nano, bt)
@@ -357,7 +363,7 @@ func (a *HubApp) handleMyChats(w *app.Result, r *app.Request) error {
 		if err := w.Append(
 			c.ID, strPtrOrNil(c.ProjectID), c.UserID, c.AgentID, c.Title,
 			strPtrOrNil(c.RootSessionID), fmtTime(c.CreatedAt), fmtTime(c.UpdatedAt),
-			fmtTime(c.LastActiveAt), fmtTimePtr(c.ArchivedAt),
+			fmtTime(c.LastActiveAt), c.Archived,
 		); err != nil {
 			return err
 		}
@@ -365,6 +371,11 @@ func (a *HubApp) handleMyChats(w *app.Result, r *app.Request) error {
 		if emitted == limit {
 			break
 		}
+	}
+	// Pathology guard: if the whole over-fetched window was boundary-skipped,
+	// an empty page would read as end-of-list and strand every older row.
+	if emitted == 0 && bi != "" && len(rows) == fetchLimit {
+		return fmt.Errorf("keyset boundary group exceeds %d rows at %s — narrow the page or contact the operator", fetchLimit, bt)
 	}
 	return nil
 }
@@ -468,9 +479,9 @@ func (a *HubApp) handleUpdateChat(w *app.Result, r *app.Request) error {
 	}
 	switch strings.TrimSpace(strings.ToLower(r.String("archived"))) {
 	case "true":
-		data["archived_at"] = time.Now().UTC().Format(time.RFC3339Nano)
+		data["archived"] = true
 	case "false":
-		data["archived_at"] = nil
+		data["archived"] = false
 	case "":
 		// unchanged
 	default:
@@ -610,7 +621,8 @@ func (a *HubApp) handleUpdateProject(w *app.Result, r *app.Request) error {
 	if name == "" {
 		return errors.New("name is required")
 	}
-	if _, err := a.projectOwned(ctx, u, id); err != nil {
+	proj, err := a.projectOwned(ctx, u, id)
+	if err != nil {
 		return err
 	}
 	res, err := a.client.Query(ctx,
@@ -625,7 +637,9 @@ func (a *HubApp) handleUpdateProject(w *app.Result, r *app.Request) error {
 	if res.Err() != nil {
 		return fmt.Errorf("update project: %w", res.Err())
 	}
-	return w.SetJSON(map[string]any{"id": id, "owner_user_id": u.ID, "name": name})
+	// proj.OwnerUserID, not u.ID — an admin renaming a foreign project must
+	// not be reported as its owner.
+	return w.SetJSON(map[string]any{"id": id, "owner_user_id": proj.OwnerUserID, "name": name})
 }
 
 func (a *HubApp) handleDeleteProject(w *app.Result, r *app.Request) error {
@@ -923,6 +937,6 @@ func chatJSON(c chatRow) map[string]any {
 		"agent_id": c.AgentID, "title": c.Title,
 		"root_session_id": deref(c.RootSessionID),
 		"created_at":      fmtTime(c.CreatedAt), "updated_at": fmtTime(c.UpdatedAt),
-		"last_active_at": fmtTime(c.LastActiveAt), "archived_at": fmtTimePtr(c.ArchivedAt),
+		"last_active_at": fmtTime(c.LastActiveAt), "archived": c.Archived,
 	}
 }
