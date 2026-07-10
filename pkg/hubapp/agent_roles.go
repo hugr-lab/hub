@@ -85,6 +85,22 @@ func platformDenyRows() []schema.RolePermission {
 		// bootstrap-secret mint — admin only (handler also enforces).
 		// function.hub.agent.info stays open — it is the agent identity call.
 		deny("_module_hub_agent_mut_function", "bootstrap_token"),
+
+		// HB5 management plane (handlers_chats.go) — user-facing thread/project
+		// organization + admin access management. The agent reaches platform
+		// capabilities only via the hub MCP tool surface; every one of these is
+		// denied at the floor (handlers also enforce ownership/admin).
+		deny("_module_hub_query", "my_chats"),
+		deny("_module_hub_query", "my_projects"),
+		deny("_module_hub_query", "agent_access"),
+		deny("_module_hub_mut_function", "create_chat"),
+		deny("_module_hub_mut_function", "update_chat"),
+		deny("_module_hub_mut_function", "delete_chat"),
+		deny("_module_hub_mut_function", "create_project"),
+		deny("_module_hub_mut_function", "update_project"),
+		deny("_module_hub_mut_function", "delete_project"),
+		deny("_module_hub_mut_function", "grant_agent_access"),
+		deny("_module_hub_mut_function", "revoke_agent_access"),
 	}
 	// Data-object denies on every PLATFORM type. The `_module_hub_query/db`
 	// deny above only fires on the module-navigation path (`hub.db.*`); a

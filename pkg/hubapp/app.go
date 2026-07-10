@@ -21,7 +21,7 @@ import (
 
 const (
 	appName    = "hub"
-	appVersion = "0.3.2"
+	appVersion = "0.3.3"
 )
 
 type HubApp struct {
