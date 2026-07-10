@@ -150,7 +150,11 @@ func (a *HubApp) proxyToAgent(w http.ResponseWriter, r *http.Request, agentID, b
 			pr.Out.Host = target.Host
 			pr.SetXForwarded()
 			// The inbound Authorization (the user's bearer) survives on pr.Out —
-			// ProxyRequest clones inbound headers minus hop-by-hop.
+			// ProxyRequest clones inbound headers minus hop-by-hop. Hub-side
+			// credentials must NOT: the management secret and the trusted
+			// identity headers stop at the hub (the container trusts only the
+			// bearer it verifies itself).
+			stripHubAuthHeaders(pr.Out.Header)
 		},
 		// Flush every write immediately — SSE frames must not sit in a buffer.
 		FlushInterval: -1,
@@ -164,6 +168,22 @@ func (a *HubApp) proxyToAgent(w http.ResponseWriter, r *http.Request, agentID, b
 		},
 	}
 	rp.ServeHTTP(w, r)
+}
+
+// stripHubAuthHeaders removes hub-side credentials from an outbound proxied
+// request: the management secret key and the secret-key-trusted identity /
+// impersonation headers. Only the user's own bearer may travel downstream (D1).
+func stripHubAuthHeaders(h http.Header) {
+	for _, k := range []string{
+		"X-Hugr-Secret-Key",
+		"X-Hugr-User-Id",
+		"X-Hugr-Role",
+		"X-Hugr-Impersonated-User-Id",
+		"X-Hugr-Impersonated-User-Name",
+		"X-Hugr-Impersonated-Role",
+	} {
+		h.Del(k)
+	}
 }
 
 // checkAccess is the gateway's authz seam — defaults to checkAgentAccess

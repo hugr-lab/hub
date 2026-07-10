@@ -73,6 +73,10 @@ func TestAgentProxy_ForwardsPathQueryAndBearer(t *testing.T) {
 	mux := gatewayTestApp(&fakeRuntime{base: map[string]string{"a1": downstream.URL}}, allowAll)
 
 	req := asUser(httptest.NewRequest("POST", "/api/v1/agents/a1/hugen/v1/sessions/s1/messages?x=1", strings.NewReader(`{"text":"hi"}`)), "u1")
+	// A dev/ops caller authenticates to the HUB with these — they must stop here.
+	req.Header.Set("X-Hugr-Secret-Key", "super-secret")
+	req.Header.Set("X-Hugr-User-Id", "u1")
+	req.Header.Set("X-Hugr-Impersonated-User-Id", "someone")
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
@@ -87,6 +91,11 @@ func TestAgentProxy_ForwardsPathQueryAndBearer(t *testing.T) {
 	}
 	if h := got.Header.Get("Authorization"); h != "Bearer user-token-u1" {
 		t.Fatalf("downstream Authorization = %q — the user bearer must pass verbatim", h)
+	}
+	for _, k := range []string{"X-Hugr-Secret-Key", "X-Hugr-User-Id", "X-Hugr-Impersonated-User-Id"} {
+		if v := got.Header.Get(k); v != "" {
+			t.Fatalf("downstream %s = %q — hub credentials must never reach the container", k, v)
+		}
 	}
 	if got.Header.Get("X-Forwarded-For") == "" {
 		t.Fatal("downstream X-Forwarded-For missing")
