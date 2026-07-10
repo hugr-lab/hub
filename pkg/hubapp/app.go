@@ -38,9 +38,10 @@ type HubApp struct {
 	supervisor       *supervisor        // desired-state reconcile loop (spec §4); nil when Docker is absent
 	supervisorCancel context.CancelFunc // stops the supervisor goroutine on Shutdown
 
-	// accessCheck overrides the gateway's user_agents authz lookup in tests;
-	// nil → checkAgentAccess (gateway.go).
+	// accessCheck / chatLookup override the gateway's authz + chat-read seams
+	// in tests; nil → checkAgentAccess / fetchChat (gateway.go, gateway_chats.go).
 	accessCheck func(ctx context.Context, u auth.UserInfo, agentID string) error
+	chatLookup  func(ctx context.Context, id string) (chatRow, error)
 }
 
 func New(cfg Config, logger *slog.Logger, c *client.Client) *HubApp {
@@ -293,9 +294,10 @@ func (a *HubApp) Init(ctx context.Context) error {
 	mux.HandleFunc("/hugr", a.hugrProxyHandler())
 
 	// HB5 gateway transport plane — raw pass-through to the agent's native
-	// HTTP API (spec-hub-gateway §4). Registered unconditionally; the handler
-	// answers 503 when no agent runtime is wired.
+	// HTTP API + chat-scoped verbs (spec-hub-gateway §4). Registered
+	// unconditionally; handlers answer 503 when no agent runtime is wired.
 	mux.HandleFunc("/api/v1/agents/{id}/hugen/{path...}", a.agentProxyHandler)
+	registerChatTransport(mux, a)
 
 	// Agent management — DockerRuntime is initialized in Catalog() (if Docker available).
 	if a.agentRuntime != nil {

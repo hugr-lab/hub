@@ -867,12 +867,6 @@ func (a *HubApp) deleteUserAgent(ctx context.Context, userID, agentID string) er
 // chatJSON shapes a chatRow for the struct-typed mutation returns (nil
 // pointers become empty strings — the framework has no null struct fields).
 func chatJSON(c chatRow) map[string]any {
-	deref := func(p *string) string {
-		if p == nil {
-			return ""
-		}
-		return *p
-	}
 	return map[string]any{
 		"id": c.ID, "project_id": deref(c.ProjectID), "user_id": c.UserID,
 		"agent_id": c.AgentID, "title": c.Title,

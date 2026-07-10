@@ -57,21 +57,10 @@ func gatewayError(w http.ResponseWriter, status int, code, msg string) {
 
 // agentProxyHandler serves ANY /api/v1/agents/{id}/hugen/{path...}.
 func (a *HubApp) agentProxyHandler(w http.ResponseWriter, r *http.Request) {
-	u, ok := auth.UserFromContext(r.Context())
-	if !ok || u.ID == "" {
-		gatewayError(w, http.StatusUnauthorized, "unauthorized", "no user identity")
+	u, ok := a.gatewayCaller(w, r)
+	if !ok {
 		return
 	}
-
-	// The container authenticates the END USER's own token (D1) — a caller
-	// authenticated by the management secret has nothing to forward.
-	bearer := r.Header.Get("Authorization")
-	if !strings.HasPrefix(bearer, "Bearer ") && !strings.HasPrefix(bearer, "bearer ") {
-		gatewayError(w, http.StatusForbidden, "user_token_required",
-			"the agent transport requires a user bearer token (the management key is never forwarded)")
-		return
-	}
-
 	agentID := r.PathValue("id")
 
 	// Platform-layer authz: user_agents grant, re-checked on every call so a
@@ -82,9 +71,38 @@ func (a *HubApp) agentProxyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	base, ok := a.resolveAgentBase(w, r, agentID)
+	if !ok {
+		return
+	}
+	a.proxyToAgent(w, r, agentID, base, "/"+r.PathValue("path"))
+}
+
+// gatewayCaller authenticates a transport-plane request: an identity from the
+// auth middleware AND a bearer to forward. The container authenticates the END
+// USER's own token (D1) — a caller authenticated by the management secret has
+// nothing to forward.
+func (a *HubApp) gatewayCaller(w http.ResponseWriter, r *http.Request) (auth.UserInfo, bool) {
+	u, ok := auth.UserFromContext(r.Context())
+	if !ok || u.ID == "" {
+		gatewayError(w, http.StatusUnauthorized, "unauthorized", "no user identity")
+		return auth.UserInfo{}, false
+	}
+	bearer := r.Header.Get("Authorization")
+	if !strings.HasPrefix(bearer, "Bearer ") && !strings.HasPrefix(bearer, "bearer ") {
+		gatewayError(w, http.StatusForbidden, "user_token_required",
+			"the agent transport requires a user bearer token (the management key is never forwarded)")
+		return auth.UserInfo{}, false
+	}
+	return u, true
+}
+
+// resolveAgentBase resolves the agent's dialable API base URL, writing the
+// error envelope (503 agent_not_running / agent_not_started) when it can't.
+func (a *HubApp) resolveAgentBase(w http.ResponseWriter, r *http.Request, agentID string) (string, bool) {
 	if a.agentRuntime == nil {
 		gatewayError(w, http.StatusServiceUnavailable, "agent_not_running", "agent runtime unavailable on this hub")
-		return
+		return "", false
 	}
 	base, err := a.agentRuntime.APIBaseURL(agentID)
 	if err != nil {
@@ -98,15 +116,20 @@ func (a *HubApp) agentProxyHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		gatewayError(w, http.StatusServiceUnavailable, code, msg)
-		return
+		return "", false
 	}
+	return base, true
+}
+
+// proxyToAgent forwards the request to `base` with its path rewritten to
+// `rest`, streaming SSE responses through unbuffered. The caller has already
+// authenticated + authorized.
+func (a *HubApp) proxyToAgent(w http.ResponseWriter, r *http.Request, agentID, base, rest string) {
 	target, err := url.Parse(base)
 	if err != nil {
 		gatewayError(w, http.StatusBadGateway, "agent_unreachable", "invalid agent endpoint")
 		return
 	}
-
-	rest := "/" + r.PathValue("path")
 
 	// SSE streams are exempt from the call timeout; everything else is bounded.
 	if !isStreamRequest(r, rest) {
