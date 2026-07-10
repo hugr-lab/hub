@@ -116,6 +116,10 @@ type AgentIdentity struct {
 	MemoryBytes  int64  // orchestration.memory_bytes (0 = runtime default)
 	NanoCPUs     int64  // orchestration.nano_cpus   (0 = runtime default)
 	PidsLimit    int64  // orchestration.pids_limit  (0 = runtime default)
+	// Manual marks a 'manual' desired-state agent (spec §4): the container is
+	// created with restart-policy 'no' so a crash stays down until an explicit
+	// start_agent relaunches it (the supervisor never auto-revives it).
+	Manual bool
 }
 
 // RuntimeState contains ephemeral state for a running agent.
