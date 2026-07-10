@@ -181,6 +181,17 @@ func TestAgentProxy_ErrorMapping(t *testing.T) {
 		}
 	})
 
+	t.Run("non-/v1 path -> 404 (proxy allowlist)", func(t *testing.T) {
+		mux := gatewayTestApp(&fakeRuntime{base: map[string]string{"a1": "http://127.0.0.1:1"}}, allowAll)
+		for _, p := range []string{"debug/pprof/heap", "healthz", "metrics", "ui"} {
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, asUser(httptest.NewRequest("GET", "/api/v1/agents/a1/hugen/"+p, nil), "u1"))
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("%s: status = %d, want 404 (only /v1/* is proxied)", p, rec.Code)
+			}
+		}
+	})
+
 	t.Run("no runtime -> 503", func(t *testing.T) {
 		mux := gatewayTestApp(nil, allowAll)
 		rec := httptest.NewRecorder()

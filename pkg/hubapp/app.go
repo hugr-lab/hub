@@ -386,7 +386,12 @@ func (a *HubApp) Shutdown(ctx context.Context) error {
 		}
 	}
 	if a.server != nil {
-		return a.server.Shutdown(ctx)
+		if err := a.server.Shutdown(ctx); err != nil {
+			// Graceful drain timed out — open SSE streams never finish on
+			// their own; force-close so shutdown does not hang on them.
+			_ = a.server.Close()
+			return err
+		}
 	}
 	return nil
 }

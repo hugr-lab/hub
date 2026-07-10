@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -46,7 +47,8 @@ func (a *HubApp) chatContext(w http.ResponseWriter, r *http.Request) (auth.UserI
 		return auth.UserInfo{}, chatRow{}, false
 	}
 	if err := a.checkAccess(r.Context(), u, chat.AgentID); err != nil {
-		gatewayError(w, http.StatusForbidden, "no_agent_access", err.Error())
+		a.logger.Info("agent access denied", "agent", chat.AgentID, "user", u.ID, "chat", chat.ID, "error", err)
+		gatewayError(w, http.StatusForbidden, "no_agent_access", "no access to agent "+chat.AgentID)
 		return auth.UserInfo{}, chatRow{}, false
 	}
 	return u, chat, true
@@ -121,6 +123,11 @@ func (a *HubApp) chatMessagesHandler(w http.ResponseWriter, r *http.Request) {
 		sid, err = a.bindChatSession(ctx, chat, base, bearer)
 		if err != nil {
 			a.logger.Warn("chat session bind failed", "chat", chat.ID, "agent", chat.AgentID, "error", err)
+			if errors.Is(err, errChatNotFound) {
+				// The chat was deleted mid-bind — the opened session is closed.
+				gatewayError(w, http.StatusNotFound, "chat_not_found", "chat not found")
+				return
+			}
 			gatewayError(w, http.StatusBadGateway, "agent_unreachable", "could not open a session on the agent")
 			return
 		}
@@ -140,6 +147,10 @@ func (a *HubApp) chatMessagesHandler(w http.ResponseWriter, r *http.Request) {
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := gatewayClient().Do(req)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			gatewayError(w, http.StatusGatewayTimeout, "agent_timeout", "agent did not respond in time")
+			return
+		}
 		gatewayError(w, http.StatusBadGateway, "agent_unreachable", "agent did not respond")
 		return
 	}
@@ -192,16 +203,20 @@ func (a *HubApp) bindChatSession(ctx context.Context, chat chatRow, base, bearer
 
 	// CAS: the update filter matches ONLY an unbound row, so a raced second
 	// binder writes nothing (postgres reports affected_rows 0 on success, so
-	// the re-read below is the source of truth either way).
+	// the re-read below is the source of truth either way). On ANY failure
+	// past this point the just-opened session must not be orphaned.
 	if err := a.bindChatRow(ctx, chat.ID, out.SessionID); err != nil {
+		a.closeAgentSession(ctx, base, bearer, out.SessionID)
 		return "", err
 	}
 	after, err := a.fetchChat(ctx, chat.ID)
 	if err != nil {
+		a.closeAgentSession(ctx, base, bearer, out.SessionID)
 		return "", err
 	}
 	won := deref(after.RootSessionID)
 	if won == "" {
+		a.closeAgentSession(ctx, base, bearer, out.SessionID)
 		return "", fmt.Errorf("bind chat %s: root_session_id still empty after update", chat.ID)
 	}
 	if won != out.SessionID {
@@ -232,8 +247,12 @@ func (a *HubApp) bindChatRow(ctx context.Context, chatID, sessionID string) erro
 	return nil
 }
 
-// closeAgentSession best-effort deletes a session the bind race orphaned.
+// closeAgentSession best-effort deletes a session the bind path orphaned.
+// Runs detached from the caller's deadline (cleanup must survive the very
+// timeout/cancellation that triggered it), bounded by its own.
 func (a *HubApp) closeAgentSession(ctx context.Context, base, bearer, sid string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, base+"/v1/sessions/"+sid, nil)
 	if err != nil {
 		return

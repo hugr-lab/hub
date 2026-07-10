@@ -702,12 +702,16 @@ func (a *HubApp) handleGrantAgentAccess(w *app.Result, r *app.Request) error {
 			"user_id": userID, "agent_id": agentID, "role": role,
 		}},
 	)
-	if err != nil {
-		return fmt.Errorf("grant access: %w", err)
+	if err == nil {
+		defer res.Close()
+		err = res.Err()
 	}
-	defer res.Close()
-	if res.Err() != nil {
-		return fmt.Errorf("grant access: %w", res.Err())
+	if err != nil {
+		// Concurrent grants for the same (user, agent) race the delete+insert
+		// upsert — a grant row existing afterwards is success.
+		if !a.grantRowExists(ctx, userID, agentID) {
+			return fmt.Errorf("grant access: %w", err)
+		}
 	}
 	a.logger.Info("agent access granted", "agent", agentID, "grantee", userID, "role", role, "by", u.ID)
 	return w.SetJSON(map[string]any{"user_id": userID, "agent_id": agentID, "access_role": role})
@@ -869,6 +873,30 @@ func (a *HubApp) updateChatRow(ctx context.Context, id string, data map[string]a
 		return fmt.Errorf("update chat: %w", res.Err())
 	}
 	return nil
+}
+
+// grantRowExists is the race-loser check for grant_agent_access's upsert.
+func (a *HubApp) grantRowExists(ctx context.Context, userID, agentID string) bool {
+	res, err := a.client.Query(ctx,
+		`query($uid: String!, $aid: String!) { hub { db { user_agents(
+			filter: { user_id: { eq: $uid }, agent_id: { eq: $aid } } limit: 1
+		) { user_id } } } }`,
+		map[string]any{"uid": userID, "aid": agentID},
+	)
+	if err != nil {
+		return false
+	}
+	defer res.Close()
+	if res.Err() != nil {
+		return false
+	}
+	var rows []struct {
+		UserID string `json:"user_id"`
+	}
+	if err := res.ScanData("hub.db.user_agents", &rows); err != nil {
+		return false
+	}
+	return len(rows) > 0
 }
 
 func (a *HubApp) deleteUserAgent(ctx context.Context, userID, agentID string) error {

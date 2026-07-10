@@ -53,12 +53,17 @@ func (a *HubApp) ensureUser(ctx context.Context, u auth.UserInfo) error {
 				"id": u.ID, "display_name": name, "hugr_role": role,
 			}},
 		)
-		if err != nil {
-			return fmt.Errorf("provision user: %w", err)
+		if err == nil {
+			defer ins.Close()
+			err = ins.Err()
 		}
-		defer ins.Close()
-		if ins.Err() != nil {
-			return fmt.Errorf("provision user: %w", ins.Err())
+		if err != nil {
+			// Two first-touch calls can race the insert (PK violation for the
+			// loser) — the row existing is SUCCESS, whoever wrote it.
+			if a.userRowExists(ctx, u.ID) {
+				return nil
+			}
+			return fmt.Errorf("provision user: %w", err)
 		}
 		a.logger.Info("user lazily provisioned", "user", u.ID, "name", name, "role", role)
 		return nil
@@ -76,4 +81,26 @@ func (a *HubApp) ensureUser(ctx context.Context, u auth.UserInfo) error {
 		upd.Close()
 	}
 	return nil
+}
+
+// userRowExists is the race-loser check for ensureUser's first-touch insert.
+func (a *HubApp) userRowExists(ctx context.Context, id string) bool {
+	res, err := a.client.Query(ctx,
+		`query($id: String!) { hub { db { users(filter: { id: { eq: $id } }, limit: 1) { id } } } }`,
+		map[string]any{"id": id},
+	)
+	if err != nil {
+		return false
+	}
+	defer res.Close()
+	if res.Err() != nil {
+		return false
+	}
+	var rows []struct {
+		ID string `json:"id"`
+	}
+	if err := res.ScanData("hub.db.users", &rows); err != nil {
+		return false
+	}
+	return len(rows) > 0
 }

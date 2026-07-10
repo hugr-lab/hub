@@ -14,6 +14,8 @@ package hubapp
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -35,12 +37,14 @@ const (
 )
 
 // gatewayTransport is the shared upstream transport: bounded dial (a down
-// container must fail fast), keep-alives on, and NO overall response timeout —
-// SSE responses stream indefinitely.
+// container must fail fast), bounded time-to-response-headers (a hung agent
+// must not hold callers — bodies may stream much longer), keep-alives on, and
+// NO overall response timeout — SSE responses stream indefinitely.
 var gatewayTransport http.RoundTripper = &http.Transport{
-	DialContext:         (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
-	MaxIdleConnsPerHost: 8,
-	IdleConnTimeout:     90 * time.Second,
+	DialContext:           (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
+	ResponseHeaderTimeout: gatewayCallTimeout,
+	MaxIdleConnsPerHost:   8,
+	IdleConnTimeout:       90 * time.Second,
 }
 
 // gatewayError is the transport-plane error envelope (spec-hub-gateway §4).
@@ -65,9 +69,22 @@ func (a *HubApp) agentProxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Platform-layer authz: user_agents grant, re-checked on every call so a
 	// revocation bites immediately. Admin capability / management bypass live
-	// inside checkAgentAccess.
+	// inside checkAgentAccess. Denial details stay in the log — the body
+	// carries a fixed message (no hugr/DB internals to callers).
 	if err := a.checkAccess(r.Context(), u, agentID); err != nil {
-		gatewayError(w, http.StatusForbidden, "no_agent_access", err.Error())
+		a.logger.Info("agent access denied", "agent", agentID, "user", u.ID, "error", err)
+		gatewayError(w, http.StatusForbidden, "no_agent_access", "no access to agent "+agentID)
+		return
+	}
+
+	// Defense-in-depth: the raw proxy exposes ONLY the hugen application API
+	// (/v1/*). Session-level ownership inside it is hugen's contract (H2 —
+	// OwnerID checks on every /v1/sessions/{id}/*, load-bearing for shared
+	// agents); anything else a container might mount (probes, debug, future
+	// listeners) stays unreachable from here.
+	rest := "/" + r.PathValue("path")
+	if !strings.HasPrefix(rest, "/v1/") {
+		gatewayError(w, http.StatusNotFound, "not_found", "only the hugen /v1 API is proxied")
 		return
 	}
 
@@ -75,7 +92,7 @@ func (a *HubApp) agentProxyHandler(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	a.proxyToAgent(w, r, agentID, base, "/"+r.PathValue("path"))
+	a.proxyToAgent(w, r, agentID, base, rest)
 }
 
 // gatewayCaller authenticates a transport-plane request: an identity from the
@@ -131,9 +148,14 @@ func (a *HubApp) proxyToAgent(w http.ResponseWriter, r *http.Request, agentID, b
 		return
 	}
 
-	// SSE streams are exempt from the call timeout; everything else is bounded.
-	if !isStreamRequest(r, rest) {
-		ctx, cancel := context.WithTimeout(r.Context(), gatewayCallTimeout)
+	// SSE streams and artifact transfers are exempt from the whole-call
+	// timeout (both may legitimately outlive it — the transport's
+	// ResponseHeaderTimeout still bounds a hung agent); everything else is
+	// bounded end-to-end. The PARENT ctx tells a gone client apart from a
+	// tripped deadline in the error handler below.
+	parent := r.Context()
+	if !isUnboundedRequest(r, rest) {
+		ctx, cancel := context.WithTimeout(parent, gatewayCallTimeout)
 		defer cancel()
 		r = r.WithContext(ctx)
 	}
@@ -160,11 +182,23 @@ func (a *HubApp) proxyToAgent(w http.ResponseWriter, r *http.Request, agentID, b
 		FlushInterval: -1,
 		Transport:     gatewayTransport,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			if r.Context().Err() != nil {
-				return // client went away / call timeout — nothing to write
+			if parent.Err() != nil {
+				return // client went away — nobody to answer
 			}
-			a.logger.Warn("agent proxy error", "agent", agentID, "path", rest, "error", err)
-			gatewayError(w, http.StatusBadGateway, "agent_unreachable", "agent did not respond")
+			var mbe *http.MaxBytesError
+			switch {
+			case errors.As(err, &mbe):
+				gatewayError(w, http.StatusRequestEntityTooLarge, "body_too_large",
+					fmt.Sprintf("request body exceeds the %d-byte gateway cap", mbe.Limit))
+			case errors.Is(err, context.DeadlineExceeded):
+				// The call deadline tripped, NOT the client: a silent return
+				// here would hand the client an empty 200 for a hung agent.
+				a.logger.Warn("agent proxy timeout", "agent", agentID, "path", rest)
+				gatewayError(w, http.StatusGatewayTimeout, "agent_timeout", "agent did not respond in time")
+			default:
+				a.logger.Warn("agent proxy error", "agent", agentID, "path", rest, "error", err)
+				gatewayError(w, http.StatusBadGateway, "agent_unreachable", "agent did not respond")
+			}
 		},
 	}
 	rp.ServeHTTP(w, r)
@@ -195,9 +229,17 @@ func (a *HubApp) checkAccess(ctx context.Context, u auth.UserInfo, agentID strin
 	return a.checkAgentAccess(ctx, u, agentID, "")
 }
 
-// isStreamRequest reports whether the proxied call is an SSE stream — by the
-// hugen surface shape (`…/stream`) or an explicit event-stream Accept.
+// isStreamRequest reports whether the proxied call is an SSE stream — the
+// hugen surface has exactly one stream shape (`…/stream`). Deliberately NOT
+// sniffed from the client's Accept header: that would let any caller exempt
+// arbitrary calls from the gateway timeout and hold connections open.
 func isStreamRequest(r *http.Request, path string) bool {
-	return strings.HasSuffix(path, "/stream") ||
-		strings.Contains(r.Header.Get("Accept"), "text/event-stream")
+	return r.Method == http.MethodGet && strings.HasSuffix(path, "/stream")
+}
+
+// isUnboundedRequest reports whether the call is exempt from the whole-call
+// deadline: SSE streams and artifact transfers (a large download/upload may
+// legitimately outrun 60s; ResponseHeaderTimeout still bounds a hung agent).
+func isUnboundedRequest(r *http.Request, path string) bool {
+	return isStreamRequest(r, path) || strings.Contains(path, "/artifacts")
 }
