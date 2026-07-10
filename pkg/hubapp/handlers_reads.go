@@ -147,8 +147,8 @@ func (a *HubApp) handleMyAgentInstances(w *app.Result, r *app.Request) error {
 
 	for _, rr := range rows {
 		status := "stopped"
-		if a.dockerRuntime != nil {
-			st := a.dockerRuntime.Status(rr.id)
+		if a.agentRuntime != nil {
+			st := a.agentRuntime.Status(rr.id)
 			if st.Status != "" {
 				status = st.Status
 			}

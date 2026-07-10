@@ -87,6 +87,11 @@ type RuntimeConfig struct {
 // AgentRuntime manages agent container lifecycle.
 // Runtime state (container_id, status) lives in memory.
 // Identity (display_name, hugr_*) comes from DB (agents table).
+// AgentRuntime is the agent spawn/lifecycle runtime the hub depends on. It is
+// the seam that keeps HubApp + the supervisor free of any single orchestrator:
+// DockerRuntime is the one impl today (single-node Docker); a future k8s-Pod
+// runtime (possibly a custom operator) implements the same contract and slots in
+// with no hub changes. HubApp holds this interface, NOT *DockerRuntime.
 type AgentRuntime interface {
 	// Start creates and starts a container for the agent.
 	Start(ctx context.Context, agent AgentIdentity) error
@@ -94,12 +99,35 @@ type AgentRuntime interface {
 	// Stop stops and removes the agent's container.
 	Stop(ctx context.Context, agentID string) error
 
-	// Status returns the current runtime state for an agent.
+	// Remove force-removes the agent's container and clears any cached state
+	// (idempotent). Used before a re-Start to defeat a stale in-memory cache.
+	Remove(ctx context.Context, agentID string) error
+
+	// Status returns the last-known runtime state for an agent (from the local
+	// cache — cheap, no orchestrator round-trip).
 	Status(agentID string) RuntimeState
 
 	// ListRunning returns runtime state for all currently running agents.
 	ListRunning() []RuntimeState
+
+	// Observe reads the agent container's LIVE state from the orchestrator
+	// (present/running/restarting/health/restart-count); absent → Present:false.
+	Observe(ctx context.Context, agentID string) (Observation, error)
+
+	// ListManaged returns every hub-managed container the orchestrator holds —
+	// the supervisor's orphan sweep compares this against the desired Agent-DB set.
+	ListManaged(ctx context.Context) ([]ManagedRef, error)
+
+	// SetSecretMinter injects the bootstrap-secret minter called at each spawn.
+	SetSecretMinter(m SecretMinter)
+
+	// Reconstruct rebuilds the local runtime-state cache from the orchestrator on
+	// boot (hub-restart survival), so Status/ListRunning are accurate immediately.
+	Reconstruct(ctx context.Context)
 }
+
+// Compile-time proof that the Docker impl satisfies the runtime contract.
+var _ AgentRuntime = (*DockerRuntime)(nil)
 
 // AgentIdentity contains persistent agent data from the Agent DB
 // (hub.agent.db.agents). DisplayName/HugrRole map to the store's name/role; the

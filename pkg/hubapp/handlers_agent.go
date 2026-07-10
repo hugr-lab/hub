@@ -81,7 +81,7 @@ func (a *HubApp) handleStartAgent(w *app.Result, r *app.Request) error {
 	if agentID == "" {
 		return fmt.Errorf("agent_id is required")
 	}
-	if a.dockerRuntime == nil {
+	if a.agentRuntime == nil {
 		return fmt.Errorf("docker runtime unavailable")
 	}
 
@@ -116,17 +116,17 @@ func (a *HubApp) handleStartAgent(w *app.Result, r *app.Request) error {
 				return fmt.Errorf("start agent (manual): %w", err)
 			}
 		} else {
-			// Defensive fallback (the supervisor runs whenever dockerRuntime != nil).
+			// Defensive fallback (the supervisor runs whenever agentRuntime != nil).
 			identity, err := agentIdentityFromRecord(rec)
 			if err != nil {
 				return fmt.Errorf("start agent: %w", err)
 			}
-			_ = a.dockerRuntime.Remove(svcCtx, agentID)
-			if err := a.dockerRuntime.Start(svcCtx, identity); err != nil {
+			_ = a.agentRuntime.Remove(svcCtx, agentID)
+			if err := a.agentRuntime.Start(svcCtx, identity); err != nil {
 				return fmt.Errorf("start agent (manual): %w", err)
 			}
 		}
-		state := a.dockerRuntime.Status(agentID)
+		state := a.agentRuntime.Status(agentID)
 		containerShort := shortID(state.ContainerID)
 		a.logger.Info("manual agent started via mutation", "agent", agentID, "container", containerShort, "by", u.ID)
 		return w.SetJSON(map[string]any{
@@ -159,7 +159,7 @@ func (a *HubApp) handleStartAgent(w *app.Result, r *app.Request) error {
 	// Converge now. Prefer the supervisor kick (single owner of container
 	// lifecycle); fall back to a direct Start only if Docker is up but the
 	// supervisor somehow isn't (defensive — startSupervisor runs whenever
-	// dockerRuntime != nil).
+	// agentRuntime != nil).
 	if a.supervisor != nil {
 		a.supervisor.kick(svcCtx, agentID, "active")
 	} else {
@@ -167,12 +167,12 @@ func (a *HubApp) handleStartAgent(w *app.Result, r *app.Request) error {
 		if err != nil {
 			return fmt.Errorf("start agent: %w", err)
 		}
-		if err := a.dockerRuntime.Start(svcCtx, identity); err != nil {
+		if err := a.agentRuntime.Start(svcCtx, identity); err != nil {
 			return fmt.Errorf("start agent: %w", err)
 		}
 	}
 
-	state := a.dockerRuntime.Status(agentID)
+	state := a.agentRuntime.Status(agentID)
 	containerShort := shortID(state.ContainerID)
 	a.logger.Info("agent started via mutation", "agent", agentID, "container", containerShort, "by", u.ID)
 	return w.SetJSON(map[string]any{
@@ -195,7 +195,7 @@ func (a *HubApp) handleStopAgent(w *app.Result, r *app.Request) error {
 	if agentID == "" {
 		return fmt.Errorf("agent_id is required")
 	}
-	if a.dockerRuntime == nil {
+	if a.agentRuntime == nil {
 		return fmt.Errorf("docker runtime unavailable")
 	}
 
@@ -220,7 +220,7 @@ func (a *HubApp) handleStopAgent(w *app.Result, r *app.Request) error {
 		if a.supervisor != nil {
 			_ = a.supervisor.stopManual(svcCtx, agentID)
 		} else {
-			_ = a.dockerRuntime.Stop(svcCtx, agentID)
+			_ = a.agentRuntime.Stop(svcCtx, agentID)
 		}
 		a.logger.Info("manual agent stopped via mutation", "agent", agentID, "by", u.ID)
 		return w.SetJSON(map[string]any{
@@ -241,7 +241,7 @@ func (a *HubApp) handleStopAgent(w *app.Result, r *app.Request) error {
 	if a.supervisor != nil {
 		a.supervisor.kick(svcCtx, agentID, "paused")
 	} else {
-		_ = a.dockerRuntime.Stop(svcCtx, agentID)
+		_ = a.agentRuntime.Stop(svcCtx, agentID)
 	}
 
 	a.logger.Info("agent stopped via mutation", "agent", agentID, "by", u.ID)
@@ -273,8 +273,8 @@ func (a *HubApp) handleDeleteAgent(w *app.Result, r *app.Request) error {
 	svcCtx := r.Context()
 
 	// Stop the runtime first (idempotent — no error if not running).
-	if a.dockerRuntime != nil {
-		_ = a.dockerRuntime.Stop(svcCtx, agentID)
+	if a.agentRuntime != nil {
+		_ = a.agentRuntime.Stop(svcCtx, agentID)
 	}
 
 	// Delete the identity from the AGENT DB (hub.agent.db.agents, the canon) — NOT

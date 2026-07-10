@@ -31,7 +31,9 @@ type HubApp struct {
 	client        *client.Client
 	server        *http.Server
 	tokenServer   *http.Server // dedicated /agent/token listener (HUB_AGENT_TOKEN_LISTEN), nil in shared mode
-	dockerRuntime *agentmgr.DockerRuntime
+	// agentRuntime is the AgentRuntime seam (DockerRuntime today; a k8s-Pod
+	// runtime slots in behind it). nil when no orchestrator is reachable.
+	agentRuntime agentmgr.AgentRuntime
 
 	supervisor       *supervisor        // desired-state reconcile loop (spec §4); nil when Docker is absent
 	supervisorCancel context.CancelFunc // stops the supervisor goroutine on Shutdown
@@ -62,13 +64,13 @@ func (a *HubApp) Listner() (net.Listener, error) {
 func (a *HubApp) Catalog(ctx context.Context) (catalog.Catalog, error) {
 	// Initialize DockerRuntime early so catalog handlers can read state.
 	// Reconstruct() is called later in Init() once the Docker daemon is reachable.
-	if a.dockerRuntime == nil {
+	if a.agentRuntime == nil {
 		agentNetwork := envOrDefault("HUB_AGENT_NETWORK", "hub-dev-network")
 		rt, err := agentmgr.NewDockerRuntime(a.agentRuntimeConfig(agentNetwork), a.logger)
 		if err != nil {
 			a.logger.Warn("Docker runtime unavailable", "error", err)
 		} else {
-			a.dockerRuntime = rt
+			a.agentRuntime = rt
 		}
 	}
 	if err := a.registerCatalog(); err != nil {
@@ -287,13 +289,13 @@ func (a *HubApp) Init(ctx context.Context) error {
 	mux.HandleFunc("/hugr", a.hugrProxyHandler())
 
 	// Agent management — DockerRuntime is initialized in Catalog() (if Docker available).
-	if a.dockerRuntime != nil {
-		a.dockerRuntime.Reconstruct(ctx)
+	if a.agentRuntime != nil {
+		a.agentRuntime.Reconstruct(ctx)
 		// The spawn-secret minter wraps the agent-token issuer, wired below —
 		// inject it now so Start can mint-at-spawn. Without the issuer, Start
 		// fails loudly (an agent cannot boot without a redeemable secret).
 		if a.config.AgentJWTKeyFile != "" {
-			a.dockerRuntime.SetSecretMinter(a.mintSpawnSecret)
+			a.agentRuntime.SetSecretMinter(a.mintSpawnSecret)
 		} else {
 			a.logger.Warn("agent secret minter disabled (HUB_AGENT_JWT_KEY not set) — agents cannot be spawned")
 		}
