@@ -73,7 +73,7 @@ type supervisor struct {
 // startSupervisor launches the reconcile goroutine on a background-derived ctx
 // (cancelled in Shutdown), so its lifetime is the process, not Init's ctx.
 func (a *HubApp) startSupervisor() {
-	if a.dockerRuntime == nil {
+	if a.agentRuntime == nil {
 		return // no Docker → nothing to supervise
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -117,7 +117,7 @@ func (s *supervisor) reconcileAll(ctx context.Context) {
 	// Orphan rule (§4.4): a hub.managed container with NO Agent-DB row → stop +
 	// remove. Pairs with delete_agent — otherwise a deleted agent's container
 	// (still labelled hub.managed) would be revived/kept forever.
-	managed, err := s.app.dockerRuntime.ListManaged(ctx)
+	managed, err := s.app.agentRuntime.ListManaged(ctx)
 	if err != nil {
 		s.app.logger.Warn("supervisor: list managed containers failed", "error", err)
 		return
@@ -128,7 +128,7 @@ func (s *supervisor) reconcileAll(ctx context.Context) {
 		}
 		s.app.logger.Info("supervisor: removing orphan container (no agent row)",
 			"agent", m.AgentID, "container", shortID(m.ContainerID))
-		if err := s.app.dockerRuntime.Remove(ctx, m.AgentID); err != nil {
+		if err := s.app.agentRuntime.Remove(ctx, m.AgentID); err != nil {
 			s.app.logger.Warn("supervisor: orphan remove failed", "agent", m.AgentID, "error", err)
 		}
 		s.forget(m.AgentID)
@@ -155,7 +155,7 @@ func (s *supervisor) reconcileAgent(ctx context.Context, agentID, desired string
 	tr.mu.Lock()
 	defer tr.mu.Unlock()
 
-	rt := s.app.dockerRuntime
+	rt := s.app.agentRuntime
 	obs, err := rt.Observe(ctx, agentID)
 	if err != nil {
 		s.app.logger.Warn("supervisor: observe failed", "agent", agentID, "error", err)
@@ -232,7 +232,7 @@ func (s *supervisor) spawn(ctx context.Context, agentID string) spawnResult {
 	}
 	// Clear stale in-memory state + any exited carcass so Start's running-guard
 	// cannot no-op on a container Observe already reported absent/exited.
-	if err := s.app.dockerRuntime.Remove(ctx, agentID); err != nil {
+	if err := s.app.agentRuntime.Remove(ctx, agentID); err != nil {
 		s.app.logger.Warn("supervisor: pre-spawn remove failed", "agent", agentID, "error", err)
 	}
 	if err := s.app.startContainer(ctx, agentID); err != nil {
@@ -335,14 +335,14 @@ func (s *supervisor) startManual(ctx context.Context, agentID string) error {
 	if info.Status != "manual" {
 		return fmt.Errorf("agent %q is not manual (status %q) — start aborted", agentID, info.Status)
 	}
-	obs, err := s.app.dockerRuntime.Observe(ctx, agentID)
+	obs, err := s.app.agentRuntime.Observe(ctx, agentID)
 	if err != nil {
 		return err
 	}
 	if obs.Present && obs.Running {
 		return nil // already up — idempotent (stop_agent then start_agent to recreate)
 	}
-	if err := s.app.dockerRuntime.Remove(ctx, agentID); err != nil {
+	if err := s.app.agentRuntime.Remove(ctx, agentID); err != nil {
 		s.app.logger.Warn("manual start: pre-start remove failed", "agent", agentID, "error", err)
 	}
 	return s.app.startContainer(ctx, agentID)
@@ -355,7 +355,7 @@ func (s *supervisor) stopManual(ctx context.Context, agentID string) error {
 	tr := s.trackFor(agentID)
 	tr.mu.Lock()
 	defer tr.mu.Unlock()
-	return s.app.dockerRuntime.Stop(ctx, agentID)
+	return s.app.agentRuntime.Stop(ctx, agentID)
 }
 
 // trackRestart maintains a sliding RestartCount window and reports whether the
@@ -459,7 +459,7 @@ func (a *HubApp) startContainer(ctx context.Context, agentID string) error {
 	if err != nil {
 		return err
 	}
-	return a.dockerRuntime.Start(ctx, identity)
+	return a.agentRuntime.Start(ctx, identity)
 }
 
 // shortID truncates a container id for logging.

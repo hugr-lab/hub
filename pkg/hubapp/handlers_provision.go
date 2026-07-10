@@ -296,8 +296,8 @@ func (a *HubApp) handleUpdateAgent(w *app.Result, r *app.Request) error {
 	if s, _ := data["status"].(string); s == "manual" && before.Status != "manual" {
 		if a.supervisor != nil {
 			_ = a.supervisor.stopManual(r.Context(), agentID)
-		} else if a.dockerRuntime != nil {
-			_ = a.dockerRuntime.Stop(r.Context(), agentID)
+		} else if a.agentRuntime != nil {
+			_ = a.agentRuntime.Stop(r.Context(), agentID)
 		}
 	}
 
@@ -346,8 +346,8 @@ func (a *HubApp) handleDisableAgent(w *app.Result, r *app.Request) error {
 	// status gate; stopping frees resources immediately). Idempotent.
 	if a.supervisor != nil {
 		a.supervisor.kick(svcCtx, agentID, "disabled")
-	} else if a.dockerRuntime != nil {
-		_ = a.dockerRuntime.Stop(svcCtx, agentID)
+	} else if a.agentRuntime != nil {
+		_ = a.agentRuntime.Stop(svcCtx, agentID)
 	}
 
 	a.logger.Info("agent disabled", "agent", agentID, "by", u.ID)
