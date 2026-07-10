@@ -239,9 +239,11 @@ func (t *agentTokenIssuer) handleToken(w http.ResponseWriter, r *http.Request) {
 		t.deny(w, http.StatusServiceUnavailable, "agent lookup failed")
 		return
 	}
-	// The revocation point (§1.2): a disabled agent's next refresh dies here,
-	// within one token TTL of the status flip.
-	if info.Status != "" && info.Status != "active" {
+	// The revocation point (§1.2): a paused/disabled agent's next refresh dies
+	// here, within one token TTL of the status flip. 'active' and 'manual' are
+	// both live run-states (a manual agent is legitimately running, just not
+	// supervised), so both may refresh; only paused/disabled are revoked.
+	if info.Status != "" && info.Status != "active" && info.Status != "manual" {
 		t.logger.Warn("agent token: refresh denied", "agent", agentID, "status", info.Status)
 		t.deny(w, http.StatusForbidden, fmt.Sprintf("agent status %q", info.Status))
 		return

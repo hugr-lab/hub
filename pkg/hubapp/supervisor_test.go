@@ -134,6 +134,34 @@ func TestDecide_PausedAndDisabledStop(t *testing.T) {
 	}
 }
 
+func TestDecide_ManualIsHandsOff(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+
+	// Running/healthy → leave it (never stop a manually-launched container) and
+	// reset any stale tracking so a later flip to 'active' starts clean.
+	tr := &agentTrack{unhealthyStreak: 2, backoff: 5 * time.Minute}
+	if got := decide("manual", running(), tr, now); got != actNone {
+		t.Fatalf("manual+running: got %v, want actNone", got)
+	}
+	if tr.unhealthyStreak != 0 || tr.backoff != 0 {
+		t.Fatalf("manual must reset tracking: streak=%d backoff=%v", tr.unhealthyStreak, tr.backoff)
+	}
+
+	// Absent → do NOT auto-start (the whole point of manual).
+	if got := decide("manual", agentmgr.Observation{Present: false}, &agentTrack{}, now); got != actNone {
+		t.Fatalf("manual+absent: got %v, want actNone (no auto-start)", got)
+	}
+	// Exited → stays down (restart-policy 'no' at spawn; supervisor never restarts).
+	if got := decide("manual", agentmgr.Observation{Present: true, Running: false}, &agentTrack{}, now); got != actNone {
+		t.Fatalf("manual+exited: got %v, want actNone (no restart)", got)
+	}
+	// Unhealthy → still hands-off (no recreate).
+	unhealthy := agentmgr.Observation{Present: true, Running: true, Health: "unhealthy"}
+	if got := decide("manual", unhealthy, &agentTrack{}, now); got != actNone {
+		t.Fatalf("manual+unhealthy: got %v, want actNone (no recreate)", got)
+	}
+}
+
 func TestDecide_UnknownStatusNoop(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	if got := decide("banana", running(), &agentTrack{}, now); got != actNone {
@@ -210,7 +238,7 @@ func TestNextBackoff(t *testing.T) {
 }
 
 func TestValidAgentStatus(t *testing.T) {
-	for _, s := range []string{"active", "paused", "disabled"} {
+	for _, s := range []string{"active", "manual", "paused", "disabled"} {
 		if !validAgentStatus(s) {
 			t.Errorf("validAgentStatus(%q) = false, want true", s)
 		}

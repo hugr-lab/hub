@@ -160,9 +160,16 @@ func (rt *DockerRuntime) Start(ctx context.Context, agent AgentIdentity) error {
 		},
 	}
 
+	// 'active' agents get unless-stopped (Docker revives a bare process crash —
+	// M5 row 1). A 'manual' agent is hands-off: restart-policy 'no' so a crash
+	// stays down until an explicit start_agent relaunches it (spec §4).
+	restartPolicy := container.RestartPolicy{Name: container.RestartPolicyUnlessStopped}
+	if agent.Manual {
+		restartPolicy = container.RestartPolicy{Name: container.RestartPolicyDisabled}
+	}
 	hostCfg := &container.HostConfig{
 		NetworkMode:   container.NetworkMode(rt.cfg.Network),
-		RestartPolicy: container.RestartPolicy{Name: container.RestartPolicyUnlessStopped},
+		RestartPolicy: restartPolicy,
 		Resources:     rt.resourceLimits(agent),
 	}
 	if dataDir != "" {

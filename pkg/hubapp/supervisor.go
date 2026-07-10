@@ -4,6 +4,8 @@ package hubapp
 // reconciles managed containers to `agents.status`, the single desired state:
 //
 //	active   → a container must be running          (owner run-state)
+//	manual   → hands-off: never auto-started/recreated; runs only via an explicit
+//	           start_agent (restart-policy 'no' — a crash stays down)
 //	paused   → no container                         (owner run-state)
 //	disabled → no container; admin-only revocation   (only update_agent leaves it)
 //
@@ -275,6 +277,15 @@ func decide(desired string, obs agentmgr.Observation, tr *agentTrack, now time.T
 			resetBackoff(tr)
 			return actNone
 		}
+
+	case "manual":
+		// Hands-off (spec §4): the supervisor never starts, stops, or recreates a
+		// manual agent — its container runs iff an explicit start_agent launched it
+		// (created with restart-policy 'no', so a crash stays down until the next
+		// manual start). Reset tracking so a later flip to 'active' starts clean.
+		resetBackoff(tr)
+		tr.unhealthyStreak = 0
+		return actNone
 
 	case "paused", "disabled":
 		// A stopped agent's tracking is meaningless — reset so a later re-activate

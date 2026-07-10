@@ -33,7 +33,7 @@ func (a *HubApp) registerAgentMutations() error {
 		app.ArgFromContext("auth_type", app.String, app.AuthType),
 		app.Return(agentRuntimeStateType()),
 		app.Mutation(),
-		app.Desc("Start an agent: set desired status='active' and converge (the supervisor spawns the container). Returns the runtime state {id, status, container_id}. Fails if the agent is admin-'disabled'. Requires owner access (or admin)."),
+		app.Desc("Start an agent: set desired status='active' and converge (the supervisor spawns the container). A 'manual' agent is launched one-shot WITHOUT changing its status (it stays hands-off; a crash won't auto-revive). Returns the runtime state {id, status, container_id}. Fails if the agent is admin-'disabled'. Requires owner access (or admin)."),
 	); err != nil {
 		return err
 	}
@@ -46,7 +46,7 @@ func (a *HubApp) registerAgentMutations() error {
 		app.ArgFromContext("auth_type", app.String, app.AuthType),
 		app.Return(agentRuntimeStateType()),
 		app.Mutation(),
-		app.Desc("Stop an agent: set desired status='paused' and converge (the supervisor removes the container). Returns {id, status='paused', container_id=''}. Fails if the agent is admin-'disabled'. Requires owner access (or admin)."),
+		app.Desc("Stop an agent: set desired status='paused' and converge (the supervisor removes the container). A 'manual' agent's container is stopped WITHOUT changing its status (stays 'manual'). Returns {id, status, container_id=''}. Fails if the agent is admin-'disabled'. Requires owner access (or admin)."),
 	); err != nil {
 		return err
 	}
@@ -102,6 +102,29 @@ func (a *HubApp) handleStartAgent(w *app.Result, r *app.Request) error {
 	}
 	if rec.Status == "disabled" {
 		return fmt.Errorf("agent %q is disabled; an administrator must re-enable it (update_agent status=active)", agentID)
+	}
+
+	if rec.Status == "manual" {
+		// Manual is hands-off (spec §4): launch the container explicitly WITHOUT
+		// flipping to 'active' — the supervisor must keep ignoring it. One-shot
+		// start with a pre-Remove (clear a stale carcass / states-cache entry, the
+		// C1 guard) and restart-policy 'no' (agentIdentityFromRecord sets Manual).
+		identity, err := agentIdentityFromRecord(rec)
+		if err != nil {
+			return fmt.Errorf("start agent: %w", err)
+		}
+		_ = a.dockerRuntime.Remove(svcCtx, agentID)
+		if err := a.dockerRuntime.Start(svcCtx, identity); err != nil {
+			return fmt.Errorf("start agent (manual): %w", err)
+		}
+		state := a.dockerRuntime.Status(agentID)
+		containerShort := shortID(state.ContainerID)
+		a.logger.Info("manual agent started via mutation", "agent", agentID, "container", containerShort, "by", u.ID)
+		return w.SetJSON(map[string]any{
+			"id":           agentID,
+			"status":       state.Status,
+			"container_id": containerShort,
+		})
 	}
 
 	if rec.Status != "active" {
@@ -179,6 +202,19 @@ func (a *HubApp) handleStopAgent(w *app.Result, r *app.Request) error {
 	}
 	if rec.Status == "disabled" {
 		return fmt.Errorf("agent %q is disabled; only an administrator can change its run state", agentID)
+	}
+
+	if rec.Status == "manual" {
+		// Manual is hands-off: stop the container but keep status 'manual' (do NOT
+		// flip to 'paused' — that would make it supervisor-managed). A later
+		// start_agent relaunches it.
+		_ = a.dockerRuntime.Stop(svcCtx, agentID)
+		a.logger.Info("manual agent stopped via mutation", "agent", agentID, "by", u.ID)
+		return w.SetJSON(map[string]any{
+			"id":           agentID,
+			"status":       "manual",
+			"container_id": "",
+		})
 	}
 
 	if rec.Status != "paused" {
@@ -406,5 +442,6 @@ func agentIdentityFromRecord(rec agentRecord) (agentmgr.AgentIdentity, error) {
 		MemoryBytes:  orch.MemoryBytes,
 		NanoCPUs:     orch.NanoCPUs,
 		PidsLimit:    orch.PidsLimit,
+		Manual:       rec.Status == "manual",
 	}, nil
 }

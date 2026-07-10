@@ -37,10 +37,12 @@ const agentIDPattern = "^[a-z0-9][a-z0-9-]{0,40}$"
 var agentIDRe = regexp.MustCompile(agentIDPattern)
 
 // validAgentStatus reports whether s is a valid agents.status desired state
-// (spec §4): active / paused (owner run-state) or disabled (admin revocation).
+// (spec §4): active / manual / paused (owner run-state) or disabled (admin
+// revocation). 'manual' is hands-off — the supervisor never auto-starts it; it
+// runs only via an explicit start_agent.
 func validAgentStatus(s string) bool {
 	switch s {
-	case "active", "paused", "disabled":
+	case "active", "manual", "paused", "disabled":
 		return true
 	}
 	return false
@@ -262,7 +264,7 @@ func (a *HubApp) handleUpdateAgent(w *app.Result, r *app.Request) error {
 		// 'disabled' (spec §4) — reject typos that would brick an agent (the
 		// supervisor treats an unknown desired status as a no-op).
 		if !validAgentStatus(v) {
-			return fmt.Errorf("invalid status %q: must be one of active, paused, disabled", v)
+			return fmt.Errorf("invalid status %q: must be one of active, manual, paused, disabled", v)
 		}
 		data["status"] = v
 	}
