@@ -70,6 +70,105 @@ func testClient(t *testing.T, userID ...string) (*HubApp, context.Context) {
 	return app, ctx
 }
 
+// TestIntegration_EnsureAgentRoleFloor_ManagedSubset pins the core invariant of
+// the per-agent role model (design/008 spec-hub-gateway §12): re-seeding the
+// isolation floor on a role must replace ONLY hub's floor rows and leave an
+// admin-added capability grant on the same role untouched — that coexistence is
+// what lets an admin grant data-source / function access with standard
+// core.insert_role_permissions mutations after create_agent.
+func TestIntegration_EnsureAgentRoleFloor_ManagedSubset(t *testing.T) {
+	skipIfNoHugr(t)
+	app, _ := testClient(t)
+	ctx := context.Background() // service principal (secret-key, full access) — as boot seeds
+	role := fmt.Sprintf("agent:test-%d", time.Now().UnixNano())
+	defer app.deleteRoleAndPerms(ctx, role)
+
+	// A distinctive admin grant row (a data-object:query on a SOURCE table, not a
+	// floor key) — this is what a real deployment adds post-creation.
+	const grantType, grantField = "data-object:query", "some_source_table_zzz"
+	insertGrant := func() {
+		t.Helper()
+		res, err := app.client.Query(ctx,
+			`mutation($d: core_role_permissions_mut_input_data!) {
+				core { insert_role_permissions(data: $d) { role } } }`,
+			map[string]any{"d": map[string]any{
+				"role": role, "type_name": grantType, "field_name": grantField,
+				"disabled": false, "hidden": false,
+			}},
+		)
+		if err != nil {
+			t.Fatalf("insert grant: %v", err)
+		}
+		res.Close()
+		if res.Err() != nil {
+			t.Fatalf("insert grant: %v", res.Err())
+		}
+	}
+	permKeys := func() map[permKey]bool {
+		t.Helper()
+		res, err := app.client.Query(ctx,
+			`query($r: String!) { core { roles_by_pk(name: $r) { permissions { type_name field_name } } } }`,
+			map[string]any{"r": role},
+		)
+		if err != nil {
+			t.Fatalf("read perms: %v", err)
+		}
+		defer res.Close()
+		if res.Err() != nil {
+			t.Fatalf("read perms: %v", res.Err())
+		}
+		var role_ struct {
+			Permissions []struct {
+				TypeName  string `json:"type_name"`
+				FieldName string `json:"field_name"`
+			} `json:"permissions"`
+		}
+		if err := res.ScanData("core.roles_by_pk", &role_); err != nil && !isNoData(err) {
+			t.Fatalf("scan perms: %v", err)
+		}
+		out := map[permKey]bool{}
+		for _, p := range role_.Permissions {
+			out[permKey{p.TypeName, p.FieldName}] = true
+		}
+		return out
+	}
+
+	// 1. First seed — the floor lands (ensureAgentRoleFloor verifies internally).
+	if err := app.ensureAgentRoleFloor(ctx, role, "test per-agent role"); err != nil {
+		t.Fatalf("first floor seed: %v", err)
+	}
+	// 2. Admin layers a capability grant.
+	insertGrant()
+	// 3. Re-seed the floor (a floor-schema change / boot reconcile).
+	if err := app.ensureAgentRoleFloor(ctx, role, "test per-agent role"); err != nil {
+		t.Fatalf("re-seed floor: %v", err)
+	}
+	// 4. The grant SURVIVED, and the floor is present.
+	keys := permKeys()
+	if !keys[permKey{grantType, grantField}] {
+		t.Fatal("admin grant row was wiped by the floor re-seed — managed-subset broken")
+	}
+	sample := permKey{"data-object:query", "hub_agent_db_sessions"}
+	if !keys[sample] {
+		t.Fatalf("floor row %v missing after re-seed", sample)
+	}
+	// 5. Cleanup drops the whole role (floor + grant).
+	if err := app.deleteRoleAndPerms(ctx, role); err != nil {
+		t.Fatalf("delete role: %v", err)
+	}
+	if inUse, _ := app.agentRoleInUse(ctx, role); inUse {
+		t.Error("role still referenced after delete (should be unused)")
+	}
+	if left := permKeys(); len(left) != 0 {
+		t.Errorf("role permissions remain after delete: %d", len(left))
+	}
+
+	// A protected platform role is refused outright.
+	if err := app.ensureAgentRoleFloor(ctx, "admin", "nope"); err == nil {
+		t.Error("ensureAgentRoleFloor must refuse the protected role 'admin'")
+	}
+}
+
 func TestIntegration_EnsureUser(t *testing.T) {
 	skipIfNoHugr(t)
 	userID := fmt.Sprintf("test-user-%d", time.Now().UnixNano())
