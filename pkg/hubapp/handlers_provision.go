@@ -99,7 +99,7 @@ func (a *HubApp) registerProvisioningMutations() error {
 		app.ArgFromContext("auth_type", app.String, app.AuthType),
 		app.Return(agentProvisionType()),
 		app.Mutation(),
-		app.Desc("Provision a new agent identity in the Agent DB and mint its one-shot bootstrap secret (spec-hub-side HB2). agent_type_id must exist. All args are required by the framework: pass hugr_role='' for the default 'agent' role (admin-assigned, D10, stamped into the JWT), owner_user_id='' to skip the owner grant, config_override='{}' for no per-instance overrides. Returns {agent_id, status, secret, expires_at}. Admin only."),
+		app.Desc("Provision a new agent identity in the Agent DB and mint its one-shot bootstrap secret (spec-hub-side HB2). agent_type_id must exist. All args are required by the framework: pass hugr_role='' to auto-create a dedicated per-agent role 'agent:<agent_id>' carrying the isolation floor — grant it data-source/function access afterwards with standard core.insert_role_permissions mutations; pass hugr_role='agent' to share the base role, or a custom role name to reuse one (the floor is ensured on whatever role you name; admin/public/readonly are rejected). owner_user_id='' skips the owner grant, config_override='{}' means no per-instance overrides. Returns {agent_id, status, secret, expires_at}. Admin only."),
 	); err != nil {
 		return err
 	}
@@ -170,7 +170,12 @@ func (a *HubApp) handleCreateAgent(w *app.Result, r *app.Request) error {
 		return errors.New("name is required")
 	}
 	if role == "" {
-		role = "agent" // D10 default; admin overrides deliberately
+		// Default: a dedicated per-agent role (agent:<id>) carrying the isolation
+		// floor as its base; the admin layers capability grants (data sources /
+		// functions) onto it afterwards with standard core.insert_role_permissions
+		// mutations. Pass hugr_role="agent" to share the base role instead
+		// (design/008 spec-hub-gateway §12).
+		role = perAgentRoleName(id)
 	}
 	var configOverride map[string]any
 	if err := r.JSON("config_override", &configOverride); err != nil {
@@ -196,6 +201,27 @@ func (a *HubApp) handleCreateAgent(w *app.Result, r *app.Request) error {
 	// agent_types.id); catch it here for a clear message rather than a raw FK error.
 	if err := a.agentTypeExists(ctx, typeID); err != nil {
 		return err
+	}
+
+	// Provision the agent's hugr role WITH the isolation floor BEFORE the identity
+	// points at it — so the floor is live before the supervisor can spawn the
+	// agent or a token is minted. A per-agent role (agent:<id>) is created; any
+	// named role has the floor ensured (managed-subset — admin grant rows on it
+	// survive). This is the hard isolation guarantee (hub.agent.db scoped to
+	// agent_id == principal); boot reconcile only repairs drift. Protected
+	// platform roles (admin/public/readonly) are rejected here.
+	roleDesc := "agent role — isolation floor managed by hub-service"
+	if isHubCreatedAgentRole(role) {
+		roleDesc = perAgentRoleDescription(id)
+	}
+	// Role/permission writes are privileged platform ops — run them as the
+	// service principal (r.Context(), no impersonation), the same posture
+	// delete_agent uses for Agent-DB writes.
+	if err := a.ensureAgentRoleFloor(r.Context(), role, roleDesc); err != nil {
+		return fmt.Errorf("provision agent role %q: %w", role, err)
+	}
+	if err := a.invalidateRolePermCache(r.Context()); err != nil {
+		return fmt.Errorf("provision agent role %q: %w", role, err)
 	}
 
 	if err := a.insertAgentIdentity(ctx, id, typeID, shortIDFromAgentID(id), name, role, configOverride); err != nil {
@@ -258,8 +284,9 @@ func (a *HubApp) handleUpdateAgent(w *app.Result, r *app.Request) error {
 	if v := strings.TrimSpace(r.String("name")); v != "" {
 		data["name"] = v
 	}
-	if v := strings.TrimSpace(r.String("hugr_role")); v != "" { // arg is hugr_role; column is role
-		data["role"] = v
+	newRole := strings.TrimSpace(r.String("hugr_role")) // arg is hugr_role; column is role
+	if newRole != "" {
+		data["role"] = newRole
 	}
 	if v := strings.TrimSpace(r.String("status")); v != "" {
 		// update_agent is the only free-form status writer and the ONLY exit from
@@ -284,8 +311,32 @@ func (a *HubApp) handleUpdateAgent(w *app.Result, r *app.Request) error {
 		return errors.New("nothing to update: provide at least one of name / hugr_role / status / config_override (empty string / {} leaves a field unchanged)")
 	}
 
+	// A role change must land on a floored role BEFORE the identity points at it
+	// (same guarantee as create_agent). ensureAgentRoleFloor rejects protected
+	// platform roles, so an agent can't be moved onto admin/public/readonly.
+	// Privileged platform op → service principal (r.Context()).
+	roleChanged := newRole != "" && newRole != before.Role
+	if roleChanged {
+		desc := "agent role — isolation floor managed by hub-service"
+		if isHubCreatedAgentRole(newRole) {
+			desc = perAgentRoleDescription(agentID)
+		}
+		if err := a.ensureAgentRoleFloor(r.Context(), newRole, desc); err != nil {
+			return fmt.Errorf("provision agent role %q: %w", newRole, err)
+		}
+		if err := a.invalidateRolePermCache(r.Context()); err != nil {
+			return fmt.Errorf("provision agent role %q: %w", newRole, err)
+		}
+	}
+
 	if err := a.updateAgentIdentity(ctx, agentID, data); err != nil {
 		return fmt.Errorf("update agent: %w", err)
+	}
+
+	// The old role, if a hub-created per-agent role now left unreferenced, is
+	// dropped (no-op for the shared base or an admin-named role).
+	if roleChanged {
+		a.maybeDeleteAgentRole(r.Context(), before.Role)
 	}
 
 	// Transition INTO 'manual' brings the agent to its manual baseline — STOP any

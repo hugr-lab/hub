@@ -156,6 +156,82 @@ func TestAgentRoleRows_PlatformDeniesPresent(t *testing.T) {
 	}
 }
 
+func TestPerAgentRoleName_AndRecognition(t *testing.T) {
+	if got := perAgentRoleName("sales-bot"); got != "agent:sales-bot" {
+		t.Fatalf("perAgentRoleName = %q, want agent:sales-bot", got)
+	}
+	if !isHubCreatedAgentRole("agent:sales-bot") {
+		t.Error("agent:<id> must be recognised as hub-created")
+	}
+	// The shared base role and admin-named roles are NOT hub-created (delete_agent
+	// must leave them intact).
+	for _, r := range []string{"agent", "agent_template", "analyst", "admin", ""} {
+		if isHubCreatedAgentRole(r) {
+			t.Errorf("%q must not be recognised as a hub-created per-agent role", r)
+		}
+	}
+}
+
+func TestProtectedRoles_CoverPlatformBuiltins(t *testing.T) {
+	for _, r := range []string{"admin", "public", "readonly"} {
+		if !protectedRoles[r] {
+			t.Errorf("%q must be protected (flooring it would break the platform)", r)
+		}
+	}
+	for _, r := range []string{"agent", "agent_template", "agent:x", "user"} {
+		if protectedRoles[r] {
+			t.Errorf("%q must not be protected — it can be an agent role", r)
+		}
+	}
+}
+
+func TestAgentRoleFloorKeys_MatchRowsExactly(t *testing.T) {
+	rows := agentRoleRows()
+	keys := agentRoleFloorKeys()
+	if len(keys) != len(rows) {
+		t.Fatalf("floor keys %d != rows %d", len(keys), len(rows))
+	}
+	rowSet := map[permKey]bool{}
+	for _, r := range rows {
+		rowSet[permKey{r.TypeName, r.FieldName}] = true
+	}
+	seen := map[permKey]bool{}
+	for _, k := range keys {
+		if !rowSet[k] {
+			t.Errorf("floor key %v has no matching row", k)
+		}
+		if seen[k] {
+			t.Errorf("duplicate floor key %v", k)
+		}
+		seen[k] = true
+	}
+}
+
+func TestBuildFloorDeleteDoc_ExactKeyMatchesOnly(t *testing.T) {
+	keys := []permKey{
+		{"data-object:query", "hub_agent_db_sessions"},
+		{"Query", "core"},
+	}
+	query, vars := buildFloorDeleteDoc("agent:x", keys)
+	// One aliased delete per key, each an EXACT (type_name, field_name) match —
+	// never a type_name `in` list (which would also drop an admin grant sharing a
+	// type_name).
+	for _, want := range []string{
+		"$role: String!",
+		"d0: delete_role_permissions(filter: {role: {eq: $role}, type_name: {eq: $t0}, field_name: {eq: $f0}})",
+		"d1: delete_role_permissions(filter: {role: {eq: $role}, type_name: {eq: $t1}, field_name: {eq: $f1}})",
+	} {
+		if !strings.Contains(query, want) {
+			t.Fatalf("delete doc missing %q:\n%s", want, query)
+		}
+	}
+	if vars["role"] != "agent:x" ||
+		vars["t0"] != "data-object:query" || vars["f0"] != "hub_agent_db_sessions" ||
+		vars["t1"] != "Query" || vars["f1"] != "core" {
+		t.Fatalf("delete vars wrong: %v", vars)
+	}
+}
+
 func TestBuildRoleRowsInsert_CarriesFilterAndData(t *testing.T) {
 	// Pick a query row (has filter) and an insert row (has data) to prove both
 	// JSON args reach the mutation variables.

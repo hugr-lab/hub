@@ -783,7 +783,10 @@ func (a *HubApp) handleAgentAccess(w *app.Result, r *app.Request) error {
 		UserID    string    `json:"user_id"`
 		Role      string    `json:"role"`
 		CreatedAt time.Time `json:"created_at"`
-		User      []struct {
+		// `user` is a to-ONE relation (user_agents.user_id → users), so hugr
+		// returns a single Arrow struct — scan it into a struct, NOT a slice
+		// (a []struct fails: "cannot scan Arrow struct … into slice").
+		User struct {
 			DisplayName string `json:"display_name"`
 		} `json:"user"`
 	}
@@ -795,8 +798,8 @@ func (a *HubApp) handleAgentAccess(w *app.Result, r *app.Request) error {
 		// upgrades the name on first entry. Append arity MUST match the four
 		// declared columns — the adapter nil-pads short rows silently.
 		name := g.UserID
-		if len(g.User) > 0 && g.User[0].DisplayName != "" {
-			name = g.User[0].DisplayName
+		if g.User.DisplayName != "" {
+			name = g.User.DisplayName
 		}
 		if err := w.Append(g.UserID, name, g.Role, fmtTime(g.CreatedAt)); err != nil {
 			return err

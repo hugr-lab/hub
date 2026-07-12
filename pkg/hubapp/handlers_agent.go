@@ -272,6 +272,14 @@ func (a *HubApp) handleDeleteAgent(w *app.Result, r *app.Request) error {
 	// caller: a non-admin owner's role is denied the Agent DB by the HB3 RLS floor.
 	svcCtx := r.Context()
 
+	// Capture the agent's hugr role before the identity is gone — a hub-created
+	// per-agent role (agent:<id>) is dropped once the agent no longer references
+	// it (below). Best-effort: a missing identity just means no role to clean.
+	var agentRole string
+	if info, err := a.agentForToken(svcCtx, agentID); err == nil {
+		agentRole = info.Role
+	}
+
 	// Stop the runtime first (idempotent — no error if not running).
 	if a.agentRuntime != nil {
 		_ = a.agentRuntime.Stop(svcCtx, agentID)
@@ -320,6 +328,10 @@ func (a *HubApp) handleDeleteAgent(w *app.Result, r *app.Request) error {
 	if a.supervisor != nil {
 		a.supervisor.forget(agentID)
 	}
+
+	// Drop the agent's dedicated per-agent role now that its identity is gone
+	// (no-op for the shared base role or an admin-named one).
+	a.maybeDeleteAgentRole(svcCtx, agentRole)
 
 	a.logger.Info("agent deleted via mutation", "agent", agentID, "by", u.ID)
 	return w.Set(agentID)
