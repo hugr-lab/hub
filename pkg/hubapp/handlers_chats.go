@@ -780,15 +780,25 @@ func (a *HubApp) handleAgentAccess(w *app.Result, r *app.Request) error {
 		return fmt.Errorf("list access: %w", res.Err())
 	}
 	var rows []struct {
-		UserID    string `json:"user_id"`
-		Role      string `json:"role"`
+		UserID    string    `json:"user_id"`
+		Role      string    `json:"role"`
 		CreatedAt time.Time `json:"created_at"`
+		User      []struct {
+			DisplayName string `json:"display_name"`
+		} `json:"user"`
 	}
 	if err := res.ScanData("hub.db.user_agents", &rows); err != nil && !isNoData(err) {
 		return fmt.Errorf("scan access: %w", err)
 	}
 	for _, g := range rows {
-		if err := w.Append(g.UserID, g.Role, fmtTime(g.CreatedAt)); err != nil {
+		// Stub grants (user never logged in) show the id until ensureUser
+		// upgrades the name on first entry. Append arity MUST match the four
+		// declared columns — the adapter nil-pads short rows silently.
+		name := g.UserID
+		if len(g.User) > 0 && g.User[0].DisplayName != "" {
+			name = g.User[0].DisplayName
+		}
+		if err := w.Append(g.UserID, name, g.Role, fmtTime(g.CreatedAt)); err != nil {
 			return err
 		}
 	}
