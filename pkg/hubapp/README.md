@@ -11,14 +11,17 @@ This package contains everything that lives behind that registration.
 
 | Surface | Mechanism | Where |
 |---|---|---|
-| `hub.db.*` tables (agents, conversations, messages, memory, …) | Hugr standard CRUD on PostgreSQL | `schema/init.sql`, `schema/hub.graphql` |
-| `hub.agent_runtime` (read live container state) | airport-go **table function** | `catalog.go` `registerAgentRuntime` |
-| `hub.memory_search`, `hub.registry_search` | airport-go **table functions** | `catalog.go` `registerSearchFunctions` |
-| Mutating functions: `start_agent`, `stop_agent`, `delete_agent` | airport-go **scalar mutating functions** | `handlers_agent.go` |
-| Mutating functions: `branch_conversation`, `summarize_conversation` | airport-go **scalar mutating functions** | `handlers_conversation.go` |
-| `conversation_context` recursive view (branched conv parent walk) | Hugr SDL `@view` with `@args` | `schema/hub.graphql` |
+| `hub.db.*` platform tables (users, user_agents, projects, chats, budgets, bootstrap secrets) | Hugr standard CRUD on PostgreSQL | `schema/init.sql`, `schema/hub.graphql` |
+| `hub.agent.db.*` — the hugen agent store (sessions, events, skills, tasks; hugen-owned schema) | second data source, separate physical DB | `app.go` `DataSources` |
+| `my_agent_instances`, `my_chats`, `my_projects`, `agent_access` | airport-go **table functions** (caller identity via hidden args) | `handlers_reads.go`, `handlers_chats.go` |
+| Lifecycle: `start_agent`, `stop_agent`, `delete_agent` | airport-go **mutating functions** | `handlers_agent.go` |
+| Provisioning: `create_agent`, `update_agent`, `disable_agent`, `bootstrap_token` | airport-go **mutating functions** (admin) | `handlers_provision.go`, `agent_token.go` |
+| Chats/projects management plane: `create/update/delete_chat`, `create/update/delete_project`, `grant/revoke_agent_access` | airport-go **mutating functions** | `handlers_chats.go` |
+| `agent.info` — the calling agent's merged config | scalar function (agent-facing) | `agent_info.go` |
 
-The full design is in `design/007-agent-platform-v2/spec-a-plus-graphql-api.md`.
+The design of record is `design/008-integration/` (hugen repo):
+`spec-hub-side.md` (build ladder) + `spec-hub-gateway.md` (HB5 gateway) +
+`spec-agent-orchestration.md` (supervisor).
 
 ## What hub-service exposes through plain HTTP
 
@@ -27,16 +30,10 @@ These are intentionally not GraphQL — they are protocol or transport endpoints
 | Endpoint | Why |
 |---|---|
 | `/health` | Kubernetes / Docker healthcheck |
-| `/api/user/login` | OIDC token exchange |
-| `/ws/{conversation_id}` | Chat WebSocket — token streaming, tool calls, etc. |
-| `/agent/ws/{instance_id}` | Agent ↔ Hub Service WebSocket — agent connection |
-| `/mcp/{user_id}` | MCP JSON-RPC tool protocol (used by agents) |
-| `/v1/*` | OpenAI-compatible chat completions for third-party clients |
-
-Plus, **temporarily**, the legacy REST handlers in `agents.go` and
-`conversations.go` (start/stop/create/branch/summarize/...). These are
-**deprecated** — they exist only while hub-admin and hub-chat extensions
-migrate to GraphQL. They will be deleted once frontend migration is complete.
+| `/hugr` | GraphQL proxy to Hugr with caller impersonation |
+| `/agent/token` (+ `/agent/token/public-key`) | agent token authority (HB1) — bootstrap-secret redeem + JWT refresh |
+| `/api/v1/agents/{id}/hugen/v1/*` | HB5 gateway raw pass-through to the agent container's native API (forwarded user bearer, SSE) |
+| `/api/v1/chats/{id}/messages|stream|events|inquiry|cancel|artifacts` | HB5 chat transport verbs — resolve chat → root session, lazy session bind on first message |
 
 ## Code layout
 
