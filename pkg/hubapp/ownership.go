@@ -69,9 +69,11 @@ func (a *HubApp) ensureUser(ctx context.Context, u auth.UserInfo) error {
 		a.logger.Info("user lazily provisioned", "user", u.ID, "name", name, "role", role)
 		return nil
 	}
-	// An id-as-name is a placeholder (impersonation without a user-name header
-	// defaults user_name to the user id on the hugr side), not an IdP rename —
-	// it must never clobber a real display name.
+	// An id-as-name is a placeholder, not an IdP rename — it must never clobber a
+	// real display name. A name equal to the id is exactly what a nameless
+	// identity carries: the management middleware stamps Name = user id for
+	// secret-key callers (middleware.go), and it is also the stub written below
+	// on first touch. Only a genuine, distinct token name refreshes display_name.
 	if name != "" && name != u.ID && name != rows[0].DisplayName {
 		upd, err := a.client.Query(ctx,
 			`mutation($id: String!, $name: String!) {
