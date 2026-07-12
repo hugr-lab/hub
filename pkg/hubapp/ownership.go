@@ -15,8 +15,9 @@ import (
 // sync anymore (HB6 prune): the verified token IS the registry (owner
 // 2026-07-10). Insert-if-missing with the display name + role from the token;
 // a differing non-empty token name refreshes display_name (IdP renames
-// follow). Grant targets that have never logged in get a stub row
-// (display_name = id) their first authenticated call upgrades.
+// follow), except an id-as-name placeholder. Grant targets that have never
+// logged in get a stub row (display_name = id) their first authenticated
+// call upgrades.
 func (a *HubApp) ensureUser(ctx context.Context, u auth.UserInfo) error {
 	res, err := a.client.Query(ctx,
 		`query($id: String!) { hub { db { users(filter: { id: { eq: $id } }, limit: 1) { id display_name } } } }`,
@@ -68,7 +69,10 @@ func (a *HubApp) ensureUser(ctx context.Context, u auth.UserInfo) error {
 		a.logger.Info("user lazily provisioned", "user", u.ID, "name", name, "role", role)
 		return nil
 	}
-	if name != "" && name != rows[0].DisplayName {
+	// An id-as-name is a placeholder (impersonation without a user-name header
+	// defaults user_name to the user id on the hugr side), not an IdP rename —
+	// it must never clobber a real display name.
+	if name != "" && name != u.ID && name != rows[0].DisplayName {
 		upd, err := a.client.Query(ctx,
 			`mutation($id: String!, $name: String!) {
 				hub { db { update_users(filter: { id: { eq: $id } }, data: { display_name: $name }) { affected_rows } } } }`,
