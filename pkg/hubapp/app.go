@@ -21,7 +21,7 @@ import (
 
 const (
 	appName    = "hub"
-	appVersion = "0.3.2"
+	appVersion = "0.3.5"
 )
 
 type HubApp struct {
@@ -37,6 +37,11 @@ type HubApp struct {
 
 	supervisor       *supervisor        // desired-state reconcile loop (spec §4); nil when Docker is absent
 	supervisorCancel context.CancelFunc // stops the supervisor goroutine on Shutdown
+
+	// accessCheck / chatLookup override the gateway's authz + chat-read seams
+	// in tests; nil → checkAgentAccess / fetchChat (gateway.go, gateway_chats.go).
+	accessCheck func(ctx context.Context, u auth.UserInfo, agentID string) error
+	chatLookup  func(ctx context.Context, id string) (chatRow, error)
 }
 
 func New(cfg Config, logger *slog.Logger, c *client.Client) *HubApp {
@@ -288,6 +293,12 @@ func (a *HubApp) Init(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/hugr", a.hugrProxyHandler())
 
+	// HB5 gateway transport plane — raw pass-through to the agent's native
+	// HTTP API + chat-scoped verbs (spec-hub-gateway §4). Registered
+	// unconditionally; handlers answer 503 when no agent runtime is wired.
+	mux.HandleFunc("/api/v1/agents/{id}/hugen/{path...}", a.agentProxyHandler)
+	registerChatTransport(mux, a)
+
 	// Agent management — DockerRuntime is initialized in Catalog() (if Docker available).
 	if a.agentRuntime != nil {
 		a.agentRuntime.Reconstruct(ctx)
@@ -375,7 +386,12 @@ func (a *HubApp) Shutdown(ctx context.Context) error {
 		}
 	}
 	if a.server != nil {
-		return a.server.Shutdown(ctx)
+		if err := a.server.Shutdown(ctx); err != nil {
+			// Graceful drain timed out — open SSE streams never finish on
+			// their own; force-close so shutdown does not hang on them.
+			_ = a.server.Close()
+			return err
+		}
 	}
 	return nil
 }

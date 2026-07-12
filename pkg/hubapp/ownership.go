@@ -1,50 +1,106 @@
 package hubapp
 
 // Shared helpers used by the airport-go mutating / reading functions:
-//   - ensureUser: seed a hub.db.users row for a caller on first use (FK dependency)
+//   - ensureUser: lazily provision a hub.db.users row on first touch (FK target)
 
 import (
 	"context"
+	"fmt"
+	"strings"
+
+	"github.com/hugr-lab/hub/pkg/auth"
 )
 
-// ensureUser creates the user row if not exists, so conversations and other
-// user-scoped inserts can satisfy their FK. Called on the first write operation
-// for a caller.
-func (a *HubApp) ensureUser(ctx context.Context, userID, role string) {
+// ensureUser lazily provisions a users row on first touch — there is no OIDC
+// sync anymore (HB6 prune): the verified token IS the registry (owner
+// 2026-07-10). Insert-if-missing with the display name + role from the token;
+// a differing non-empty token name refreshes display_name (IdP renames
+// follow). Grant targets that have never logged in get a stub row
+// (display_name = id) their first authenticated call upgrades.
+func (a *HubApp) ensureUser(ctx context.Context, u auth.UserInfo) error {
 	res, err := a.client.Query(ctx,
-		`query($id: String!) { hub { db { users(filter: { id: { eq: $id } }, limit: 1) { id } } } }`,
-		map[string]any{"id": userID},
-	)
-	if err == nil {
-		defer res.Close()
-		if res.Err() != nil {
-			a.logger.Warn("ensureUser check error", "user", userID, "error", res.Err())
-			return
-		}
-		var users []struct {
-			ID string `json:"id"`
-		}
-		if err := res.ScanData("hub.db.users", &users); err == nil && len(users) > 0 {
-			return
-		}
-	}
-	if role == "" {
-		role = "user"
-	}
-	insRes, err := a.client.Query(ctx,
-		`mutation($id: String!, $name: String!, $role: String!) {
-			hub { db { insert_users(data: { id: $id, display_name: $name, hugr_role: $role }) { id } } }
-		}`,
-		map[string]any{"id": userID, "name": userID, "role": role},
+		`query($id: String!) { hub { db { users(filter: { id: { eq: $id } }, limit: 1) { id display_name } } } }`,
+		map[string]any{"id": u.ID},
 	)
 	if err != nil {
-		a.logger.Warn("ensureUser failed", "user", userID, "error", err)
-		return
+		return fmt.Errorf("user lookup: %w", err)
 	}
-	defer insRes.Close()
-	if insRes.Err() != nil {
-		a.logger.Warn("ensureUser insert error", "user", userID, "error", insRes.Err())
-		return
+	defer res.Close()
+	if res.Err() != nil {
+		return fmt.Errorf("user lookup: %w", res.Err())
 	}
-	a.logger.Info("auto-created user", "id", userID, "role", role)
+	var rows []struct {
+		ID          string `json:"id"`
+		DisplayName string `json:"display_name"`
+	}
+	if err := res.ScanData("hub.db.users", &rows); err != nil && !isNoData(err) {
+		return fmt.Errorf("user lookup: %w", err)
+	}
+
+	name := strings.TrimSpace(u.Name)
+	if len(rows) == 0 {
+		if name == "" {
+			name = u.ID
+		}
+		role := u.Role
+		if role == "" {
+			role = "user"
+		}
+		ins, err := a.client.Query(ctx,
+			`mutation($data: hub_db_users_mut_input_data!) {
+				hub { db { insert_users(data: $data) { id } } } }`,
+			map[string]any{"data": map[string]any{
+				"id": u.ID, "display_name": name, "hugr_role": role,
+			}},
+		)
+		if err == nil {
+			defer ins.Close()
+			err = ins.Err()
+		}
+		if err != nil {
+			// Two first-touch calls can race the insert (PK violation for the
+			// loser) — the row existing is SUCCESS, whoever wrote it.
+			if a.userRowExists(ctx, u.ID) {
+				return nil
+			}
+			return fmt.Errorf("provision user: %w", err)
+		}
+		a.logger.Info("user lazily provisioned", "user", u.ID, "name", name, "role", role)
+		return nil
+	}
+	if name != "" && name != rows[0].DisplayName {
+		upd, err := a.client.Query(ctx,
+			`mutation($id: String!, $name: String!) {
+				hub { db { update_users(filter: { id: { eq: $id } }, data: { display_name: $name }) { affected_rows } } } }`,
+			map[string]any{"id": u.ID, "name": name},
+		)
+		if err != nil {
+			a.logger.Warn("user name refresh failed", "user", u.ID, "error", err)
+			return nil // best-effort: the row exists, the FK is satisfied
+		}
+		upd.Close()
+	}
+	return nil
+}
+
+// userRowExists is the race-loser check for ensureUser's first-touch insert.
+func (a *HubApp) userRowExists(ctx context.Context, id string) bool {
+	res, err := a.client.Query(ctx,
+		`query($id: String!) { hub { db { users(filter: { id: { eq: $id } }, limit: 1) { id } } } }`,
+		map[string]any{"id": id},
+	)
+	if err != nil {
+		return false
+	}
+	defer res.Close()
+	if res.Err() != nil {
+		return false
+	}
+	var rows []struct {
+		ID string `json:"id"`
+	}
+	if err := res.ScanData("hub.db.users", &rows); err != nil {
+		return false
+	}
+	return len(rows) > 0
 }

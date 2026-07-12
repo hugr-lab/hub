@@ -107,3 +107,43 @@ func TestFirstHostPort(t *testing.T) {
 		}
 	})
 }
+
+func TestAPIBaseURL(t *testing.T) {
+	rt := &DockerRuntime{states: map[string]*RuntimeState{
+		"pub":  {AgentID: "pub", HostPort: "49153"},
+		"net":  {AgentID: "net"},
+		"down": {AgentID: "down", Status: "stopped"},
+	}}
+
+	t.Run("published host port wins (dev publish)", func(t *testing.T) {
+		got, err := rt.APIBaseURL("pub")
+		if err != nil {
+			t.Fatalf("APIBaseURL(pub): %v", err)
+		}
+		if got != "http://127.0.0.1:49153" {
+			t.Fatalf("APIBaseURL(pub) = %q, want http://127.0.0.1:49153", got)
+		}
+	})
+
+	t.Run("falls back to container DNS on the agent network", func(t *testing.T) {
+		got, err := rt.APIBaseURL("net")
+		if err != nil {
+			t.Fatalf("APIBaseURL(net): %v", err)
+		}
+		if got != "http://hub-agent-net:10200" {
+			t.Fatalf("APIBaseURL(net) = %q, want http://hub-agent-net:10200", got)
+		}
+	})
+
+	t.Run("stopped container still resolves (dial carries the signal)", func(t *testing.T) {
+		if _, err := rt.APIBaseURL("down"); err != nil {
+			t.Fatalf("APIBaseURL(down): %v", err)
+		}
+	})
+
+	t.Run("unknown agent errors", func(t *testing.T) {
+		if _, err := rt.APIBaseURL("ghost"); err == nil {
+			t.Fatal("APIBaseURL(ghost) = nil error, want error")
+		}
+	})
+}

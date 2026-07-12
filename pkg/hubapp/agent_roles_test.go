@@ -112,6 +112,14 @@ func TestAgentRoleRows_PlatformDeniesPresent(t *testing.T) {
 		// Subscription|core stays open for models.chat_completion, but core.store
 		// (pub-sub subscribe/watch) is scoped out with an exact sub-field deny.
 		"_module_core_subscription|store",
+		// HB5 management plane — agents never touch threads/projects/grants.
+		"_module_hub_query|my_chats", "_module_hub_query|my_projects",
+		"_module_hub_query|agent_access",
+		"_module_hub_mut_function|create_chat", "_module_hub_mut_function|update_chat",
+		"_module_hub_mut_function|delete_chat",
+		"_module_hub_mut_function|create_project", "_module_hub_mut_function|update_project",
+		"_module_hub_mut_function|delete_project",
+		"_module_hub_mut_function|grant_agent_access", "_module_hub_mut_function|revoke_agent_access",
 	} {
 		r, ok := seen[key]
 		if !ok {

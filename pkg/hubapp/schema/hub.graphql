@@ -172,8 +172,14 @@ type chats @table(name: "chats") {
   created_at: Timestamp @default(insert_exp: "NOW()")
   """Last update timestamp"""
   updated_at: Timestamp @default(insert_exp: "NOW()", update_exp: "NOW()")
-  """Last activity timestamp"""
-  last_active_at: Timestamp @default(insert_exp: "NOW()", update_exp: "NOW()")
+  """Last activity timestamp — bumped EXPLICITLY by the gateway transport
+  plane on message/inquiry submits only (spec-hub-gateway §3); deliberately
+  no update_exp, so a rename/archive does not resurface the thread."""
+  last_active_at: Timestamp @default(insert_exp: "NOW()")
+  """Archived flag (boolean, NOT a timestamp: a null Timestamp mutation value
+  coerces to the zero time engine-side — query-engine ask #9 — so an
+  archived_at could never be cleared)"""
+  archived: Boolean
 }
 
 """Token and request budget limits per user, role, or global scope.
