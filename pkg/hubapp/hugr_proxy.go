@@ -50,9 +50,13 @@ func (a *HubApp) hugrProxyHandler() http.HandlerFunc {
 			return
 		}
 		proxyReq.Header.Set("Content-Type", "application/json")
-		if bearer := r.Header.Get("Authorization"); u.AuthType != "management" && strings.HasPrefix(bearer, "Bearer ") {
+		if bearer := r.Header.Get("Authorization"); u.AuthType == "jwt" && strings.HasPrefix(bearer, "Bearer ") {
 			// The middleware validated this JWT — hand hugr the original
-			// credential, not a downgraded impersonation.
+			// credential, not a downgraded impersonation. Gated on jwt
+			// specifically (not merely "not management"): a future
+			// agent-facing auth path would carry a bearer signed by a
+			// different issuer hugr need not trust here, and must fall
+			// through to the secret+impersonation flow, never be forwarded.
 			proxyReq.Header.Set("Authorization", bearer)
 		} else {
 			proxyReq.Header.Set("X-Hugr-Secret-Key", a.config.HugrSecretKey)

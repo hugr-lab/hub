@@ -77,3 +77,39 @@ func TestHugrProxy_ManagementUsesImpersonation(t *testing.T) {
 		t.Fatal("management caller has no bearer to forward")
 	}
 }
+
+// TestHugrProxy_ManagementBearerNotForwarded pins the security gate: a
+// secret-key caller that ALSO carries a stray Authorization header must NOT
+// have that bearer forwarded to hugr — a management identity is never
+// downgraded to (or upgraded from) a caller-supplied token. The proxy
+// authenticates with its own secret and impersonates, ignoring the bearer.
+func TestHugrProxy_ManagementBearerNotForwarded(t *testing.T) {
+	var got http.Header
+	hugr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.Write([]byte(`{"data":{}}`))
+	}))
+	defer hugr.Close()
+
+	a := &HubApp{config: Config{HugrURL: hugr.URL, HugrSecretKey: "sk"}, logger: slog.Default()}
+	h := a.hugrProxyHandler()
+
+	req := httptest.NewRequest("POST", "/hugr", strings.NewReader(`{"query":"{ __typename }"}`))
+	req.Header.Set("Authorization", "Bearer stray-token")
+	req = req.WithContext(auth.ContextWithUser(req.Context(), auth.UserInfo{ID: "ops", Name: "ops", Role: "admin", AuthType: "management"}))
+	rec := httptest.NewRecorder()
+	h(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if got.Get("Authorization") == "Bearer stray-token" {
+		t.Fatal("management caller's stray bearer must not be forwarded to hugr")
+	}
+	if got.Get("X-Hugr-Secret-Key") != "sk" {
+		t.Fatal("management caller must authenticate with the secret key regardless of a stray bearer")
+	}
+	if got.Get("X-Hugr-Impersonated-User-Id") != "ops" {
+		t.Fatalf("impersonation headers missing: %v", got)
+	}
+}
