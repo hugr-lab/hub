@@ -8,9 +8,8 @@ import (
 	"github.com/hugr-lab/hugen/pkg/store/schema"
 )
 
-// RLS seed for the agent roles (hugen design 008 spec-hub-side §5 HB3), built on
-// query-engine's data-object (table-level) permissions. Two row sets applied to
-// the roles `agent` and `agent_template` at boot:
+// The agent isolation floor (hugen design 008 spec-hub-gateway §12), built on
+// query-engine's data-object (table-level) permissions. Two row sets compose it:
 //
 //   - the agent-store isolation floor exported by hugen's schema library
 //     (schema.AgentPermissions — data-object:query/insert/update rows that
@@ -23,20 +22,16 @@ import (
 // deny set. The agent reaches platform capabilities only through the hub MCP
 // tool surface, never the platform DB directly.
 //
-// Seeding is fail-closed: without the floor a second agent reads the first's
-// store, so a seed failure aborts Init.
+// The floor is applied ON DEMAND at create_agent / update_agent time
+// (ensureAgentRoleFloor), NOT at boot: Init runs as hugr's _mount/init while
+// hugr is still loading sources, so it must not call back into hugr. Roles
+// persist in hugr's core DB across restarts, so there is nothing to re-seed on
+// startup. `agent` (the shared opt-in role) and `agent_template` are ordinary
+// role names hub owns the description of when they are used.
 const (
 	agentRoleName         = "agent"
 	agentTemplateRoleName = "agent_template"
-
-	agentRoleDescription         = "hugen agent principal — RLS floor seeded by hub-service at boot (managed, do not hand-edit)"
-	agentTemplateRoleDescription = "copyable base for bespoke agent roles — same managed RLS floor as `agent`; copy, then customize the copy"
 )
-
-var seededAgentRoles = []struct{ name, description string }{
-	{agentRoleName, agentRoleDescription},
-	{agentTemplateRoleName, agentTemplateRoleDescription},
-}
 
 // perAgentRolePrefix marks a role create_agent minted for a single agent
 // (`agent:<agent_id>`). agent_id grammar excludes ':' so the prefix is an
@@ -165,68 +160,6 @@ func agentRoleRows() []schema.RolePermission {
 	return append(schema.AgentPermissions(), platformDenyRows()...)
 }
 
-// seedAgentRoles applies the managed isolation floor at boot. Two parts:
-//
-//   - the base roles (`agent` shared default + `agent_template` floor base) are
-//     seeded fail-closed — without them a created agent has no role to fall back
-//     to and no template to build on;
-//   - a best-effort reconcile re-applies the floor (managed-subset) to every
-//     distinct role a live agent identity references, so a floor-schema change
-//     propagates to per-agent roles without recreating each agent.
-//
-// Reconcile is managed-subset (agent grant rows survive) and skips protected
-// built-ins. It is best-effort: the hard floor is applied at create_agent time,
-// this only repairs drift.
-func (a *HubApp) seedAgentRoles(ctx context.Context) error {
-	for _, role := range seededAgentRoles {
-		if err := a.ensureAgentRoleFloor(ctx, role.name, role.description); err != nil {
-			return fmt.Errorf("seed base role %s: %w", role.name, err)
-		}
-	}
-
-	roles, err := a.liveAgentRoles(ctx)
-	if err != nil {
-		// The agent store may be empty or mid-provision at boot — non-fatal.
-		a.logger.Warn("agent-role reconcile skipped: enumerate live roles failed", "error", err)
-	}
-	reconciled := 0
-	for _, role := range roles {
-		if role == agentRoleName || role == agentTemplateRoleName {
-			continue // base roles already seeded above
-		}
-		if protectedRoles[role] {
-			// A live agent sitting on a protected platform role is a
-			// misconfiguration (it is over-privileged, and the floor cannot be
-			// applied without breaking the platform) — surface it, don't floor it.
-			a.logger.Warn("agent on a protected platform role — not floored (over-privileged)", "role", role)
-			continue
-		}
-		if err := a.ensureAgentRoleFloor(ctx, role, perAgentRoleReconcileDesc(role)); err != nil {
-			a.logger.Warn("agent-role floor reconcile failed", "role", role, "error", err)
-			continue
-		}
-		reconciled++
-	}
-
-	if err := a.invalidateRolePermCache(ctx); err != nil {
-		return err
-	}
-	a.logger.Info("agent role RLS floor seeded",
-		"base_roles", []string{agentRoleName, agentTemplateRoleName},
-		"reconciled_per_agent_roles", reconciled)
-	return nil
-}
-
-// perAgentRoleReconcileDesc supplies a description used only when reconcile has
-// to CREATE a hub-owned role that vanished; for admin-named roles the value is
-// ignored (ensureRoleExists leaves an existing role's description untouched).
-func perAgentRoleReconcileDesc(role string) string {
-	if isHubCreatedAgentRole(role) {
-		return perAgentRoleDescription(strings.TrimPrefix(role, perAgentRolePrefix))
-	}
-	return "agent role — isolation floor managed by hub-service"
-}
-
 // ensureAgentRoleFloor guarantees the isolation floor (agentRoleRows) is present
 // on `role`, managed-subset: it replaces ONLY hub's floor rows (keyed by
 // (type_name, field_name)) and never touches admin-added grant rows — so an
@@ -260,35 +193,6 @@ func (a *HubApp) ensureAgentRoleFloor(ctx context.Context, role, description str
 		return fmt.Errorf("verify floor on %s: %w", role, err)
 	}
 	return nil
-}
-
-// liveAgentRoles returns the distinct non-empty `role` values across all agent
-// identities in the store — the reconcile target set.
-func (a *HubApp) liveAgentRoles(ctx context.Context) ([]string, error) {
-	res, err := a.client.Query(ctx,
-		`{ hub { agent { db { agents { role } } } } }`, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer res.Close()
-	if res.Err() != nil {
-		return nil, res.Err()
-	}
-	var rows []struct {
-		Role string `json:"role"`
-	}
-	if err := res.ScanData("hub.agent.db.agents", &rows); err != nil && !isNoData(err) {
-		return nil, err
-	}
-	seen := map[string]bool{}
-	var out []string
-	for _, r := range rows {
-		if r.Role != "" && !seen[r.Role] {
-			seen[r.Role] = true
-			out = append(out, r.Role)
-		}
-	}
-	return out, nil
 }
 
 const deleteFloorRowsChunk = 50

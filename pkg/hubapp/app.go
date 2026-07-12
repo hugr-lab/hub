@@ -232,8 +232,16 @@ func (a *HubApp) InitDBSchemaTemplate(ctx context.Context, name string) (string,
 		return hubDBSchema, nil
 	case "agent.db":
 		// hugen physical DDL rendered here (native Postgres) with the hub's
-		// embedder/vector-size, mirroring the SDL in DataSources.
-		return schema.InitDDL(db.SDBPostgres, a.agentSchemaParams())
+		// embedder/vector-size, mirroring the SDL in DataSources. The default
+		// agent type is seeded HERE (idempotent INSERT appended to the DDL) rather
+		// than via a runtime GraphQL call — hugr executes this SQL straight against
+		// Postgres, so unlike an Init-time a.client call it does not depend on
+		// hugr's HTTP endpoint being up (see Init).
+		ddl, err := schema.InitDDL(db.SDBPostgres, a.agentSchemaParams())
+		if err != nil {
+			return "", err
+		}
+		return ddl + "\n" + defaultAgentTypeSeedSQL, nil
 	}
 	return "", fmt.Errorf("unknown data source: %s", name)
 }
@@ -276,14 +284,15 @@ func (a *HubApp) Init(ctx context.Context) error {
 		}
 	}
 
-	// Seed default agent types
-	a.seedAgentTypes(ctx)
-
-	// RLS floor for agent roles (data-object permissions) — fail-closed: without
-	// it a second agent reads the first one's store (Hugr is allow-by-default).
-	if err := a.seedAgentRoles(ctx); err != nil {
-		return fmt.Errorf("agent role RLS seed: %w", err)
-	}
+	// NOTE: Init must NOT call back into hugr. It runs as hugr's _mount/init
+	// while hugr is still loading its data sources — hugr's HTTP endpoint is not
+	// listening yet, so any a.client call here fails "connection refused" and the
+	// mount (hence every hub function) fails to load. Consequently:
+	//   - default agent types are seeded at SCHEMA-APPLICATION time (an idempotent
+	//     INSERT appended in InitDBSchemaTemplate for agent.db), not via GraphQL;
+	//   - the agent isolation floor is applied ON DEMAND at create_agent /
+	//     update_agent (ensureAgentRoleFloor). Roles persist in hugr's core DB
+	//     across restarts, so there is nothing to seed on boot.
 
 	// REST surface is intentionally minimal — everything CRUD went to Hugr GraphQL
 	// (airport-go mutating + table functions in handlers_*.go). What remains is
