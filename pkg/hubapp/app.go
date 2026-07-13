@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/hugr-lab/airport-go/catalog"
 	"github.com/hugr-lab/hub/pkg/agentmgr"
@@ -37,6 +38,12 @@ type HubApp struct {
 
 	supervisor       *supervisor        // desired-state reconcile loop (spec §4); nil when Docker is absent
 	supervisorCancel context.CancelFunc // stops the supervisor goroutine on Shutdown
+
+	// Skills marketplace (SK1). bundleStore holds published bundle bytes
+	// (nil disables the /skills surface); skillsVerify caches auth.me results
+	// for /skills callers (both user and agent tokens).
+	bundleStore  BundleStore
+	skillsVerify *verifyCache
 
 	// accessCheck / chatLookup override the gateway's authz + chat-read seams
 	// in tests; nil → checkAgentAccess / fetchChat (gateway.go, gateway_chats.go).
@@ -282,6 +289,15 @@ func (a *HubApp) Init(ctx context.Context) error {
 				a.logger.Warn("failed to create state dir", "path", p, "error", err)
 			}
 		}
+		// Skills marketplace byte-store (SK1) — the v1 FS backend on the same
+		// persistent volume. Creating it is FS-only (no hugr), so it is safe in
+		// Init; the catalog seed that fills it runs async post-boot.
+		if bs, err := NewFSBundleStore(a.config.StoragePath + "/system/skills"); err != nil {
+			a.logger.Warn("skills byte-store disabled", "error", err)
+		} else {
+			a.bundleStore = bs
+			a.skillsVerify = newVerifyCache(60 * time.Second)
+		}
 	}
 
 	// NOTE: Init must NOT call back into hugr. It runs as hugr's _mount/init
@@ -307,6 +323,16 @@ func (a *HubApp) Init(ctx context.Context) error {
 	// unconditionally; handlers answer 503 when no agent runtime is wired.
 	mux.HandleFunc("/api/v1/agents/{id}/hugen/{path...}", a.agentProxyHandler)
 	registerChatTransport(mux, a)
+
+	// Skills marketplace (SK1) — exempt from the OIDC middleware (verifies
+	// callers in-handler via hugr auth.me so agent tokens work too). The seed
+	// that populates the catalog from the embedded hub bundle runs async once
+	// hugr is up (never from Init).
+	if a.bundleStore != nil {
+		mux.HandleFunc("GET /skills/catalog", a.handleSkillsCatalog)
+		mux.HandleFunc("GET /skills/{name}/bundle", a.handleSkillsBundle)
+		a.startSkillsSeed()
+	}
 
 	// Agent management — DockerRuntime is initialized in Catalog() (if Docker available).
 	if a.agentRuntime != nil {

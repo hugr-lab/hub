@@ -18,18 +18,27 @@ type AuthConfig struct {
 //
 // NOTE (O3): the legacy in-memory agent-token path is gone — spawned agents
 // talk to hugr directly (they never present a token to hub-service HTTP), and
-// /agent/token is self-authenticating (body token IS the credential). Any
-// FUTURE agent-facing hub endpoint (e.g. hub-mcp) must verify agent JWTs
-// against the agent-token issuer's OWN public key — the user-OIDC JWKS branch
-// below cannot validate hub-minted agent tokens.
+// /agent/token is self-authenticating (body token IS the credential).
+//
+// The skills marketplace (/skills/*, SK1) IS agent-facing — the reconciler
+// calls it with the agent JWT — so it is exempt here and verifies the caller
+// IN-HANDLER against hugr auth.me (skills_auth.go). auth.me is the authority
+// hugr trusts for BOTH end-user IdP tokens AND hub-minted agent tokens, so it
+// supersedes the O3 note's "verify agent JWT against the issuer's own key":
+// one path covers both caller kinds. The user-OIDC JWKS branch below still
+// cannot validate agent tokens, which is exactly why /skills/* skips it.
 func Middleware(next http.Handler, cfg AuthConfig) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Skip health check and the agent token endpoints — /agent/token is
-		// self-authenticating (the body token/secret IS the credential,
-		// spec-hub-side §1.2) and the public key is, well, public.
+		// Skip health check, the agent token endpoints, and the skills
+		// marketplace. /agent/token is self-authenticating (the body
+		// token/secret IS the credential, spec-hub-side §1.2); the public key
+		// is, well, public; /skills/* verifies the bearer in-handler via
+		// hugr auth.me (SK1) so it can accept agent tokens the JWKS branch
+		// cannot.
 		if r.URL.Path == "/health" ||
 			r.URL.Path == "/agent/token" ||
-			r.URL.Path == "/agent/token/public-key" {
+			r.URL.Path == "/agent/token/public-key" ||
+			strings.HasPrefix(r.URL.Path, "/skills/") {
 			next.ServeHTTP(w, r)
 			return
 		}
