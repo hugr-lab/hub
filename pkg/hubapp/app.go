@@ -331,6 +331,7 @@ func (a *HubApp) Init(ctx context.Context) error {
 	if a.bundleStore != nil {
 		mux.HandleFunc("GET /skills/catalog", a.handleSkillsCatalog)
 		mux.HandleFunc("GET /skills/{name}/bundle", a.handleSkillsBundle)
+		mux.HandleFunc("POST /skills/publish", a.handleSkillsPublish)
 		a.startSkillsSeed()
 	}
 

@@ -39,20 +39,22 @@ type catalogEntry struct {
 }
 
 // sharedSkillRow is the privileged read shape of a shared `skills` row.
-// Metadata is a string, not json.RawMessage: the query-engine client delivers
-// a JSON/JSONB column as a JSON-encoded string (hugen scans it the same way,
-// pkg/skill/dynamic.go) — scanning into a []byte-shaped RawMessage mismatches
-// the Arrow column type and fails ScanData even on an empty result.
+// Metadata scans directly into map[string]any: the `metadata` JSON scalar
+// arrives over IPC as utf8 JSON, and the query-engine scanner decodes a
+// utf8-JSON column into a map/any destination (jsonStringConvertFunc). A
+// []byte-shaped json.RawMessage fails (it routes to the Arrow-list converter),
+// and a NAMED struct fails too (structConvertFunc wants an Arrow Struct
+// column) — map[string]any is the struct-shaped target this column supports.
 type sharedSkillRow struct {
-	Name         string   `json:"name"`
-	Version      string   `json:"version"`
-	Description  string   `json:"description"`
-	ContentHash  string   `json:"content_hash"`
-	Source       string   `json:"source"`
-	TaskEligible bool     `json:"task_eligible"`
-	Keywords     []string `json:"keywords"`
-	TierCompat   []string `json:"tier_compat"`
-	Metadata     string   `json:"metadata"`
+	Name         string         `json:"name"`
+	Version      string         `json:"version"`
+	Description  string         `json:"description"`
+	ContentHash  string         `json:"content_hash"`
+	Source       string         `json:"source"`
+	TaskEligible bool           `json:"task_eligible"`
+	Keywords     []string       `json:"keywords"`
+	TierCompat   []string       `json:"tier_compat"`
+	Metadata     map[string]any `json:"metadata"`
 }
 
 const capabilitySkillNamespace = "hugen:skill:capability"
@@ -224,6 +226,13 @@ func (a *HubApp) sharedSkillByName(ctx context.Context, name string) (sharedSkil
 	return rows[0], nil
 }
 
+// callerUserInfo projects a verified marketplace caller into the auth.UserInfo
+// withIdentity threads onto the impersonated hugr query, so check_access
+// evaluates against the caller's real role — not hub-service's principal.
+func callerUserInfo(caller skillsCaller) auth.UserInfo {
+	return auth.UserInfo{ID: caller.ID, Name: caller.Name, Role: caller.Role}
+}
+
 // callerHasCaps reports whether the caller's role holds EVERY required
 // capability. Evaluated by hugr check_access under the caller's own role
 // (impersonated read via a.client — the same authority as tool Tier-2 perms).
@@ -231,7 +240,7 @@ func (a *HubApp) callerHasCaps(ctx context.Context, caller skillsCaller, require
 	if len(required) == 0 {
 		return true, nil
 	}
-	q := withIdentity(ctx, auth.UserInfo{ID: caller.ID, Name: caller.Name, Role: caller.Role})
+	q := withIdentity(ctx, callerUserInfo(caller))
 	res, err := a.client.Query(q,
 		`query($ns: String!, $f: String!) {
 			function { core { auth { check_access(
@@ -267,25 +276,25 @@ func (a *HubApp) callerHasCaps(ctx context.Context, caller skillsCaller, require
 }
 
 // requiredCapsFromMetadata pulls metadata.hugen.required_capabilities out of a
-// skills.metadata JSON string. Lenient: any shape mismatch yields no caps (a
-// public skill), never an error — an unparseable blob must not brick the
-// catalog.
-func requiredCapsFromMetadata(raw string) []string {
-	if raw == "" {
+// decoded skills.metadata map (scanned straight from the JSON column). Lenient:
+// any shape mismatch yields no caps (a public skill), never an error — a
+// malformed blob must not brick the catalog. Shared by the catalog read path
+// and the publish gate (the parsed manifest's Metadata has the same shape).
+func requiredCapsFromMetadata(md map[string]any) []string {
+	hugen, ok := md["hugen"].(map[string]any)
+	if !ok {
 		return nil
 	}
-	var m struct {
-		Hugen struct {
-			RequiredCapabilities []string `json:"required_capabilities"`
-		} `json:"hugen"`
-	}
-	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+	list, ok := hugen["required_capabilities"].([]any)
+	if !ok {
 		return nil
 	}
-	out := make([]string, 0, len(m.Hugen.RequiredCapabilities))
-	for _, c := range m.Hugen.RequiredCapabilities {
-		if c = strings.TrimSpace(c); c != "" {
-			out = append(out, c)
+	out := make([]string, 0, len(list))
+	for _, v := range list {
+		if s, ok := v.(string); ok {
+			if s = strings.TrimSpace(s); s != "" {
+				out = append(out, s)
+			}
 		}
 	}
 	if len(out) == 0 {

@@ -138,13 +138,13 @@ func (a *HubApp) seedOneBundledSkill(ctx context.Context, name string) error {
 	if md == nil {
 		md = map[string]any{} // skills.metadata is NOT NULL
 	}
-	if err := a.upsertSeededSkill(ctx, seededSkillRow{
-		Name:        name,
-		Description: man.Description,
-		Version:     version,
-		ContentHash: hash,
-		BundlePath:  res.Location,
-		Metadata:    md,
+	if err := a.upsertSkillRow(ctx, marketplaceSeedAgentID, marketplaceSeedSource, seededSkillRow{
+		Name:           name,
+		Description:    man.Description,
+		Version:        version,
+		ContentHash:    hash,
+		BundleLocation: res.Location,
+		Metadata:       md,
 		// Keywords: the manifest has no top-level hugen.keywords (MissionBlock
 		// carries mission-dispatch keywords, a different concept); leave the
 		// catalog column null for the seed. Discovery keywords are an SK-later
@@ -162,21 +162,32 @@ type seededSkillRow struct {
 	Description string
 	Version     string
 	ContentHash string
-	BundlePath  string
-	Metadata    map[string]any // sent as the $md JSON var (skills.metadata NOT NULL)
-	Keywords    []string
-	TierCompat  []string
+	// BundleLocation is the byte-store address the BundleStore returned for
+	// these bytes. It is BACKEND-specific (an FS path today; a git ref / S3
+	// key tomorrow), so it is folded into `metadata.bundle_location` — NOT the
+	// `bundle_path` column, which the schema reserves for an "on-disk bundle
+	// directory" that a catalog row does not have. The hub itself resolves
+	// bytes by (name, version); this is provenance for non-deterministic
+	// backends + debugging.
+	BundleLocation  string
+	Metadata        map[string]any // sent as the $md JSON var (skills.metadata NOT NULL)
+	Keywords        []string
+	TierCompat      []string
+	TaskEligible    bool
+	HasInputsSchema bool
 }
 
-// upsertSeededSkill writes the shared catalog row: delete-then-insert keyed by
-// the (agent_id, source, name) unique index so a changed bundle replaces
-// cleanly. Privileged (a.client secret-key principal).
-func (a *HubApp) upsertSeededSkill(ctx context.Context, row seededSkillRow) error {
+// upsertSkillRow writes a shared catalog row for (agentID, source, name):
+// delete-then-insert keyed by the (agent_id, source, name) unique index so a
+// changed bundle replaces cleanly. Privileged (a.client secret-key principal).
+// Shared by the bundled-skill seeder (agentID="system") and the publish path
+// (agentID=<publisher>).
+func (a *HubApp) upsertSkillRow(ctx context.Context, agentID, source string, row seededSkillRow) error {
 	del, err := a.client.Query(ctx,
-		`mutation($n: String!) { hub { agent { db { delete_skills(
-			filter: { agent_id: { eq: "`+marketplaceSeedAgentID+`" }, source: { eq: "`+marketplaceSeedSource+`" }, name: { eq: $n } }
+		`mutation($a: String!, $s: String!, $n: String!) { hub { agent { db { delete_skills(
+			filter: { agent_id: { eq: $a }, source: { eq: $s }, name: { eq: $n } }
 		) { affected_rows } } } } }`,
-		map[string]any{"n": row.Name},
+		map[string]any{"a": agentID, "s": source, "n": row.Name},
 	)
 	if err != nil {
 		return err
@@ -184,24 +195,34 @@ func (a *HubApp) upsertSeededSkill(ctx context.Context, row seededSkillRow) erro
 	_ = del.Err()
 	del.Close()
 
+	// The byte-store address is backend-specific provenance → fold it into the
+	// metadata bag rather than the on-disk-only `bundle_path` column.
+	md := row.Metadata
+	if md == nil {
+		md = map[string]any{}
+	}
+	if row.BundleLocation != "" {
+		md["bundle_location"] = row.BundleLocation
+	}
+
 	// Build the insert as a $data map so empty array columns can be OMITTED
 	// (→ NULL) rather than sent as an untyped `ARRAY[]`, which the Postgres
 	// agent-store rejects. All NOT NULL columns (incl. the DEFAULT ones the
-	// GraphQL input still marks required) are always present.
+	// GraphQL input still marks required) are always present. `bundle_path` is
+	// intentionally left NULL for catalog rows (no on-disk directory).
 	data := map[string]any{
 		"id":                newSkillRowID(),
-		"agent_id":          marketplaceSeedAgentID,
+		"agent_id":          agentID,
 		"shared":            true,
 		"name":              row.Name,
 		"type":              "skill",
 		"description":       row.Description,
-		"source":            marketplaceSeedSource,
+		"source":            source,
 		"version":           row.Version,
 		"content_hash":      row.ContentHash,
-		"bundle_path":       row.BundlePath,
-		"metadata":          row.Metadata,
-		"task_eligible":     false,
-		"has_inputs_schema": false,
+		"metadata":          md,
+		"task_eligible":     row.TaskEligible,
+		"has_inputs_schema": row.HasInputsSchema,
 		"pin":               false,
 	}
 	if len(row.Keywords) > 0 {

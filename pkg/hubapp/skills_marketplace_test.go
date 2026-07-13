@@ -9,21 +9,23 @@ import (
 func TestRequiredCapsFromMetadata(t *testing.T) {
 	cases := []struct {
 		name string
-		in   string
+		in   map[string]any
 		want []string
 	}{
-		{"empty", ``, nil},
-		{"null", `null`, nil},
-		{"no hugen", `{"other":1}`, nil},
-		{"no caps", `{"hugen":{"autoload":false}}`, nil},
-		{"one cap", `{"hugen":{"required_capabilities":["pii"]}}`, []string{"pii"}},
-		{"multi + blank pruned", `{"hugen":{"required_capabilities":["a"," ","b"]}}`, []string{"a", "b"}},
-		{"garbage", `{not json`, nil},
+		{"nil", nil, nil},
+		{"empty", map[string]any{}, nil},
+		{"no hugen", map[string]any{"other": 1}, nil},
+		{"hugen not a map", map[string]any{"hugen": "x"}, nil},
+		{"no caps", map[string]any{"hugen": map[string]any{"autoload": false}}, nil},
+		{"caps not a list", map[string]any{"hugen": map[string]any{"required_capabilities": "pii"}}, nil},
+		{"one cap", map[string]any{"hugen": map[string]any{"required_capabilities": []any{"pii"}}}, []string{"pii"}},
+		{"multi + blank pruned", map[string]any{"hugen": map[string]any{"required_capabilities": []any{"a", " ", "b"}}}, []string{"a", "b"}},
+		{"non-string entries skipped", map[string]any{"hugen": map[string]any{"required_capabilities": []any{"a", 1, "b"}}}, []string{"a", "b"}},
 	}
 	for _, c := range cases {
 		got := requiredCapsFromMetadata(c.in)
 		if !reflect.DeepEqual(got, c.want) {
-			t.Errorf("%s: requiredCapsFromMetadata(%q) = %v, want %v", c.name, c.in, got, c.want)
+			t.Errorf("%s: requiredCapsFromMetadata(%#v) = %v, want %v", c.name, c.in, got, c.want)
 		}
 	}
 }
