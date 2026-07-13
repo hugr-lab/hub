@@ -233,46 +233,94 @@ func callerUserInfo(caller skillsCaller) auth.UserInfo {
 	return auth.UserInfo{ID: caller.ID, Name: caller.Name, Role: caller.Role}
 }
 
-// callerHasCaps reports whether the caller's role holds EVERY required
-// capability. Evaluated by hugr check_access under the caller's own role
-// (impersonated read via a.client — the same authority as tool Tier-2 perms).
+// callerHasCaps reports whether the caller's role holds a POSITIVE
+// (non-disabled) `hugen:skill:capability` grant for EVERY required capability —
+// deny-by-default (SK5).
+//
+// It reads the caller-role's `core.role_permissions` rows PRIVILEGED (service
+// principal, unimpersonated ctx — an agent role is floor-denied from reading
+// core) and requires an explicit grant per cap. It deliberately does NOT use
+// hugr `check_access` the way the publish gate does: check_access is
+// allow-by-default (query-engine perm.checkObjectField — "without a matching
+// row access is allowed"), which the publish gate corrects with a single floor
+// deny on the bounded `(hugen:skill, publish)` key. Capability names are
+// UNBOUNDED, so they cannot be floor-denied — an allow-by-default read would
+// grant every cap absent an explicit deny, defeating the gate. Hence the
+// positive-row read.
+//
+// No admin bypass: a `hasCapability(hub:management.admin)` bypass would itself
+// be allow-by-default (an agent role carries no hub:management deny), so every
+// agent would slip through. An admin that needs a capped skill is granted the
+// cap row like anyone else (grant_skill_capability). caller.Role is
+// hub-minted from the admin-assigned identity, not agent-spoofable (§4).
 func (a *HubApp) callerHasCaps(ctx context.Context, caller skillsCaller, required []string) (bool, error) {
 	if len(required) == 0 {
 		return true, nil
 	}
-	q := withIdentity(ctx, callerUserInfo(caller))
-	res, err := a.client.Query(q,
-		`query($ns: String!, $f: String!) {
-			function { core { auth { check_access(
-				type_name: $ns, fields: $f
-			) { field enabled } } } }
-		}`,
-		map[string]any{"ns": capabilitySkillNamespace, "f": strings.Join(required, ",")},
-	)
+	granted, err := a.roleSkillCapabilities(ctx, caller.Role)
 	if err != nil {
 		return false, err
 	}
-	defer res.Close()
-	if res.Err() != nil {
-		return false, res.Err()
-	}
-	var entries []struct {
-		Field   string `json:"field"`
-		Enabled bool   `json:"enabled"`
-	}
-	if err := res.ScanData("function.core.auth.check_access", &entries); err != nil {
-		return false, err
-	}
-	granted := make(map[string]bool, len(entries))
-	for _, e := range entries {
-		granted[e.Field] = e.Enabled
-	}
+	return hasAllCaps(granted, required), nil
+}
+
+// hasAllCaps reports whether every required capability is present in granted.
+func hasAllCaps(granted map[string]bool, required []string) bool {
 	for _, c := range required {
 		if !granted[c] {
-			return false, nil
+			return false
 		}
 	}
-	return true, nil
+	return true
+}
+
+// rolePermRow is the read shape of one core.role_permissions row.
+type rolePermRow struct {
+	TypeName  string `json:"type_name"`
+	FieldName string `json:"field_name"`
+	Disabled  bool   `json:"disabled"`
+}
+
+// roleSkillCapabilities privileged-reads the set of ENABLED
+// `hugen:skill:capability` grants on `role`. A missing role, or a role with no
+// such grants, yields an empty set (deny-by-default). The read runs as the
+// service principal (ctx unimpersonated): the caller's own agent role cannot
+// read core.role_permissions (floor-denied), so this must not carry the
+// caller's identity.
+func (a *HubApp) roleSkillCapabilities(ctx context.Context, role string) (map[string]bool, error) {
+	if strings.TrimSpace(role) == "" {
+		return nil, nil
+	}
+	res, err := a.client.Query(ctx,
+		`query($role: String!) { core { roles_by_pk(name: $role) { permissions { type_name field_name disabled } } } }`,
+		map[string]any{"role": role},
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Close()
+	if res.Err() != nil {
+		return nil, res.Err()
+	}
+	var role_ struct {
+		Permissions []rolePermRow `json:"permissions"`
+	}
+	if err := res.ScanData("core.roles_by_pk", &role_); err != nil && !isNoData(err) {
+		return nil, err
+	}
+	return enabledCapsFromRows(role_.Permissions), nil
+}
+
+// enabledCapsFromRows projects the enabled hugen:skill:capability field names
+// out of a role's permission rows.
+func enabledCapsFromRows(rows []rolePermRow) map[string]bool {
+	out := make(map[string]bool)
+	for _, p := range rows {
+		if p.TypeName == capabilitySkillNamespace && !p.Disabled {
+			out[p.FieldName] = true
+		}
+	}
+	return out
 }
 
 // requiredCapsFromMetadata pulls metadata.hugen.required_capabilities out of a

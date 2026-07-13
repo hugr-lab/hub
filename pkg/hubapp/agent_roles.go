@@ -47,7 +47,7 @@ func isHubCreatedAgentRole(role string) bool { return strings.HasPrefix(role, pe
 // perAgentRoleDescription is stamped on a create_agent-minted role.
 func perAgentRoleDescription(agentID string) string {
 	return "per-agent isolation role for " + agentID +
-		" — floor managed by hub-service; add capability grants with core.insert_role_permissions (do not hand-edit the floor rows)"
+		" — floor managed by hub-service; add skill-capability grants with grant_skill_capability / enable publishing with set_skill_publish (do not hand-edit the floor rows)"
 }
 
 // protectedRoles are hugr platform roles the agent floor must never touch:
@@ -142,11 +142,12 @@ func platformDenyRows() []schema.RolePermission {
 		// gate reads check_access("hugen:skill","publish"), which is
 		// allow-by-default in hugr, so WITHOUT this floor row any agent role
 		// would be allowed to publish. The admin enables a specific agent by
-		// flipping this row to enabled on its role (core.insert_role_permissions)
-		// — the floor is create-time only (never re-applied on update_agent), so
-		// that grant survives. Admin (a protected role, never floored) stays
+		// flipping this row to enabled on its role (set_skill_publish, SK5) — the
+		// floor is create-time only (never re-applied on update_agent), so that
+		// grant survives. Admin (a protected role, never floored) stays
 		// allow-by-default and can publish. Install/refresh are routine consumer
-		// ops and stay open; capability visibility is gated separately (SK5).
+		// ops and stay open; capability visibility is gated separately by a
+		// positive-row read (callerHasCaps + grant_skill_capability, SK5).
 		deny("hugen:skill", "publish"),
 	}
 	// Data-object denies on every PLATFORM type. The `_module_hub_query/db`
@@ -223,7 +224,14 @@ const deleteFloorRowsChunk = 50
 // would also delete an admin grant that happens to share a type_name (e.g. a
 // data-object:query grant on a source table).
 func (a *HubApp) deleteFloorRows(ctx context.Context, role string) error {
-	keys := agentRoleFloorKeys()
+	return a.deleteExactPermRows(ctx, role, agentRoleFloorKeys())
+}
+
+// deleteExactPermRows removes the given (type_name, field_name) rows from
+// `role` — one exact-key delete per key, chunked. Exact-key only (never a
+// type_name `in` list) so an admin grant sharing a type_name survives. Shared
+// by the floor reseed (deleteFloorRows) and the SK5 skill-permission tooling.
+func (a *HubApp) deleteExactPermRows(ctx context.Context, role string, keys []permKey) error {
 	for start := 0; start < len(keys); start += deleteFloorRowsChunk {
 		end := start + deleteFloorRowsChunk
 		if end > len(keys) {
@@ -240,6 +248,33 @@ func (a *HubApp) deleteFloorRows(ctx context.Context, role string) error {
 		}
 	}
 	return nil
+}
+
+// setRolePermission upserts one exact (type_name, field_name) row on `role`
+// with the given disabled flag, then invalidates the permission cache so the
+// grant takes effect without a restart. Delete-then-insert keeps it idempotent
+// (a re-grant re-stamps rather than duplicating; the PK is
+// (role,type_name,field_name)). Used by the SK5 admin grant/publish functions
+// so an admin never has to hand-write the mutation + cache invalidate.
+func (a *HubApp) setRolePermission(ctx context.Context, role string, key permKey, disabled bool) error {
+	if err := a.deleteExactPermRows(ctx, role, []permKey{key}); err != nil {
+		return fmt.Errorf("clear %s/%s on %s: %w", key.TypeName, key.FieldName, role, err)
+	}
+	row := schema.RolePermission{TypeName: key.TypeName, FieldName: key.FieldName, Disabled: disabled}
+	if err := a.insertRoleRows(ctx, role, []schema.RolePermission{row}); err != nil {
+		return fmt.Errorf("set %s/%s on %s: %w", key.TypeName, key.FieldName, role, err)
+	}
+	return a.invalidateRolePermCache(ctx)
+}
+
+// clearRolePermission removes one exact (type_name, field_name) row from `role`
+// and invalidates the permission cache. Used to revoke a skill-capability grant
+// (SK5).
+func (a *HubApp) clearRolePermission(ctx context.Context, role string, key permKey) error {
+	if err := a.deleteExactPermRows(ctx, role, []permKey{key}); err != nil {
+		return fmt.Errorf("clear %s/%s on %s: %w", key.TypeName, key.FieldName, role, err)
+	}
+	return a.invalidateRolePermCache(ctx)
 }
 
 // buildFloorDeleteDoc assembles one alias-batched delete_role_permissions
@@ -517,4 +552,3 @@ func buildRoleRowsInsert(role string, rows []schema.RolePermission) (string, map
 	}
 	return fmt.Sprintf("mutation(%s) { core {%s } }", decl.String(), body.String()), vars
 }
-
