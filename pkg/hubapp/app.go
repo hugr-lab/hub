@@ -307,7 +307,7 @@ func (a *HubApp) Init(ctx context.Context) error {
 	//   - default agent types are seeded at SCHEMA-APPLICATION time (an idempotent
 	//     INSERT appended in InitDBSchemaTemplate for agent.db), not via GraphQL;
 	//   - the agent isolation floor is applied ON DEMAND at create_agent /
-	//     update_agent (ensureAgentRoleFloor). Roles persist in hugr's core DB
+	//     update_agent (createAgentRoleWithFloor). Roles persist in hugr's core DB
 	//     across restarts, so there is nothing to seed on boot.
 
 	// REST surface is intentionally minimal — everything CRUD went to Hugr GraphQL

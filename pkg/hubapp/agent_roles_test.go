@@ -120,6 +120,9 @@ func TestAgentRoleRows_PlatformDeniesPresent(t *testing.T) {
 		"_module_hub_mut_function|create_project", "_module_hub_mut_function|update_project",
 		"_module_hub_mut_function|delete_project",
 		"_module_hub_mut_function|grant_agent_access", "_module_hub_mut_function|revoke_agent_access",
+		// hugen skills marketplace: publishing to the shared catalog is denied by
+		// default (deny-by-default trust boundary); admin enables per agent.
+		"hugen:skill|publish",
 	} {
 		r, ok := seen[key]
 		if !ok {

@@ -23,7 +23,7 @@ import (
 // tool surface, never the platform DB directly.
 //
 // The floor is applied ON DEMAND at create_agent / update_agent time
-// (ensureAgentRoleFloor), NOT at boot: Init runs as hugr's _mount/init while
+// (createAgentRoleWithFloor), NOT at boot: Init runs as hugr's _mount/init while
 // hugr is still loading sources, so it must not call back into hugr. Roles
 // persist in hugr's core DB across restarts, so there is nothing to re-seed on
 // startup. `agent` (the shared opt-in role) and `agent_template` are ordinary
@@ -135,6 +135,19 @@ func platformDenyRows() []schema.RolePermission {
 		deny("_module_hub_mut_function", "delete_project"),
 		deny("_module_hub_mut_function", "grant_agent_access"),
 		deny("_module_hub_mut_function", "revoke_agent_access"),
+
+		// hugen skills marketplace (spec-skills-distribution §4) — publishing a
+		// skill to the shared catalog is a management op an agent must not do by
+		// default. This is the deny-by-default trust boundary: the hub publish
+		// gate reads check_access("hugen:skill","publish"), which is
+		// allow-by-default in hugr, so WITHOUT this floor row any agent role
+		// would be allowed to publish. The admin enables a specific agent by
+		// flipping this row to enabled on its role (core.insert_role_permissions)
+		// — the floor is create-time only (never re-applied on update_agent), so
+		// that grant survives. Admin (a protected role, never floored) stays
+		// allow-by-default and can publish. Install/refresh are routine consumer
+		// ops and stay open; capability visibility is gated separately (SK5).
+		deny("hugen:skill", "publish"),
 	}
 	// Data-object denies on every PLATFORM type. The `_module_hub_query/db`
 	// deny above only fires on the module-navigation path (`hub.db.*`); a
@@ -160,14 +173,22 @@ func agentRoleRows() []schema.RolePermission {
 	return append(schema.AgentPermissions(), platformDenyRows()...)
 }
 
-// ensureAgentRoleFloor guarantees the isolation floor (agentRoleRows) is present
-// on `role`, managed-subset: it replaces ONLY hub's floor rows (keyed by
-// (type_name, field_name)) and never touches admin-added grant rows — so an
-// admin layers data-source / function access with ordinary
-// core.insert_role_permissions mutations and the floor coexists. Creates the
-// role if absent. Protected platform roles are refused (flooring them would
-// break the platform). The caller invalidates the $role_permissions cache once.
-func (a *HubApp) ensureAgentRoleFloor(ctx context.Context, role, description string) error {
+// createAgentRoleWithFloor creates `role` (if absent) and stamps the isolation
+// floor (agentRoleRows) onto it, managed-subset: it replaces ONLY hub's floor
+// rows (keyed by (type_name, field_name)) and never touches admin-added grant
+// rows — so an admin layers data-source / function access with ordinary
+// core.insert_role_permissions mutations and the floor coexists. Protected
+// platform roles are refused (flooring them would break the platform). The
+// caller invalidates the $role_permissions cache once.
+//
+// This is the ONLY place a role is floored (owner decision 2026-07-13): it is
+// called at create_agent for the auto-created per-agent role (empty hugr_role)
+// and by the create_agent_role admin function; a PROVIDED role at create and
+// any role reassignment at update_agent are left untouched (the admin owns
+// those roles). So an admin grant flipped onto a floored role — e.g. enabling
+// hugen:skill/publish for one agent — is never reverted, because nothing
+// re-floors after create.
+func (a *HubApp) createAgentRoleWithFloor(ctx context.Context, role, description string) error {
 	if protectedRoles[role] {
 		return fmt.Errorf("role %q is a protected platform role — cannot be an agent role", role)
 	}

@@ -133,14 +133,14 @@ func TestIntegration_EnsureAgentRoleFloor_ManagedSubset(t *testing.T) {
 		return out
 	}
 
-	// 1. First seed — the floor lands (ensureAgentRoleFloor verifies internally).
-	if err := app.ensureAgentRoleFloor(ctx, role, "test per-agent role"); err != nil {
+	// 1. First seed — the floor lands (createAgentRoleWithFloor verifies internally).
+	if err := app.createAgentRoleWithFloor(ctx, role, "test per-agent role"); err != nil {
 		t.Fatalf("first floor seed: %v", err)
 	}
 	// 2. Admin layers a capability grant.
 	insertGrant()
 	// 3. Re-seed the floor (a floor-schema change / boot reconcile).
-	if err := app.ensureAgentRoleFloor(ctx, role, "test per-agent role"); err != nil {
+	if err := app.createAgentRoleWithFloor(ctx, role, "test per-agent role"); err != nil {
 		t.Fatalf("re-seed floor: %v", err)
 	}
 	// 4. The grant SURVIVED, and the floor is present.
@@ -164,8 +164,8 @@ func TestIntegration_EnsureAgentRoleFloor_ManagedSubset(t *testing.T) {
 	}
 
 	// A protected platform role is refused outright.
-	if err := app.ensureAgentRoleFloor(ctx, "admin", "nope"); err == nil {
-		t.Error("ensureAgentRoleFloor must refuse the protected role 'admin'")
+	if err := app.createAgentRoleWithFloor(ctx, "admin", "nope"); err == nil {
+		t.Error("createAgentRoleWithFloor must refuse the protected role 'admin'")
 	}
 }
 
