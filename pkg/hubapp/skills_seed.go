@@ -194,7 +194,7 @@ type seededSkillRow struct {
 func (a *HubApp) evictForeignSharedRows(ctx context.Context, name string) error {
 	res, err := a.client.Query(ctx,
 		`mutation($n: String!, $sys: String!) { hub { agent { db { delete_skills(
-			filter: { shared: { eq: true }, name: { eq: $n }, agent_id: { neq: $sys } }
+			filter: { shared: { eq: true }, name: { eq: $n }, _not: { agent_id: { eq: $sys } } }
 		) { affected_rows } } } } }`,
 		map[string]any{"n": name, "sys": marketplaceSeedAgentID},
 	)
