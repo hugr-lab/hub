@@ -108,6 +108,11 @@ func TestAgentRoleRows_PlatformDeniesPresent(t *testing.T) {
 		"_module_hub_mut_function|delete_agent",
 		"_module_hub_mut_function|create_agent", "_module_hub_mut_function|update_agent",
 		"_module_hub_mut_function|disable_agent",
+		// role / skills-authz admin mutations (rewrite core.role_permissions).
+		"_module_hub_mut_function|create_agent_role",
+		"_module_hub_mut_function|grant_skill_capability",
+		"_module_hub_mut_function|revoke_skill_capability",
+		"_module_hub_mut_function|set_skill_publish",
 		"_module_hub_agent_mut_function|bootstrap_token",
 		// Subscription|core stays open for models.chat_completion, but core.store
 		// (pub-sub subscribe/watch) is scoped out with an exact sub-field deny.
@@ -120,6 +125,9 @@ func TestAgentRoleRows_PlatformDeniesPresent(t *testing.T) {
 		"_module_hub_mut_function|create_project", "_module_hub_mut_function|update_project",
 		"_module_hub_mut_function|delete_project",
 		"_module_hub_mut_function|grant_agent_access", "_module_hub_mut_function|revoke_agent_access",
+		// hugen skills marketplace: publishing to the shared catalog is denied by
+		// default (deny-by-default trust boundary); admin enables per agent.
+		"hugen:skill|publish",
 	} {
 		r, ok := seen[key]
 		if !ok {

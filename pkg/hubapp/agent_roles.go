@@ -23,7 +23,7 @@ import (
 // tool surface, never the platform DB directly.
 //
 // The floor is applied ON DEMAND at create_agent / update_agent time
-// (ensureAgentRoleFloor), NOT at boot: Init runs as hugr's _mount/init while
+// (createAgentRoleWithFloor), NOT at boot: Init runs as hugr's _mount/init while
 // hugr is still loading sources, so it must not call back into hugr. Roles
 // persist in hugr's core DB across restarts, so there is nothing to re-seed on
 // startup. `agent` (the shared opt-in role) and `agent_template` are ordinary
@@ -47,7 +47,7 @@ func isHubCreatedAgentRole(role string) bool { return strings.HasPrefix(role, pe
 // perAgentRoleDescription is stamped on a create_agent-minted role.
 func perAgentRoleDescription(agentID string) string {
 	return "per-agent isolation role for " + agentID +
-		" — floor managed by hub-service; add capability grants with core.insert_role_permissions (do not hand-edit the floor rows)"
+		" — floor managed by hub-service; add skill-capability grants with grant_skill_capability / enable publishing with set_skill_publish (do not hand-edit the floor rows)"
 }
 
 // protectedRoles are hugr platform roles the agent floor must never touch:
@@ -116,6 +116,15 @@ func platformDenyRows() []schema.RolePermission {
 		deny("_module_hub_mut_function", "update_agent"),
 		deny("_module_hub_mut_function", "disable_agent"),
 
+		// hub role / skills-authz admin mutations — admin only. These rewrite
+		// core.role_permissions (the authz substrate itself); requireAdmin also
+		// enforces in-handler, this is the RLS floor's belt (same double layer
+		// as the provisioning mutations above). An agent must never reach them.
+		deny("_module_hub_mut_function", "create_agent_role"),
+		deny("_module_hub_mut_function", "grant_skill_capability"),
+		deny("_module_hub_mut_function", "revoke_skill_capability"),
+		deny("_module_hub_mut_function", "set_skill_publish"),
+
 		// bootstrap-secret mint — admin only (handler also enforces).
 		// function.hub.agent.info stays open — it is the agent identity call.
 		deny("_module_hub_agent_mut_function", "bootstrap_token"),
@@ -135,6 +144,20 @@ func platformDenyRows() []schema.RolePermission {
 		deny("_module_hub_mut_function", "delete_project"),
 		deny("_module_hub_mut_function", "grant_agent_access"),
 		deny("_module_hub_mut_function", "revoke_agent_access"),
+
+		// hugen skills marketplace (spec-skills-distribution §4) — publishing a
+		// skill to the shared catalog is a management op an agent must not do by
+		// default. This is the deny-by-default trust boundary: the hub publish
+		// gate reads check_access("hugen:skill","publish"), which is
+		// allow-by-default in hugr, so WITHOUT this floor row any agent role
+		// would be allowed to publish. The admin enables a specific agent by
+		// flipping this row to enabled on its role (set_skill_publish, SK5) — the
+		// floor is create-time only (never re-applied on update_agent), so that
+		// grant survives. Admin (a protected role, never floored) stays
+		// allow-by-default and can publish. Install/refresh are routine consumer
+		// ops and stay open; capability visibility is gated separately by a
+		// positive-row read (callerHasCaps + grant_skill_capability, SK5).
+		deny("hugen:skill", "publish"),
 	}
 	// Data-object denies on every PLATFORM type. The `_module_hub_query/db`
 	// deny above only fires on the module-navigation path (`hub.db.*`); a
@@ -160,14 +183,22 @@ func agentRoleRows() []schema.RolePermission {
 	return append(schema.AgentPermissions(), platformDenyRows()...)
 }
 
-// ensureAgentRoleFloor guarantees the isolation floor (agentRoleRows) is present
-// on `role`, managed-subset: it replaces ONLY hub's floor rows (keyed by
-// (type_name, field_name)) and never touches admin-added grant rows — so an
-// admin layers data-source / function access with ordinary
-// core.insert_role_permissions mutations and the floor coexists. Creates the
-// role if absent. Protected platform roles are refused (flooring them would
-// break the platform). The caller invalidates the $role_permissions cache once.
-func (a *HubApp) ensureAgentRoleFloor(ctx context.Context, role, description string) error {
+// createAgentRoleWithFloor creates `role` (if absent) and stamps the isolation
+// floor (agentRoleRows) onto it, managed-subset: it replaces ONLY hub's floor
+// rows (keyed by (type_name, field_name)) and never touches admin-added grant
+// rows — so an admin layers data-source / function access with ordinary
+// core.insert_role_permissions mutations and the floor coexists. Protected
+// platform roles are refused (flooring them would break the platform). The
+// caller invalidates the $role_permissions cache once.
+//
+// This is the ONLY place a role is floored (owner decision 2026-07-13): it is
+// called at create_agent for the auto-created per-agent role (empty hugr_role)
+// and by the create_agent_role admin function; a PROVIDED role at create and
+// any role reassignment at update_agent are left untouched (the admin owns
+// those roles). So an admin grant flipped onto a floored role — e.g. enabling
+// hugen:skill/publish for one agent — is never reverted, because nothing
+// re-floors after create.
+func (a *HubApp) createAgentRoleWithFloor(ctx context.Context, role, description string) error {
 	if protectedRoles[role] {
 		return fmt.Errorf("role %q is a protected platform role — cannot be an agent role", role)
 	}
@@ -202,7 +233,14 @@ const deleteFloorRowsChunk = 50
 // would also delete an admin grant that happens to share a type_name (e.g. a
 // data-object:query grant on a source table).
 func (a *HubApp) deleteFloorRows(ctx context.Context, role string) error {
-	keys := agentRoleFloorKeys()
+	return a.deleteExactPermRows(ctx, role, agentRoleFloorKeys())
+}
+
+// deleteExactPermRows removes the given (type_name, field_name) rows from
+// `role` — one exact-key delete per key, chunked. Exact-key only (never a
+// type_name `in` list) so an admin grant sharing a type_name survives. Shared
+// by the floor reseed (deleteFloorRows) and the SK5 skill-permission tooling.
+func (a *HubApp) deleteExactPermRows(ctx context.Context, role string, keys []permKey) error {
 	for start := 0; start < len(keys); start += deleteFloorRowsChunk {
 		end := start + deleteFloorRowsChunk
 		if end > len(keys) {
@@ -219,6 +257,33 @@ func (a *HubApp) deleteFloorRows(ctx context.Context, role string) error {
 		}
 	}
 	return nil
+}
+
+// setRolePermission upserts one exact (type_name, field_name) row on `role`
+// with the given disabled flag, then invalidates the permission cache so the
+// grant takes effect without a restart. Delete-then-insert keeps it idempotent
+// (a re-grant re-stamps rather than duplicating; the PK is
+// (role,type_name,field_name)). Used by the SK5 admin grant/publish functions
+// so an admin never has to hand-write the mutation + cache invalidate.
+func (a *HubApp) setRolePermission(ctx context.Context, role string, key permKey, disabled bool) error {
+	if err := a.deleteExactPermRows(ctx, role, []permKey{key}); err != nil {
+		return fmt.Errorf("clear %s/%s on %s: %w", key.TypeName, key.FieldName, role, err)
+	}
+	row := schema.RolePermission{TypeName: key.TypeName, FieldName: key.FieldName, Disabled: disabled}
+	if err := a.insertRoleRows(ctx, role, []schema.RolePermission{row}); err != nil {
+		return fmt.Errorf("set %s/%s on %s: %w", key.TypeName, key.FieldName, role, err)
+	}
+	return a.invalidateRolePermCache(ctx)
+}
+
+// clearRolePermission removes one exact (type_name, field_name) row from `role`
+// and invalidates the permission cache. Used to revoke a skill-capability grant
+// (SK5).
+func (a *HubApp) clearRolePermission(ctx context.Context, role string, key permKey) error {
+	if err := a.deleteExactPermRows(ctx, role, []permKey{key}); err != nil {
+		return fmt.Errorf("clear %s/%s on %s: %w", key.TypeName, key.FieldName, role, err)
+	}
+	return a.invalidateRolePermCache(ctx)
 }
 
 // buildFloorDeleteDoc assembles one alias-batched delete_role_permissions
@@ -244,7 +309,7 @@ func buildFloorDeleteDoc(role string, keys []permKey) (string, map[string]any) {
 // (defence against a partial insert leaving an under-isolated agent).
 func (a *HubApp) verifyFloor(ctx context.Context, role string, want []schema.RolePermission) error {
 	res, err := a.client.Query(ctx,
-		`query($role: String!) { core { roles_by_pk(name: $role) { permissions { type_name field_name } } } }`,
+		`query($role: String!) { core { roles_by_pk(name: $role) { permissions { type_name field_name disabled } } } }`,
 		map[string]any{"role": role},
 	)
 	if err != nil {
@@ -258,18 +323,28 @@ func (a *HubApp) verifyFloor(ctx context.Context, role string, want []schema.Rol
 		Permissions []struct {
 			TypeName  string `json:"type_name"`
 			FieldName string `json:"field_name"`
+			Disabled  bool   `json:"disabled"`
 		} `json:"permissions"`
 	}
 	if err := res.ScanData("core.roles_by_pk", &role_); err != nil && !isNoData(err) {
 		return err
 	}
-	have := make(map[permKey]bool, len(role_.Permissions))
+	have := make(map[permKey]bool, len(role_.Permissions)) // key → disabled flag
+	present := make(map[permKey]bool, len(role_.Permissions))
 	for _, p := range role_.Permissions {
-		have[permKey{p.TypeName, p.FieldName}] = true
+		k := permKey{p.TypeName, p.FieldName}
+		present[k] = true
+		have[k] = p.Disabled
 	}
 	for _, w := range want {
-		if !have[permKey{w.TypeName, w.FieldName}] {
+		k := permKey{w.TypeName, w.FieldName}
+		if !present[k] {
 			return fmt.Errorf("floor row %s/%s missing after seed", w.TypeName, w.FieldName)
+		}
+		// A deny row present with disabled=false would grant access while
+		// passing a presence-only check — verify the flag actually enforces.
+		if have[k] != w.Disabled {
+			return fmt.Errorf("floor row %s/%s disabled=%v, want %v", w.TypeName, w.FieldName, have[k], w.Disabled)
 		}
 	}
 	return nil
@@ -496,4 +571,3 @@ func buildRoleRowsInsert(role string, rows []schema.RolePermission) (string, map
 	}
 	return fmt.Sprintf("mutation(%s) { core {%s } }", decl.String(), body.String()), vars
 }
-
