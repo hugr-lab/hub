@@ -16,6 +16,9 @@ import (
 // ErrInvalidSkillName marks a name that is not lowercase kebab-case.
 var ErrInvalidSkillName = errors.New("invalid skill name")
 
+// maxBundleNameLen bounds a skill name (it becomes a single FS path component).
+const maxBundleNameLen = 64
+
 // validBundleName enforces lowercase kebab-case: one or more segments of
 // [a-z0-9] joined by single dashes (e.g. "hugr-data", "report-builder").
 // No leading/trailing/double dash, no uppercase, no underscore, no path
@@ -23,6 +26,12 @@ var ErrInvalidSkillName = errors.New("invalid skill name")
 func validBundleName(name string) error {
 	if name == "" {
 		return fmt.Errorf("%w: empty", ErrInvalidSkillName)
+	}
+	// Bound the length: the name becomes a single FS path component, and past
+	// the OS NAME_MAX (255) a publish would fail with ENAMETOOLONG rather than a
+	// clean 400. 64 is comfortably above any real skill name.
+	if len(name) > maxBundleNameLen {
+		return fmt.Errorf("%w: %q exceeds %d chars", ErrInvalidSkillName, name, maxBundleNameLen)
 	}
 	prevDash := true // treat position before the first char as "just saw a boundary"
 	for i, r := range name {

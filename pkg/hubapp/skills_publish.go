@@ -310,15 +310,19 @@ func safeExtractTarGz(r io.Reader, dst string, maxBytes int64, maxFiles int) err
 		if target != root && !strings.HasPrefix(target, root+string(filepath.Separator)) {
 			return fmt.Errorf("path escapes bundle root: %q", hdr.Name)
 		}
+		// Count EVERY materialised entry — directories included — against the
+		// cap. A gzip of repetitive tar directory headers otherwise amplifies
+		// into millions of MkdirAll calls / inodes with neither the byte cap
+		// (dir entries carry no content) nor a file cap tripping.
+		files++
+		if files > maxFiles {
+			return fmt.Errorf("too many entries (> %d)", maxFiles)
+		}
 		if hdr.Typeflag == tar.TypeDir {
 			if err := os.MkdirAll(target, 0o755); err != nil {
 				return fmt.Errorf("mkdir %q: %w", target, err)
 			}
 			continue
-		}
-		files++
-		if files > maxFiles {
-			return fmt.Errorf("too many files (> %d)", maxFiles)
 		}
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return fmt.Errorf("mkdir parent %q: %w", target, err)

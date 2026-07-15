@@ -104,8 +104,20 @@ func (c *verifyCache) get(tok string) (skillsCaller, bool) {
 	return e.caller, true
 }
 
+// verifyCacheSweepAt is the entry count past which put() sweeps expired
+// entries, so the map can't grow unbounded as agent JWTs rotate.
+const verifyCacheSweepAt = 1024
+
 func (c *verifyCache) put(tok string, caller skillsCaller) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.m[c.key(tok)] = verifyEntry{caller: caller, expires: time.Now().Add(c.ttl)}
+	now := time.Now()
+	if len(c.m) >= verifyCacheSweepAt {
+		for k, e := range c.m {
+			if now.After(e.expires) {
+				delete(c.m, k)
+			}
+		}
+	}
+	c.m[c.key(tok)] = verifyEntry{caller: caller, expires: now.Add(c.ttl)}
 }

@@ -46,6 +46,7 @@ type catalogEntry struct {
 // and a NAMED struct fails too (structConvertFunc wants an Arrow Struct
 // column) — map[string]any is the struct-shaped target this column supports.
 type sharedSkillRow struct {
+	AgentID      string         `json:"agent_id"`
 	Name         string         `json:"name"`
 	Version      string         `json:"version"`
 	Description  string         `json:"description"`
@@ -71,18 +72,20 @@ func (a *HubApp) handleSkillsCatalog(w http.ResponseWriter, r *http.Request) {
 		skillsError(w, http.StatusBadGateway, "catalog_unavailable", "could not read the catalog")
 		return
 	}
+	// Read the caller-role's capability grants ONCE (all entries evaluate
+	// against the same role) instead of a privileged core read per capped
+	// entry. On a read error, fail closed: no caps → capped skills are omitted,
+	// public skills still list.
+	callerCaps, capErr := a.roleSkillCapabilities(r.Context(), caller.Role)
+	if capErr != nil {
+		a.logger.Warn("skills catalog cap read", "caller", caller.ID, "error", capErr)
+		callerCaps = nil
+	}
 	out := make([]catalogEntry, 0, len(rows))
 	for _, s := range rows {
 		req := requiredCapsFromMetadata(s.Metadata)
-		if len(req) > 0 {
-			granted, err := a.callerHasCaps(r.Context(), caller, req)
-			if err != nil {
-				a.logger.Warn("skills catalog cap check", "skill", s.Name, "error", err)
-				continue // fail closed for this entry
-			}
-			if !granted {
-				continue
-			}
+		if len(req) > 0 && !hasAllCaps(callerCaps, req) {
+			continue // a capped skill the caller lacks — hide it
 		}
 		out = append(out, catalogEntry{
 			Name:                 s.Name,
@@ -125,11 +128,15 @@ func (a *HubApp) handleSkillsBundle(w http.ResponseWriter, r *http.Request) {
 		granted, err := a.callerHasCaps(r.Context(), caller, req)
 		if err != nil {
 			a.logger.Warn("skills bundle cap check", "skill", name, "error", err)
-			skillsError(w, http.StatusForbidden, "forbidden", "capability check failed")
+			// Fail closed AND hide existence: a capped skill the caller can't be
+			// verified for must be indistinguishable from a missing one (the
+			// catalog already omits capped skills the caller lacks — a distinct
+			// 403 here would turn the bundle route into an existence oracle).
+			skillsError(w, http.StatusNotFound, "not_found", "no such skill in the catalog")
 			return
 		}
 		if !granted {
-			skillsError(w, http.StatusForbidden, "forbidden", "missing required capability")
+			skillsError(w, http.StatusNotFound, "not_found", "no such skill in the catalog")
 			return
 		}
 	}
@@ -202,8 +209,8 @@ var errSkillNotFound = errors.New("skill not found in catalog")
 func (a *HubApp) sharedSkillByName(ctx context.Context, name string) (sharedSkillRow, error) {
 	res, err := a.client.Query(ctx,
 		`query($n: String!) { hub { agent { db { skills(
-			filter: { shared: { eq: true }, name: { eq: $n } } limit: 1
-		) { name version description content_hash source task_eligible keywords tier_compat metadata } } } } }`,
+			filter: { shared: { eq: true }, name: { eq: $n } }
+		) { agent_id name version description content_hash source task_eligible keywords tier_compat metadata } } } } }`,
 		map[string]any{"n": name},
 	)
 	if err != nil {
@@ -222,6 +229,15 @@ func (a *HubApp) sharedSkillByName(ctx context.Context, name string) (sharedSkil
 	}
 	if len(rows) == 0 {
 		return sharedSkillRow{}, errSkillNotFound
+	}
+	// Deterministic pick (dropped the non-deterministic `limit:1`): the reserved
+	// bundled row (agent_id="system") always wins over a same-name row published
+	// by anyone else, so a squatter's bytes are never served for a bundled /
+	// canonical name even if both rows transiently coexist.
+	for i := range rows {
+		if rows[i].AgentID == marketplaceSeedAgentID {
+			return rows[i], nil
+		}
 	}
 	return rows[0], nil
 }

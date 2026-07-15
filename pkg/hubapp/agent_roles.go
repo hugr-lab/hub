@@ -116,6 +116,15 @@ func platformDenyRows() []schema.RolePermission {
 		deny("_module_hub_mut_function", "update_agent"),
 		deny("_module_hub_mut_function", "disable_agent"),
 
+		// hub role / skills-authz admin mutations — admin only. These rewrite
+		// core.role_permissions (the authz substrate itself); requireAdmin also
+		// enforces in-handler, this is the RLS floor's belt (same double layer
+		// as the provisioning mutations above). An agent must never reach them.
+		deny("_module_hub_mut_function", "create_agent_role"),
+		deny("_module_hub_mut_function", "grant_skill_capability"),
+		deny("_module_hub_mut_function", "revoke_skill_capability"),
+		deny("_module_hub_mut_function", "set_skill_publish"),
+
 		// bootstrap-secret mint — admin only (handler also enforces).
 		// function.hub.agent.info stays open — it is the agent identity call.
 		deny("_module_hub_agent_mut_function", "bootstrap_token"),
@@ -300,7 +309,7 @@ func buildFloorDeleteDoc(role string, keys []permKey) (string, map[string]any) {
 // (defence against a partial insert leaving an under-isolated agent).
 func (a *HubApp) verifyFloor(ctx context.Context, role string, want []schema.RolePermission) error {
 	res, err := a.client.Query(ctx,
-		`query($role: String!) { core { roles_by_pk(name: $role) { permissions { type_name field_name } } } }`,
+		`query($role: String!) { core { roles_by_pk(name: $role) { permissions { type_name field_name disabled } } } }`,
 		map[string]any{"role": role},
 	)
 	if err != nil {
@@ -314,18 +323,28 @@ func (a *HubApp) verifyFloor(ctx context.Context, role string, want []schema.Rol
 		Permissions []struct {
 			TypeName  string `json:"type_name"`
 			FieldName string `json:"field_name"`
+			Disabled  bool   `json:"disabled"`
 		} `json:"permissions"`
 	}
 	if err := res.ScanData("core.roles_by_pk", &role_); err != nil && !isNoData(err) {
 		return err
 	}
-	have := make(map[permKey]bool, len(role_.Permissions))
+	have := make(map[permKey]bool, len(role_.Permissions)) // key → disabled flag
+	present := make(map[permKey]bool, len(role_.Permissions))
 	for _, p := range role_.Permissions {
-		have[permKey{p.TypeName, p.FieldName}] = true
+		k := permKey{p.TypeName, p.FieldName}
+		present[k] = true
+		have[k] = p.Disabled
 	}
 	for _, w := range want {
-		if !have[permKey{w.TypeName, w.FieldName}] {
+		k := permKey{w.TypeName, w.FieldName}
+		if !present[k] {
 			return fmt.Errorf("floor row %s/%s missing after seed", w.TypeName, w.FieldName)
+		}
+		// A deny row present with disabled=false would grant access while
+		// passing a presence-only check — verify the flag actually enforces.
+		if have[k] != w.Disabled {
+			return fmt.Errorf("floor row %s/%s disabled=%v, want %v", w.TypeName, w.FieldName, have[k], w.Disabled)
 		}
 	}
 	return nil

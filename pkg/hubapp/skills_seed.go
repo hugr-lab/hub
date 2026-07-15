@@ -138,6 +138,15 @@ func (a *HubApp) seedOneBundledSkill(ctx context.Context, name string) error {
 	if md == nil {
 		md = map[string]any{} // skills.metadata is NOT NULL
 	}
+	// Reserved-name enforcement: a bundled name belongs to `system`. The publish
+	// gate's reserved-name check only blocks NEW publishes once the system row
+	// exists; a third party that squatted this name BEFORE the first seed would
+	// otherwise coexist. Evict any non-system row for the name as the seed
+	// claims it (best-effort — a leftover squatter never wins a download anyway,
+	// since sharedSkillByName prefers the system row).
+	if err := a.evictForeignSharedRows(ctx, name); err != nil {
+		a.logger.Warn("skills seed: evict foreign rows for reserved name", "skill", name, "error", err)
+	}
 	if err := a.upsertSkillRow(ctx, marketplaceSeedAgentID, marketplaceSeedSource, seededSkillRow{
 		Name:           name,
 		Description:    man.Description,
@@ -175,6 +184,25 @@ type seededSkillRow struct {
 	TierCompat      []string
 	TaskEligible    bool
 	HasInputsSchema bool
+}
+
+// evictForeignSharedRows deletes any SHARED catalog row for `name` not owned by
+// the reserved seed principal ("system"). Reserved (bundled) names belong to
+// system; this removes a row a third party published under the name before the
+// seed claimed it (the publish-time reserved-name check only guards once the
+// system row exists). Privileged (service principal).
+func (a *HubApp) evictForeignSharedRows(ctx context.Context, name string) error {
+	res, err := a.client.Query(ctx,
+		`mutation($n: String!, $sys: String!) { hub { agent { db { delete_skills(
+			filter: { shared: { eq: true }, name: { eq: $n }, agent_id: { neq: $sys } }
+		) { affected_rows } } } } }`,
+		map[string]any{"n": name, "sys": marketplaceSeedAgentID},
+	)
+	if err != nil {
+		return err
+	}
+	res.Close()
+	return res.Err()
 }
 
 // upsertSkillRow writes a shared catalog row for (agentID, source, name):
