@@ -178,7 +178,7 @@ func (a *HubApp) querySharedSkills(ctx context.Context) ([]sharedSkillRow, error
 	res, err := a.client.Query(ctx,
 		`query { hub { agent { db { skills(
 			filter: { shared: { eq: true } }
-		) { name version description content_hash source task_eligible keywords tier_compat metadata } } } } }`,
+		) { agent_id name version description content_hash source task_eligible keywords tier_compat metadata } } } } }`,
 		nil,
 	)
 	if err != nil {

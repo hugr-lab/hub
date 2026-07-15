@@ -58,8 +58,14 @@ func (a *HubApp) startSkillsSeed() {
 	}()
 }
 
-// seedBundledSkills publishes every embedded hub-tier bundle into the
-// marketplace. Best-effort per skill: one failure logs and moves on.
+// seedBundledSkills seeds the embedded hub-tier bundles into the marketplace
+// INSERT-IF-ABSENT (owner decision 2026-07-15): a bundled skill is seeded only
+// when its `system` catalog row does not yet exist — a first deployment, or a
+// genuinely new bundled skill in a later release. The hub NEVER auto-updates an
+// existing `system` row from disk on restart; once the catalog exists, all
+// skill changes flow through the running hub's API (publish / admin tooling).
+// (Runs async post-readiness, not in Init — hugr connects hubapp as a source
+// before it accepts requests.) Best-effort per skill: one failure logs on.
 func (a *HubApp) seedBundledSkills(ctx context.Context) {
 	if a.bundleStore == nil {
 		return
@@ -69,7 +75,19 @@ func (a *HubApp) seedBundledSkills(ctx context.Context) {
 		a.logger.Warn("skills seed: read embed", "error", err)
 		return
 	}
-	var seeded, skipped, failed int
+	// One catalog read decides what's already seeded (system-owned shared rows).
+	rows, err := a.querySharedSkills(ctx)
+	if err != nil {
+		a.logger.Warn("skills seed: read catalog", "error", err)
+		return
+	}
+	present := make(map[string]string, len(rows)) // name → system row's version
+	for _, r := range rows {
+		if r.AgentID == marketplaceSeedAgentID {
+			present[r.Name] = r.Version
+		}
+	}
+	var seeded, repaired, skipped, failed int
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -80,21 +98,61 @@ func (a *HubApp) seedBundledSkills(ctx context.Context) {
 			failed++
 			continue
 		}
-		if err := a.seedOneBundledSkill(ctx, name); err != nil {
-			if err == errSeedUnchanged {
+		if version, ok := present[name]; ok {
+			// Row already seeded → NEVER update it from disk. But keep downloads
+			// working: if its bytes are missing (a fresh / reset byte-store with a
+			// persisted catalog), re-put them — a byte repair, not a catalog
+			// change. Cheap in steady state (just an Exists check).
+			if has, _ := a.bundleStore.Exists(ctx, name, version); has {
 				skipped++
 				continue
 			}
+			if err := a.repairBundleBytes(ctx, name, version); err != nil {
+				a.logger.Warn("skills seed: byte repair skipped", "skill", name, "error", err)
+				failed++
+			} else {
+				repaired++
+			}
+			continue
+		}
+		if err := a.seedOneBundledSkill(ctx, name); err != nil {
 			a.logger.Warn("skills seed: skill failed", "skill", name, "error", err)
 			failed++
 			continue
 		}
 		seeded++
 	}
-	a.logger.Info("skills marketplace seeded", "published", seeded, "unchanged", skipped, "failed", failed)
+	a.logger.Info("skills marketplace seeded (insert-if-absent)",
+		"seeded", seeded, "bytes_repaired", repaired, "already_present", skipped, "failed", failed)
 }
 
-var errSeedUnchanged = fmt.Errorf("bundle unchanged")
+// repairBundleBytes re-puts a seeded skill's bundle bytes into the byte-store
+// when they are missing (a fresh/reset byte-store against a persisted catalog),
+// WITHOUT touching the catalog row. It only repairs when the embed still hashes
+// to the row's version — a diverged row (an older release) can't be repaired
+// from the current disk and is left for the admin.
+func (a *HubApp) repairBundleBytes(ctx context.Context, name, wantVersion string) error {
+	sub, err := fs.Sub(assets.SkillsFS, "skills/"+name)
+	if err != nil {
+		return fmt.Errorf("sub-fs: %w", err)
+	}
+	hash, err := skill.BundleHash(sub)
+	if err != nil {
+		return fmt.Errorf("hash: %w", err)
+	}
+	if v := shortVersion(hash); v != wantVersion {
+		return fmt.Errorf("embed version %s != catalog version %s (diverged — admin must re-seed)", v, wantVersion)
+	}
+	tarball, err := tarGzBundle(sub)
+	if err != nil {
+		return fmt.Errorf("tar: %w", err)
+	}
+	if _, err := a.bundleStore.Put(ctx, name, wantVersion, bytes.NewReader(tarball),
+		PublisherIdentity{UserID: marketplaceSeedAgentID, Role: "admin"}); err != nil {
+		return fmt.Errorf("byte-store put: %w", err)
+	}
+	return nil
+}
 
 func (a *HubApp) seedOneBundledSkill(ctx context.Context, name string) error {
 	sub, err := fs.Sub(assets.SkillsFS, "skills/"+name)
@@ -115,15 +173,8 @@ func (a *HubApp) seedOneBundledSkill(ctx context.Context, name string) error {
 	}
 	version := shortVersion(hash)
 
-	// Idempotency: existing catalog row at this hash + bytes present → nothing
-	// to do. A changed bundle re-publishes (new hash → new version/path).
-	existing, err := a.sharedSkillByName(ctx, name)
-	if err == nil && existing.ContentHash == hash {
-		if ok, _ := a.bundleStore.Exists(ctx, name, version); ok {
-			return errSeedUnchanged
-		}
-	}
-
+	// Called only for a name with no `system` row yet (seedBundledSkills gates on
+	// presence), so this always materialises the bundle + inserts the row.
 	tarball, err := tarGzBundle(sub)
 	if err != nil {
 		return fmt.Errorf("tar: %w", err)
