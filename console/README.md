@@ -54,6 +54,31 @@ empty by default.
 
 Hub reaches Hugr's `/auth/config` at `HUGR_URL` (its `/ipc` suffix trimmed).
 
+### OIDC reverse-proxy (CORS)
+
+A public OIDC provider CORS-blocks the browser's XHR legs of the PKCE flow
+(token exchange, refresh, userinfo, JWKS) unless the console's exact origin is
+registered as a provider "web origin" — brittle and per-deployment. To avoid
+that, the hub proxies those legs **same-origin**:
+
+- `/console/config.json` includes an `oidc` block that seeds oidc-client-ts's
+  `metadata`. `authorization_endpoint` / `end_session_endpoint` / `issuer` stay
+  the provider's real URLs (the authorize + logout legs are full-page browser
+  redirects — no CORS — and `issuer` must match the id_token `iss`), while
+  `token_endpoint` / `userinfo_endpoint` / `jwks_uri` point at the hub.
+- `POST /oidc/token`, `GET /oidc/userinfo`, `GET /oidc/certs` reverse-proxy to
+  the provider's real endpoints server-side (hub discovers them from the
+  issuer's `.well-known/openid-configuration`). These paths are exempt from the
+  auth middleware — the provider authenticates them itself (the token body /
+  the forwarded bearer).
+
+Tokens still live in the browser (this removes the CORS wall; it is **not** a
+session-cookie BFF). The hub must be able to reach the provider server-side; in
+split-horizon setups where the browser-reachable issuer differs from the
+server-reachable one, point the hub at the internal issuer via
+`HUB_CONSOLE_OIDC_ISSUER`. If discovery is unavailable the `oidc` block is
+omitted and the SPA falls back to talking to the issuer directly.
+
 ## Building
 
 ```sh

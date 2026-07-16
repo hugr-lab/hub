@@ -34,6 +34,10 @@ function createManager(cfg: RuntimeConfig): UserManager {
     scope: cfg.oidc_scopes,
     automaticSilentRenew: true,
     loadUserInfo: true,
+    // Seed metadata from the hub so token/userinfo/jwks resolve to its
+    // same-origin OIDC proxy (no provider CORS needed). Skips client-side
+    // discovery entirely. Absent → oidc-client-ts discovers from the issuer.
+    ...(cfg.oidc ? { metadata: cfg.oidc } : {}),
     // Tokens live in localStorage so a reload keeps the session; the bearer is
     // always read fresh from the manager per request.
     userStore: new WebStorageStateStore({ store: window.localStorage }),

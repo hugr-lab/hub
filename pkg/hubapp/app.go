@@ -54,6 +54,10 @@ type HubApp struct {
 	// consoleAuth memoises hugr's /auth/config for the console's runtime-config
 	// endpoint (console.go).
 	consoleAuth consoleAuthCache
+
+	// oidcDisc memoises the provider's discovery document for the console OIDC
+	// reverse-proxy (oidc_proxy.go).
+	oidcDisc oidcDiscoveryCache
 }
 
 func New(cfg Config, logger *slog.Logger, c *client.Client) *HubApp {
@@ -372,6 +376,11 @@ func (a *HubApp) Init(ctx context.Context) error {
 			mux.HandleFunc("GET /console", func(w http.ResponseWriter, r *http.Request) {
 				http.Redirect(w, r, "/console/", http.StatusMovedPermanently)
 			})
+			// OIDC reverse-proxy: the CORS-sensitive PKCE legs the SPA makes as
+			// XHRs, forwarded same-origin to the provider (oidc_proxy.go).
+			mux.HandleFunc("POST /oidc/token", a.handleOIDCToken)
+			mux.HandleFunc("GET /oidc/userinfo", a.handleOIDCUserinfo)
+			mux.HandleFunc("GET /oidc/certs", a.handleOIDCJwks)
 			source := "embedded"
 			if fromDisk {
 				source = a.config.ConsoleDir

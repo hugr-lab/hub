@@ -36,13 +36,16 @@ func Middleware(next http.Handler, cfg AuthConfig) http.Handler {
 		// verifies the bearer in-handler via hugr auth.me (SK1) so it can accept
 		// agent tokens the JWKS branch cannot; /console/* are the public SPA
 		// assets + pre-login runtime config (design 009) — the SPA authenticates
-		// its own /hugr + /api/v1 calls with the user's OIDC token.
+		// its own /hugr + /api/v1 calls with the user's OIDC token; /oidc/* is the
+		// pre-login OIDC token/userinfo/jwks reverse-proxy (oidc_proxy.go) — the
+		// provider authenticates those legs itself (token body / forwarded bearer).
 		if r.URL.Path == "/health" ||
 			r.URL.Path == "/agent/token" ||
 			r.URL.Path == "/agent/token/public-key" ||
 			strings.HasPrefix(r.URL.Path, "/skills/") ||
 			r.URL.Path == "/console" ||
-			strings.HasPrefix(r.URL.Path, "/console/") {
+			strings.HasPrefix(r.URL.Path, "/console/") ||
+			strings.HasPrefix(r.URL.Path, "/oidc/") {
 			next.ServeHTTP(w, r)
 			return
 		}
