@@ -509,6 +509,12 @@ export function RolesScreen() {
                 <div className="flex items-center gap-2 px-2 py-3 text-xs text-text3">
                   <Spinner /> Evaluating check_access…
                 </div>
+              ) : effective.isError ? (
+                <Banner tone="info" className="m-1 text-xs">
+                  {effective.error instanceof Error
+                    ? effective.error.message
+                    : 'Effective-access preview is unavailable.'}
+                </Banner>
               ) : (
                 effective.data?.schema.map((t) => (
                   <Collapsible

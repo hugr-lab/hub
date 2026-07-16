@@ -1,4 +1,4 @@
-import { postGraphQL } from '@/lib/graphql'
+import { postGraphQL, GraphQLRequestError, GraphQLHTTPError } from '@/lib/graphql'
 import { withDemo } from '@/lib/demo'
 
 // ---------------------------------------------------------------------------
@@ -410,16 +410,26 @@ const verdictFrom = (v: RawVerdict): Verdict => {
   return 'allow'
 }
 
+/** Raised when the caller's own role may not impersonate (can_impersonate=false). */
+export class ImpersonationNotAllowedError extends Error {
+  constructor(role: string) {
+    super(`Cannot preview role “${role}”: your role is not allowed to impersonate (needs can_impersonate).`)
+    this.name = 'ImpersonationNotAllowedError'
+  }
+}
+
 /**
- * Effective-access verdicts for `fields` of `typeName`.
+ * Effective-access verdicts for `fields` of `typeName`, evaluated AS `role`.
  *
  * The server function is `check_access(type_name: String!, fields: String!)`
  * where `fields` is a COMMA-SEPARATED list, returning
- * `core_auth_auth_access_check_entry { field, enabled, visible }`. It evaluates
- * for the CALLER — check_access has no role argument, so it cannot preview an
- * arbitrary role's access (the `role` arg only keys the query cache + drives the
- * offline demo, which computes verdicts from the mock rules). It also can't
- * report a 'filtered' verdict (no filter flag on the entry). See B-followup.
+ * `core_auth_auth_access_check_entry { field, enabled, visible }`. check_access
+ * itself has no role argument — it evaluates for the effective identity — so we
+ * preview an arbitrary role by IMPERSONATING it: the call carries
+ * `X-Hugr-Impersonated-Role`, which the hub proxy forwards and hugr honours only
+ * when the CALLER's own role has `can_impersonate` (else 403 → surfaced as
+ * ImpersonationNotAllowedError). It cannot report a 'filtered' verdict (no
+ * filter flag on the entry). The offline demo computes verdicts from mock rules.
  */
 export async function checkAccess(
   role: string,
@@ -429,12 +439,24 @@ export async function checkAccess(
   return withDemo(
     () => fields.map((f) => computeVerdict(MOCK_PERMS[role] ?? [], typeName, f)),
     async () => {
-      const d = await postGraphQL<{
-        function: { core: { auth: { check_access: RawVerdict[] } } }
-      }>(
-        `query($t: String!, $f: String!){ function { core { auth { check_access(type_name: $t, fields: $f) { field enabled visible } } } } }`,
-        { t: typeName, f: fields.join(',') },
-      )
+      let d: { function: { core: { auth: { check_access: RawVerdict[] } } } }
+      try {
+        d = await postGraphQL(
+          `query($t: String!, $f: String!){ function { core { auth { check_access(type_name: $t, fields: $f) { field enabled visible } } } } }`,
+          { t: typeName, f: fields.join(',') },
+          { 'X-Hugr-Impersonated-Role': role },
+        )
+      } catch (e) {
+        // A caller whose role lacks can_impersonate is rejected by hugr — as an
+        // HTTP 403 (endpoint permission middleware) or a GraphQL "not authorized
+        // to impersonate" error. Either way, surface it as the typed error the
+        // screen renders as a clear notice.
+        const denied =
+          (e instanceof GraphQLHTTPError && e.status === 403) ||
+          (e instanceof GraphQLRequestError && e.errors.some((x) => /impersonat/i.test(x.message)))
+        if (denied) throw new ImpersonationNotAllowedError(role)
+        throw e
+      }
       const byField = new Map((d.function.core.auth.check_access ?? []).map((v) => [v.field, v]))
       return fields.map((f) => {
         const raw = byField.get(f)

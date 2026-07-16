@@ -58,6 +58,16 @@ func (a *HubApp) hugrProxyHandler() http.HandlerFunc {
 			// different issuer hugr need not trust here, and must fall
 			// through to the secret+impersonation flow, never be forwarded.
 			proxyReq.Header.Set("Authorization", bearer)
+			// Preview-as-role: forward an explicit impersonation directive the
+			// caller attached (the console's role-access preview sends it ONLY on
+			// the read-only check_access query — general traffic never does, so
+			// mutations are unaffected). Safe to forward verbatim: hugr gates
+			// impersonation on the CALLER's own role carrying can_impersonate and
+			// 403s anyone else — the hub adds no gate of its own. Role only; we do
+			// not forward an impersonated user id/name over the JWT path.
+			if role := r.Header.Get("X-Hugr-Impersonated-Role"); role != "" {
+				proxyReq.Header.Set("X-Hugr-Impersonated-Role", role)
+			}
 		} else {
 			proxyReq.Header.Set("X-Hugr-Secret-Key", a.config.HugrSecretKey)
 			proxyReq.Header.Set("X-Hugr-Impersonated-User-Id", u.ID)
