@@ -13,6 +13,7 @@ import (
 	"embed"
 	"io/fs"
 	"net/http"
+	"os"
 	"strings"
 )
 
@@ -24,14 +25,33 @@ func Assets() (fs.FS, error) {
 	return fs.Sub(distFS, "dist")
 }
 
-// Handler serves the embedded SPA at prefix (e.g. "/console/") with
-// SPA-fallback: a request that maps to an embedded file is served as-is;
-// anything else returns index.html so the client-side router owns deep links.
-// prefix is stripped before the FS lookup.
-func Handler(prefix string) (http.Handler, error) {
+// source resolves the SPA asset filesystem. A non-empty dir serves the build
+// from disk (os.DirFS) — the container places the freshly built SPA there and
+// sets HUB_CONSOLE_DIR, decoupling the assets from the Go binary. If dir is
+// empty, or is set but does not contain an index.html (misconfigured mount), it
+// falls back to the embedded build so the console is never silently blank. The
+// returned bool reports whether the disk dir was used.
+func source(dir string) (fs.FS, bool, error) {
+	if dir != "" {
+		disk := os.DirFS(dir)
+		if _, err := fs.Stat(disk, "index.html"); err == nil {
+			return disk, true, nil
+		}
+	}
 	sub, err := Assets()
+	return sub, false, err
+}
+
+// Handler serves the SPA at prefix (e.g. "/console/") with SPA-fallback: a
+// request that maps to a real asset is served as-is; anything else returns
+// index.html so the client-side router owns deep links. prefix is stripped
+// before the FS lookup. When dir is non-empty (and valid) the assets are read
+// from that disk directory; otherwise the embedded build is used. fromDisk
+// reports which source won so the caller can log it.
+func Handler(prefix, dir string) (h http.Handler, fromDisk bool, err error) {
+	sub, fromDisk, err := source(dir)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	strip := strings.TrimSuffix(prefix, "/")
 	fileServer := http.FileServer(http.FS(sub))
@@ -50,7 +70,7 @@ func Handler(prefix string) (http.Handler, error) {
 		_ = f.Close()
 		fileServer.ServeHTTP(w, r)
 	})
-	return http.StripPrefix(strip, spa), nil
+	return http.StripPrefix(strip, spa), fromDisk, nil
 }
 
 // serveIndex renders the SPA shell (index.html) for a client-side route. The

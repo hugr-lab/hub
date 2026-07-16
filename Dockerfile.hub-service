@@ -1,4 +1,4 @@
-# ── Stage 1: build the management console SPA (embedded at /console) ──
+# ── Stage 1: build the management console SPA (served on disk at /console) ──
 FROM node:22-alpine AS console
 WORKDIR /console
 RUN corepack enable
@@ -7,7 +7,10 @@ RUN pnpm install --frozen-lockfile
 COPY console/ ./
 RUN pnpm build
 
-# ── Stage 2: Go build (embeds console/dist via go:embed) ──
+# ── Stage 2: Go build ──
+# The console package go:embed's only the committed placeholder dist (the real
+# SPA is served from disk in the final image), so this stage is independent of
+# the console build above and the two run in parallel.
 FROM golang:1.26-alpine AS builder
 
 RUN apk add --no-cache gcc musl-dev
@@ -19,13 +22,17 @@ RUN go mod download
 COPY cmd/ cmd/
 COPY pkg/ pkg/
 COPY console/ console/
-# Replace the committed placeholder dist with the freshly built SPA.
-COPY --from=console /console/dist/ console/dist/
 RUN CGO_ENABLED=1 go build -tags duckdb_arrow -o /hub-service ./cmd/hub-service/
 
 FROM alpine:latest
 RUN apk add --no-cache ca-certificates
 COPY --from=builder /hub-service /usr/local/bin/hub-service
+
+# Ship the freshly built SPA on disk and serve it from there (HUB_CONSOLE_DIR),
+# decoupled from the Go binary — swapping the console does not rebuild the
+# binary, and the binary embeds only a tiny placeholder as the fallback.
+COPY --from=console /console/dist/ /usr/local/share/hub-console/
+ENV HUB_CONSOLE_DIR=/usr/local/share/hub-console
 
 EXPOSE 8082 50051
 ENTRYPOINT ["hub-service"]

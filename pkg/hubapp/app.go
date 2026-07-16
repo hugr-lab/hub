@@ -364,7 +364,7 @@ func (a *HubApp) Init(ctx context.Context) error {
 	// public, read before login); the SPA authenticates its own /hugr + /api/v1
 	// calls with the user's OIDC token.
 	if a.config.ConsoleEnabled {
-		if h, err := console.Handler("/console/"); err != nil {
+		if h, fromDisk, err := console.Handler("/console/", a.config.ConsoleDir); err != nil {
 			a.logger.Warn("management console disabled", "error", err)
 		} else {
 			mux.HandleFunc("GET /console/config.json", a.handleConsoleConfig)
@@ -372,7 +372,14 @@ func (a *HubApp) Init(ctx context.Context) error {
 			mux.HandleFunc("GET /console", func(w http.ResponseWriter, r *http.Request) {
 				http.Redirect(w, r, "/console/", http.StatusMovedPermanently)
 			})
-			a.logger.Info("management console mounted", "path", "/console/")
+			source := "embedded"
+			if fromDisk {
+				source = a.config.ConsoleDir
+			} else if a.config.ConsoleDir != "" {
+				a.logger.Warn("console: HUB_CONSOLE_DIR set but has no index.html — using embedded build",
+					"dir", a.config.ConsoleDir)
+			}
+			a.logger.Info("management console mounted", "path", "/console/", "source", source)
 		}
 	}
 

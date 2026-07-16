@@ -79,6 +79,7 @@ type Config struct {
 	// so nothing is pinned per deployment. The two override knobs stay empty by
 	// default and only exist as an escape hatch.
 	ConsoleEnabled      bool   // HUB_CONSOLE_ENABLED — serve /console (default true)
+	ConsoleDir          string // HUB_CONSOLE_DIR — serve the SPA from this disk dir; empty = embedded build
 	ConsoleOIDCIssuer   string // HUB_CONSOLE_OIDC_ISSUER — override; empty = discover from hugr /auth/config
 	ConsoleOIDCClientID string // HUB_CONSOLE_OIDC_CLIENT_ID — override; empty = discover from hugr /auth/config
 	ConsoleOIDCScopes   string // HUB_CONSOLE_OIDC_SCOPES
@@ -114,6 +115,7 @@ func LoadConfig() Config {
 		SubscriptionPool:  envInt("HUB_SUBSCRIPTION_POOL_MAX", 20),
 
 		ConsoleEnabled:      envBool("HUB_CONSOLE_ENABLED", true),
+		ConsoleDir:          envOrDefault("HUB_CONSOLE_DIR", ""),
 		ConsoleOIDCIssuer:   envOrDefault("HUB_CONSOLE_OIDC_ISSUER", ""),
 		ConsoleOIDCClientID: envOrDefault("HUB_CONSOLE_OIDC_CLIENT_ID", ""),
 		ConsoleOIDCScopes:   envOrDefault("HUB_CONSOLE_OIDC_SCOPES", "openid profile email"),

@@ -46,6 +46,7 @@ empty by default.
 | Env | Default | Meaning |
 |---|---|---|
 | `HUB_CONSOLE_ENABLED` | `true` | Serve `/console`. |
+| `HUB_CONSOLE_DIR` | `` (embedded build) | Serve the SPA from this on-disk directory instead of the embedded build. The container builds the SPA and drops it here, so the Go binary and the console ship/update independently. A dir with no `index.html` falls back to the embedded build. |
 | `HUB_CONSOLE_OIDC_ISSUER` | `` (discover from Hugr `/auth/config`) | Override the discovered browser-reachable OIDC issuer. |
 | `HUB_CONSOLE_OIDC_CLIENT_ID` | `` (discover from Hugr `/auth/config`) | Override the discovered public PKCE client id. |
 | `HUB_CONSOLE_OIDC_SCOPES` | `openid profile email` | Requested scopes. |
@@ -66,8 +67,11 @@ Open `http://localhost:5199/console/?demo=1` to run fully offline (seeded mock
 data, OIDC bypassed). Drop `?demo=1` to hit a real hub.
 
 **Docker:** `Dockerfile.hub-service` builds the SPA in a `node:22` stage and
-copies `console/dist` into the Go build so `go:embed` ships the real bundle
-(the committed `dist/index.html` is only a compile-time placeholder).
+copies `console/dist` into the final image at `/usr/local/share/hub-console`,
+setting `HUB_CONSOLE_DIR` so the binary serves it from disk. The Go build only
+`go:embed`s the committed `dist/index.html` placeholder (the disk build is the
+real one; the placeholder is just the fallback), so the Go build no longer
+depends on the SPA build and the two stages run in parallel.
 
 ## Chat microfrontend
 
