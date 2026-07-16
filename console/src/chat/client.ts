@@ -82,27 +82,55 @@ export class ChatClient {
   async listProjects(): Promise<Project[]> {
     if (this.demo) return DEMO_PROJECTS
     const d = await this.gql<{ hub: { my_projects: Project[] } }>(
-      `query { hub { my_projects(order_by:{field:"name"}) { id name } } }`,
+      `query { hub { my_projects { id name } } }`,
     )
-    return d.hub.my_projects
+    return [...d.hub.my_projects].sort((a, b) => a.name.localeCompare(b.name))
   }
 
   async listChats(): Promise<Chat[]> {
     if (this.demo) return this.demoChats()
-    const d = await this.gql<{ hub: { my_chats: Chat[] } }>(
-      `query { hub { my_chats(order_by:[{field:"last_active_at",direction:DESC}]) {
-        id name agent_id project_id last_active_at
-      } } }`,
+    // hub.my_chats is a keyset-paginated table function — all args are required
+    // (empty string / false = no filter). Field is `title`, not `name`.
+    const d = await this.gql<{
+      hub: { my_chats: { id: string; title: string; agent_id: string; project_id: string | null; last_active_at: string }[] }
+    }>(
+      `query($args: hub_my_chats_args!) {
+        hub { my_chats(args: $args) { id title agent_id project_id last_active_at } }
+      }`,
+      {
+        args: {
+          limit: 200,
+          before_active_at: '',
+          before_id: '',
+          project_id: '',
+          agent_id: '',
+          q: '',
+          archived: false,
+        },
+      },
     )
-    return d.hub.my_chats
+    return d.hub.my_chats.map((c) => ({
+      id: c.id,
+      name: c.title,
+      agent_id: c.agent_id,
+      project_id: c.project_id,
+      last_active_at: c.last_active_at,
+    }))
   }
 
   async listPickableAgents(): Promise<PickableAgent[]> {
     if (this.demo) return DEMO_PICKABLE
-    const d = await this.gql<{ hub: { my_agent_instances: PickableAgent[] } }>(
-      `query { hub { my_agent_instances { id name access:access_role status:runtime_status } } }`,
-    )
-    return d.hub.my_agent_instances
+    // The my_agent_instances view is lean: id / display_name / status /
+    // access_role / hugr_role (no separate desired/runtime).
+    const d = await this.gql<{
+      hub: { my_agent_instances: { id: string; display_name: string; access_role: string; status: string }[] }
+    }>(`query { hub { my_agent_instances { id display_name access_role status } } }`)
+    return d.hub.my_agent_instances.map((a) => ({
+      id: a.id,
+      name: a.display_name,
+      access: a.access_role,
+      status: a.status,
+    }))
   }
 
   async createChat(agentId: string, opts?: { projectId?: string; name?: string }): Promise<Chat> {

@@ -17,7 +17,7 @@ export function LoginScreen({ onLogin, error }: { onLogin: () => void; error?: s
           </div>
         )}
         <Button variant="primary" size="lg" className="w-full" onClick={onLogin}>
-          Continue with Keycloak
+          Sign in
         </Button>
         <div className="text-center text-xs text-text3">
           OIDC Authorization Code + PKCE · issuer from /console/config.json

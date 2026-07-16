@@ -92,7 +92,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           if (!cancelled) setStatus('signedOut')
         })
 
-        // Complete a redirect callback if we came back from Keycloak.
+        // Complete a redirect callback if we came back from the identity provider.
         let user: User | null = null
         if (hasAuthCallback()) {
           user = await um.signinRedirectCallback()

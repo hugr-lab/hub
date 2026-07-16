@@ -29,16 +29,20 @@ type AuthConfig struct {
 // cannot validate agent tokens, which is exactly why /skills/* skips it.
 func Middleware(next http.Handler, cfg AuthConfig) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Skip health check, the agent token endpoints, and the skills
-		// marketplace. /agent/token is self-authenticating (the body
-		// token/secret IS the credential, spec-hub-side §1.2); the public key
-		// is, well, public; /skills/* verifies the bearer in-handler via
-		// hugr auth.me (SK1) so it can accept agent tokens the JWKS branch
-		// cannot.
+		// Skip health check, the agent token endpoints, the skills
+		// marketplace, and the management-console SPA. /agent/token is
+		// self-authenticating (the body token/secret IS the credential,
+		// spec-hub-side §1.2); the public key is, well, public; /skills/*
+		// verifies the bearer in-handler via hugr auth.me (SK1) so it can accept
+		// agent tokens the JWKS branch cannot; /console/* are the public SPA
+		// assets + pre-login runtime config (design 009) — the SPA authenticates
+		// its own /hugr + /api/v1 calls with the user's OIDC token.
 		if r.URL.Path == "/health" ||
 			r.URL.Path == "/agent/token" ||
 			r.URL.Path == "/agent/token/public-key" ||
-			strings.HasPrefix(r.URL.Path, "/skills/") {
+			strings.HasPrefix(r.URL.Path, "/skills/") ||
+			r.URL.Path == "/console" ||
+			strings.HasPrefix(r.URL.Path, "/console/") {
 			next.ServeHTTP(w, r)
 			return
 		}

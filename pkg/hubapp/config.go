@@ -72,6 +72,17 @@ type Config struct {
 	QueryTimeout     time.Duration // Timeout for Hugr GraphQL queries (HUGR_QUERY_TIMEOUT)
 	SubscriptionPool int           // Max WebSocket connections for subscriptions (HUB_SUBSCRIPTION_POOL_MAX)
 	LogLevel         slog.Level
+
+	// Management console (design 009) — the embedded admin/chat SPA served at
+	// /console. The BROWSER-side OIDC issuer + public client id are discovered
+	// from hugr's public /auth/config (hugr returns the browser-reachable issuer),
+	// so nothing is pinned per deployment. The two override knobs stay empty by
+	// default and only exist as an escape hatch.
+	ConsoleEnabled      bool   // HUB_CONSOLE_ENABLED — serve /console (default true)
+	ConsoleOIDCIssuer   string // HUB_CONSOLE_OIDC_ISSUER — override; empty = discover from hugr /auth/config
+	ConsoleOIDCClientID string // HUB_CONSOLE_OIDC_CLIENT_ID — override; empty = discover from hugr /auth/config
+	ConsoleOIDCScopes   string // HUB_CONSOLE_OIDC_SCOPES
+	ConsoleAPIBase      string // HUB_CONSOLE_API_BASE — empty means same origin
 }
 
 func LoadConfig() Config {
@@ -101,6 +112,12 @@ func LoadConfig() Config {
 		StoragePath:       envOrDefault("HUB_STORAGE_PATH", "/var/hub-storage"),
 		QueryTimeout:      envDuration("HUGR_QUERY_TIMEOUT", 5*time.Minute),
 		SubscriptionPool:  envInt("HUB_SUBSCRIPTION_POOL_MAX", 20),
+
+		ConsoleEnabled:      envBool("HUB_CONSOLE_ENABLED", true),
+		ConsoleOIDCIssuer:   envOrDefault("HUB_CONSOLE_OIDC_ISSUER", ""),
+		ConsoleOIDCClientID: envOrDefault("HUB_CONSOLE_OIDC_CLIENT_ID", ""),
+		ConsoleOIDCScopes:   envOrDefault("HUB_CONSOLE_OIDC_SCOPES", "openid profile email"),
+		ConsoleAPIBase:      envOrDefault("HUB_CONSOLE_API_BASE", ""),
 	}
 
 	switch os.Getenv("LOG_LEVEL") {

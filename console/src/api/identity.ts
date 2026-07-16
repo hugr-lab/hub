@@ -3,21 +3,24 @@ import { withDemo } from '@/lib/demo'
 
 export interface Me {
   user_id: string
+  /** display name — hugr returns `user_name` */
   name: string
   role: string
   email?: string
 }
 
 export interface PermissionRow {
-  role: string
-  type_name: string
-  field_name: string
+  /** hugr type/object name (e.g. "hub:management", "*") */
+  object: string
+  /** field name (e.g. "admin", "*") */
+  field: string
   hidden: boolean
   disabled: boolean
 }
 
 export interface MyPermissions {
   role: string
+  disabled: boolean
   permissions: PermissionRow[]
 }
 
@@ -27,18 +30,23 @@ export interface IdentityProbe {
   isAdmin: boolean
 }
 
-const ADMIN_TYPE = 'hub:management'
+const ADMIN_OBJECT = 'hub:management'
 const ADMIN_FIELD = 'admin'
 
+// Field names verified against live hugr (core_auth_auth_me /
+// _my_permissions / _my_permission_entry introspection): me → user_id/
+// user_name/role; my_permissions → role_name/disabled/permissions[];
+// entry → object/field/hidden/disabled/filter/data.
 const PROBE_QUERY = `
 query IdentityProbe {
   function {
     core {
       auth {
-        me { user_id name role }
+        me { user_id user_name role }
         my_permissions {
-          role
-          permissions { type_name field_name disabled hidden }
+          role_name
+          disabled
+          permissions { object field hidden disabled }
         }
       }
     }
@@ -49,33 +57,40 @@ interface ProbeResp {
   function: {
     core: {
       auth: {
-        me: Me
-        my_permissions: MyPermissions
+        me: { user_id: string; user_name: string; role: string }
+        my_permissions: {
+          role_name: string
+          disabled: boolean
+          permissions: PermissionRow[]
+        }
       }
     }
   }
 }
 
 /**
- * Determine admin from `my_permissions`: ALLOW-by-default means admin holds the
- * `hub:management.admin` capability *unless* a row hides/disables it.
+ * Admin = the caller's role carries a non-denied `hub:management.admin`
+ * capability entry. `hub:management.admin` is grant-gated (not allow-by-default
+ * like data access), so its presence — not hidden, not disabled — is the
+ * definitive signal. `*` wildcards match.
  */
 function deriveAdmin(perms: MyPermissions): boolean {
-  const denies = perms.permissions.some(
+  return perms.permissions.some(
     (p) =>
-      (p.type_name === ADMIN_TYPE || p.type_name === '*') &&
-      (p.field_name === ADMIN_FIELD || p.field_name === '*') &&
-      (p.hidden || p.disabled),
+      (p.object === ADMIN_OBJECT || p.object === '*') &&
+      (p.field === ADMIN_FIELD || p.field === '*') &&
+      !p.hidden &&
+      !p.disabled,
   )
-  // In a floored deployment the admin role is named; treat a non-denied
-  // hub:management surface + an "admin"-ish role as admin.
-  if (denies) return false
-  return /admin/i.test(perms.role)
 }
 
 const MOCK_PROBE: IdentityProbe = {
   me: { user_id: 'u_mkeller', name: 'Maren Keller', role: 'admin', email: 'm.keller@acme.io' },
-  myPermissions: { role: 'admin', permissions: [] },
+  myPermissions: {
+    role: 'admin',
+    disabled: false,
+    permissions: [{ object: 'hub:management', field: 'admin', hidden: false, disabled: false }],
+  },
   isAdmin: true,
 }
 
@@ -83,10 +98,15 @@ export async function probeIdentity(): Promise<IdentityProbe> {
   return withDemo(MOCK_PROBE, async () => {
     const data = await postGraphQL<ProbeResp>(PROBE_QUERY)
     const auth = data.function.core.auth
+    const myPermissions: MyPermissions = {
+      role: auth.my_permissions.role_name,
+      disabled: auth.my_permissions.disabled,
+      permissions: auth.my_permissions.permissions ?? [],
+    }
     return {
-      me: auth.me,
-      myPermissions: auth.my_permissions,
-      isAdmin: deriveAdmin(auth.my_permissions),
+      me: { user_id: auth.me.user_id, name: auth.me.user_name, role: auth.me.role },
+      myPermissions,
+      isAdmin: deriveAdmin(myPermissions),
     }
   })
 }

@@ -37,13 +37,21 @@ static assets and pre-login config are public); the SPA authenticates its own
 
 ## Server-side config (hub env)
 
+The OIDC issuer + public client id are **discovered from Hugr** — hub fetches
+Hugr's public `GET /auth/config` (which returns the browser-reachable `issuer` +
+`client_id`) and serves them at `/console/config.json`. Nothing is pinned per
+deployment, and Hugr works with any OIDC provider. The override knobs below stay
+empty by default.
+
 | Env | Default | Meaning |
 |---|---|---|
 | `HUB_CONSOLE_ENABLED` | `true` | Serve `/console`. |
-| `HUB_CONSOLE_OIDC_ISSUER` | (falls back to `HUB_AGENT_HUGR_ISSUER`) | **Browser-reachable** OIDC issuer. In dev this often differs from the agent-network issuer, so set it explicitly. |
-| `HUB_CONSOLE_OIDC_CLIENT_ID` | `hugr` | Public PKCE client id. |
+| `HUB_CONSOLE_OIDC_ISSUER` | `` (discover from Hugr `/auth/config`) | Override the discovered browser-reachable OIDC issuer. |
+| `HUB_CONSOLE_OIDC_CLIENT_ID` | `` (discover from Hugr `/auth/config`) | Override the discovered public PKCE client id. |
 | `HUB_CONSOLE_OIDC_SCOPES` | `openid profile email` | Requested scopes. |
 | `HUB_CONSOLE_API_BASE` | `` (same origin) | API base if the SPA is served off-origin. |
+
+Hub reaches Hugr's `/auth/config` at `HUGR_URL` (its `/ipc` suffix trimmed).
 
 ## Building
 
