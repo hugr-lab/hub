@@ -200,7 +200,7 @@ export function MonitoringScreen() {
 
       <div>
         <ApiHint>hub.my_agent_instances · core.data_sources · data_source_status(name)</ApiHint>
-        <ApiHint>hub.db.llm_budgets · recent activity = session / audit event feed</ApiHint>
+        <ApiHint>hub.agent.db.sessions_bucket_aggregation · hub.db.llm_budgets · recent activity = session / audit feed</ApiHint>
       </div>
     </Page>
   )

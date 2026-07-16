@@ -155,17 +155,51 @@ interface RawAgentInstance {
   status: string
 }
 
+interface SessionStatusBucket {
+  key: { agent_id?: string; status: string }
+  aggregations: { _rows_count: number }
+}
+
+/**
+ * Active sessions per agent, from the `hub.agent.db.sessions` bucket
+ * aggregation. Best-effort: if the caller's role can't read the agent session
+ * store, returns `{}` so the fleet still renders (session chips read 0).
+ */
+async function fetchActiveSessionsByAgent(): Promise<Record<string, number>> {
+  try {
+    const d = await postGraphQL<{
+      hub: { agent: { db: { sessions_bucket_aggregation: SessionStatusBucket[] } } }
+    }>(
+      `query {
+        hub { agent { db {
+          sessions_bucket_aggregation { key { agent_id status } aggregations { _rows_count } }
+        } } }
+      }`,
+    )
+    const out: Record<string, number> = {}
+    for (const b of d.hub.agent.db.sessions_bucket_aggregation) {
+      if (b.key.status === 'active' && b.key.agent_id) {
+        out[b.key.agent_id] = (out[b.key.agent_id] ?? 0) + b.aggregations._rows_count
+      }
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+
 export async function getFleetRollup(): Promise<FleetRow[]> {
   return withDemo(MOCK_FLEET, async () => {
-    const d = await postGraphQL<{ hub: { my_agent_instances: RawAgentInstance[] } }>(
-      `query { hub { my_agent_instances { id display_name status } } }`,
-    )
+    const [d, sessionsByAgent] = await Promise.all([
+      postGraphQL<{ hub: { my_agent_instances: RawAgentInstance[] } }>(
+        `query { hub { my_agent_instances { id display_name status } } }`,
+      ),
+      fetchActiveSessionsByAgent(),
+    ])
     return d.hub.my_agent_instances.map((a) => ({
       id: a.id,
       name: a.display_name,
-      // TODO: session count is not part of the documented `my_agent_instances`
-      // shape — surface it once the fleet table exposes an active-session field.
-      sessions: 0,
+      sessions: sessionsByAgent[a.id] ?? 0,
       runtime: a.status,
     }))
   })
