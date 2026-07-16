@@ -1,0 +1,68 @@
+/*
+ * Stylesheet for the standalone chat microfrontend bundle. Same tokens +
+ * Tailwind as the SPA but WITHOUT the bundled IBM Plex @font-face imports — an
+ * embedded widget should inherit the host's fonts (system-ui / monospace
+ * fallback), keeping the bundle small. Hosts that want IBM Plex load it
+ * themselves.
+ */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #f6f8f7;
+  --surface: #ffffff;
+  --surface2: #eff3f2;
+  --surface3: #e6ecea;
+  --border: #e2e8e6;
+  --border2: #d3dcda;
+  --text: #16211f;
+  --text2: #5a6a67;
+  --text3: #8b9a96;
+  --accent: #1c7d78;
+  --accent-hi: #166661;
+  --accent-soft: #e3efee;
+  --accent-text: #ffffff;
+  --green: #1d9d64;
+  --amber: #c5820c;
+  --red: #cf4438;
+  --blue: #2f6fae;
+  --green-soft: #e2f4ea;
+  --amber-soft: #f8efdb;
+  --red-soft: #fae7e5;
+  --shadow: 0 1px 2px rgba(20, 30, 28, 0.06), 0 8px 24px rgba(20, 30, 28, 0.08);
+  --shadow-lg: 0 4px 12px rgba(20, 30, 28, 0.1), 0 24px 64px rgba(20, 30, 28, 0.18);
+}
+
+[data-theme='dark'] {
+  --bg: #0e1212;
+  --surface: #151b1a;
+  --surface2: #1b2321;
+  --surface3: #232d2b;
+  --border: #242e2c;
+  --border2: #313d3a;
+  --text: #e7edeb;
+  --text2: #9caba7;
+  --text3: #647370;
+  --accent: #3db3aa;
+  --accent-hi: #54c4bb;
+  --accent-soft: #173330;
+  --accent-text: #08201d;
+  --green: #3cc182;
+  --amber: #dfa631;
+  --red: #e26a5e;
+  --blue: #6aa5d8;
+  --green-soft: #12322a;
+  --amber-soft: #332a12;
+  --red-soft: #3a1d1a;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 4px 12px rgba(0, 0, 0, 0.5), 0 24px 64px rgba(0, 0, 0, 0.6);
+}
+
+.eyebrow {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text3);
+}

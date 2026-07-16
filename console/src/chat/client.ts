@@ -1,0 +1,486 @@
+import type { Frame } from './frames'
+
+export interface Project {
+  id: string
+  name: string
+}
+
+export interface Chat {
+  id: string
+  name: string
+  agent_id: string
+  agent_name?: string
+  project_id?: string | null
+  project_name?: string
+  last_active_at?: string
+  last?: string
+}
+
+export interface PickableAgent {
+  id: string
+  name: string
+  access: string
+  status?: string
+}
+
+export interface InquiryAnswer {
+  request_id: string
+  approved?: boolean
+  response?: string
+  reason?: string
+  answers?: Record<string, { value: unknown; comment?: string }>
+  auto_approve_tools?: boolean
+}
+
+export interface ChatClientOptions {
+  apiBase: string
+  getToken: () => Promise<string | null> | string | null
+  demo?: boolean
+}
+
+type FrameListener = (f: Frame) => void
+
+/**
+ * Self-contained chat backend client — GraphQL for chats/projects, REST+SSE for
+ * the live conversation. Built from injected `apiBase`/`getToken` so the chat
+ * microfrontend carries no dependency on the SPA's global config or router.
+ * In demo mode it serves mocks and simulates a scripted turn (incl. HITL).
+ */
+export class ChatClient {
+  private apiBase: string
+  private getToken: ChatClientOptions['getToken']
+  readonly demo: boolean
+
+  constructor(opts: ChatClientOptions) {
+    this.apiBase = opts.apiBase ?? ''
+    this.getToken = opts.getToken
+    this.demo = opts.demo ?? false
+  }
+
+  private async headers(extra?: Record<string, string>): Promise<Record<string, string>> {
+    const token = await this.getToken()
+    return {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(extra ?? {}),
+    }
+  }
+
+  private async gql<T>(query: string, variables?: Record<string, unknown>): Promise<T> {
+    const res = await fetch(`${this.apiBase}/hugr`, {
+      method: 'POST',
+      headers: await this.headers({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ query, variables: variables ?? {} }),
+    })
+    if (!res.ok) throw new Error(`GraphQL HTTP ${res.status}`)
+    const body = (await res.json()) as { data?: T; errors?: { message: string }[] }
+    if (body.errors?.length) throw new Error(body.errors.map((e) => e.message).join('; '))
+    return body.data as T
+  }
+
+  /* ── Threads / projects (GraphQL) ──────────────────────────────── */
+
+  async listProjects(): Promise<Project[]> {
+    if (this.demo) return DEMO_PROJECTS
+    const d = await this.gql<{ hub: { my_projects: Project[] } }>(
+      `query { hub { my_projects(order_by:{field:"name"}) { id name } } }`,
+    )
+    return d.hub.my_projects
+  }
+
+  async listChats(): Promise<Chat[]> {
+    if (this.demo) return this.demoChats()
+    const d = await this.gql<{ hub: { my_chats: Chat[] } }>(
+      `query { hub { my_chats(order_by:[{field:"last_active_at",direction:DESC}]) {
+        id name agent_id project_id last_active_at
+      } } }`,
+    )
+    return d.hub.my_chats
+  }
+
+  async listPickableAgents(): Promise<PickableAgent[]> {
+    if (this.demo) return DEMO_PICKABLE
+    const d = await this.gql<{ hub: { my_agent_instances: PickableAgent[] } }>(
+      `query { hub { my_agent_instances { id name access:access_role status:runtime_status } } }`,
+    )
+    return d.hub.my_agent_instances
+  }
+
+  async createChat(agentId: string, opts?: { projectId?: string; name?: string }): Promise<Chat> {
+    if (this.demo) {
+      const agent = DEMO_PICKABLE.find((a) => a.id === agentId)
+      const chat: Chat = {
+        id: `c_demo_${this.demoSeq++}`,
+        name: opts?.name ?? `New chat with ${agent?.name ?? agentId}`,
+        agent_id: agentId,
+        agent_name: agent?.name,
+        project_id: opts?.projectId ?? null,
+        last: 'now',
+      }
+      this.demoChatList.unshift(chat)
+      return chat
+    }
+    const d = await this.gql<{ function: { hub: { create_chat: Chat } } }>(
+      `mutation($a:String!,$p:String,$n:String){ function { hub {
+        create_chat(agent_id:$a, project_id:$p, name:$n) { id name agent_id project_id }
+      } } }`,
+      { a: agentId, p: opts?.projectId ?? null, n: opts?.name ?? null },
+    )
+    return d.function.hub.create_chat
+  }
+
+  async updateChat(id: string, patch: { name?: string; project_id?: string | null; archived?: boolean }): Promise<void> {
+    if (this.demo) return
+    await this.gql(
+      `mutation($id:String!,$n:String,$p:String,$ar:Boolean){ function { hub {
+        update_chat(id:$id, name:$n, project_id:$p, archived:$ar) { success }
+      } } }`,
+      { id, n: patch.name ?? null, p: patch.project_id ?? null, ar: patch.archived ?? null },
+    )
+  }
+
+  async deleteChat(id: string): Promise<void> {
+    if (this.demo) {
+      this.demoChatList = this.demoChatList.filter((c) => c.id !== id)
+      return
+    }
+    await this.gql(`mutation($id:String!){ function { hub { delete_chat(id:$id){ success } } } }`, { id })
+  }
+
+  /* ── Live conversation (REST + SSE) ────────────────────────────── */
+
+  async postMessage(chatId: string, text: string): Promise<{ status: string; session_id?: string }> {
+    if (this.demo) {
+      this.demoSend(chatId, text)
+      return { status: 'accepted' }
+    }
+    const res = await fetch(`${this.apiBase}/api/v1/chats/${chatId}/messages`, {
+      method: 'POST',
+      headers: await this.headers({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ text }),
+    })
+    if (!res.ok) throw new Error(`send HTTP ${res.status}`)
+    return res.json()
+  }
+
+  async getEvents(chatId: string, minSeq = 0): Promise<Frame[]> {
+    if (this.demo) return [...(this.demoFrames.get(chatId) ?? [])]
+    const res = await fetch(`${this.apiBase}/api/v1/chats/${chatId}/events?min_seq=${minSeq}`, {
+      headers: await this.headers(),
+    })
+    if (!res.ok) throw new Error(`events HTTP ${res.status}`)
+    const body = (await res.json()) as { frames?: Frame[] } | Frame[]
+    return Array.isArray(body) ? body : (body.frames ?? [])
+  }
+
+  async answerInquiry(chatId: string, answer: InquiryAnswer): Promise<void> {
+    if (this.demo) {
+      this.demoAnswer(chatId, answer)
+      return
+    }
+    const res = await fetch(`${this.apiBase}/api/v1/chats/${chatId}/inquiry`, {
+      method: 'POST',
+      headers: await this.headers({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(answer),
+    })
+    if (!res.ok) throw new Error(`inquiry HTTP ${res.status}`)
+  }
+
+  async cancelTurn(chatId: string, opts?: { reason?: string; cascade?: boolean }): Promise<void> {
+    if (this.demo) {
+      this.demoCancel(chatId)
+      return
+    }
+    const res = await fetch(`${this.apiBase}/api/v1/chats/${chatId}/cancel`, {
+      method: 'POST',
+      headers: await this.headers({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ reason: opts?.reason, cascade: opts?.cascade ?? false }),
+    })
+    if (!res.ok) throw new Error(`cancel HTTP ${res.status}`)
+  }
+
+  async listArtifacts(chatId: string): Promise<{ id: string; name: string; size?: string; by?: string; time?: string }[]> {
+    if (this.demo) return this.demoArtifacts.get(chatId) ?? []
+    const res = await fetch(`${this.apiBase}/api/v1/chats/${chatId}/artifacts`, { headers: await this.headers() })
+    if (!res.ok) throw new Error(`artifacts HTTP ${res.status}`)
+    const body = (await res.json()) as { artifacts?: unknown[] } | unknown[]
+    const list = (Array.isArray(body) ? body : (body.artifacts ?? [])) as Record<string, unknown>[]
+    return list.map((a) => ({
+      id: String(a.id ?? a.name),
+      name: String(a.name ?? a.filename ?? 'artifact'),
+      size: a.size ? String(a.size) : undefined,
+      by: a.by ? String(a.by) : undefined,
+      time: a.time ? String(a.time) : undefined,
+    }))
+  }
+
+  async uploadArtifact(chatId: string, file: File): Promise<void> {
+    if (this.demo) return
+    const form = new FormData()
+    form.append('file', file)
+    const res = await fetch(`${this.apiBase}/api/v1/chats/${chatId}/artifacts`, {
+      method: 'POST',
+      headers: await this.headers(),
+      body: form,
+    })
+    if (!res.ok) throw new Error(`upload HTTP ${res.status}`)
+  }
+
+  async downloadArtifact(chatId: string, artifactId: string, filename: string): Promise<void> {
+    if (this.demo) return
+    const res = await fetch(`${this.apiBase}/api/v1/chats/${chatId}/artifacts/${artifactId}`, {
+      headers: await this.headers(),
+    })
+    if (!res.ok) throw new Error(`download HTTP ${res.status}`)
+    const blob = await res.blob()
+    triggerDownload(blob, filename)
+  }
+
+  /**
+   * Open the SSE frame stream via fetch (native EventSource can't set
+   * Authorization). Parses id/data frames, skips heartbeats, resumes with
+   * Last-Event-ID, reconnects with backoff until the signal aborts.
+   */
+  async openStream(
+    chatId: string,
+    handlers: { onFrame: (f: Frame) => void; onOpen?: () => void; onError?: (e: unknown) => void; signal: AbortSignal; lastEventId?: string },
+  ): Promise<void> {
+    if (this.demo) {
+      const listener: FrameListener = handlers.onFrame
+      let set = this.demoListeners.get(chatId)
+      if (!set) {
+        set = new Set()
+        this.demoListeners.set(chatId, set)
+      }
+      set.add(listener)
+      handlers.onOpen?.()
+      handlers.signal.addEventListener('abort', () => set!.delete(listener), { once: true })
+      return
+    }
+
+    const { signal } = handlers
+    let lastEventId = handlers.lastEventId
+    let backoff = 500
+    while (!signal.aborted) {
+      try {
+        const res = await fetch(`${this.apiBase}/api/v1/chats/${chatId}/stream?live=1`, {
+          headers: await this.headers({
+            Accept: 'text/event-stream',
+            ...(lastEventId ? { 'Last-Event-ID': lastEventId } : {}),
+          }),
+          signal,
+        })
+        if (!res.ok || !res.body) throw new Error(`stream HTTP ${res.status}`)
+        handlers.onOpen?.()
+        backoff = 500
+        const reader = res.body.getReader()
+        const decoder = new TextDecoder()
+        let buf = ''
+        for (;;) {
+          const { value, done } = await reader.read()
+          if (done) break
+          buf += decoder.decode(value, { stream: true })
+          let sep: number
+          while ((sep = delimiter(buf)) !== -1) {
+            const raw = buf.slice(0, sep)
+            buf = buf.slice(sep).replace(/^(\r?\n){1,2}/, '')
+            const parsed = parseEvent(raw)
+            if (parsed) {
+              if (parsed.id) lastEventId = parsed.id
+              try {
+                const frame = JSON.parse(parsed.data) as Frame
+                if (parsed.id && frame.seq == null) frame.seq = Number(parsed.id)
+                handlers.onFrame(frame)
+              } catch {
+                /* skip malformed frame */
+              }
+            }
+          }
+        }
+      } catch (err) {
+        if (signal.aborted) return
+        handlers.onError?.(err)
+      }
+      if (signal.aborted) return
+      await delay(backoff, signal)
+      backoff = Math.min(backoff * 2, 10_000)
+    }
+  }
+
+  /* ── Demo simulation ───────────────────────────────────────────── */
+
+  private demoSeq = 1
+  private demoFrameSeq = 1
+  private demoChatList: Chat[] = [...DEMO_CHATS]
+  private demoFrames = new Map<string, Frame[]>()
+  private demoListeners = new Map<string, Set<FrameListener>>()
+  private demoArtifacts = new Map<string, { id: string; name: string; size?: string; by?: string; time?: string }[]>()
+  private demoPending = new Map<string, { toolThenFinish: () => void }>()
+  private demoTimers = new Map<string, ReturnType<typeof setTimeout>[]>()
+
+  private demoChats(): Chat[] {
+    return this.demoChatList
+  }
+
+  private emit(chatId: string, partial: Partial<Frame> & { kind: string }): void {
+    const frame: Frame = {
+      frame_id: `f_${this.demoFrameSeq}`,
+      seq: this.demoFrameSeq,
+      occurred_at: new Date().toISOString(),
+      ...partial,
+    }
+    this.demoFrameSeq++
+    const arr = this.demoFrames.get(chatId) ?? []
+    arr.push(frame)
+    this.demoFrames.set(chatId, arr)
+    this.demoListeners.get(chatId)?.forEach((l) => l(frame))
+  }
+
+  private schedule(chatId: string, ms: number, fn: () => void): void {
+    const t = setTimeout(fn, ms)
+    const arr = this.demoTimers.get(chatId) ?? []
+    arr.push(t)
+    this.demoTimers.set(chatId, arr)
+  }
+
+  private clearTimers(chatId: string): void {
+    this.demoTimers.get(chatId)?.forEach(clearTimeout)
+    this.demoTimers.set(chatId, [])
+  }
+
+  private demoSend(chatId: string, text: string): void {
+    this.emit(chatId, { kind: 'user_message', payload: { text } })
+    this.emit(chatId, { kind: 'session_status', payload: { state: 'active' } })
+    // reasoning stream
+    const think = ['Let me look at the request. ', 'I should query the gateway logs ', 'and check the 24h window.']
+    think.forEach((t, i) =>
+      this.schedule(chatId, 250 + i * 260, () => this.emit(chatId, { kind: 'reasoning', payload: { text: t, chunk_seq: i } })),
+    )
+    this.schedule(chatId, 1100, () => this.emit(chatId, { kind: 'reasoning', payload: { final: true } }))
+    // tool call
+    this.schedule(chatId, 1300, () =>
+      this.emit(chatId, { kind: 'tool_call', payload: { tool_id: 't1', name: 'hugr_query', args: { query: 'SELECT count(*) FROM gateway_events WHERE ts > now() - interval 24 hour' } } }),
+    )
+    this.schedule(chatId, 2100, () =>
+      this.emit(chatId, { kind: 'tool_result', payload: { tool_id: 't1', result: '{ "count": 18242 }' } }),
+    )
+    // approval inquiry
+    this.schedule(chatId, 2500, () => {
+      this.emit(chatId, {
+        kind: 'inquiry_request',
+        request_id: 'req_demo_1',
+        payload: {
+          request_id: 'req_demo_1',
+          type: 'approval',
+          question: 'Post the incident summary to the #ops Slack webhook?',
+          context: 'POST https://hooks.slack.example/… · body: gateway offline 24h summary (2 attachments)',
+        },
+      })
+      this.emit(chatId, { kind: 'session_status', payload: { state: 'wait_approval' } })
+    })
+    // remember how to finish once approved
+    this.demoPending.set(chatId, {
+      toolThenFinish: () => {
+        this.emit(chatId, { kind: 'tool_call', payload: { tool_id: 't2', name: 'http_post', args: { url: 'https://hooks.slack.example/…' } } })
+        this.schedule(chatId, 600, () => this.emit(chatId, { kind: 'tool_result', payload: { tool_id: 't2', result: '{ "ok": true }' } }))
+        this.schedule(chatId, 900, () => {
+          const name = 'gateway_offline_24h.csv'
+          this.emit(chatId, { kind: 'extension_frame', payload: { extension: 'artifact', op: 'artifact_produced', data: { id: 'a_demo_1', name, size: '4.2 KB', by: 'analytics-copilot' } } })
+          const list = this.demoArtifacts.get(chatId) ?? []
+          list.unshift({ id: 'a_demo_1', name, size: '4.2 KB', by: 'analytics-copilot', time: 'now' })
+          this.demoArtifacts.set(chatId, list)
+        })
+        const reply = 'Done — 18,242 gateway events in the last 24h, offline window 02:10–03:35 UTC. I posted the summary to #ops and saved the raw rows as an artifact.'
+        const chunks = reply.match(/.{1,24}/g) ?? [reply]
+        chunks.forEach((c, i) => this.schedule(chatId, 1200 + i * 90, () => this.emit(chatId, { kind: 'agent_message', payload: { text: c, consolidated: false, chunk_seq: i } })))
+        this.schedule(chatId, 1200 + chunks.length * 90 + 120, () => {
+          this.emit(chatId, { kind: 'agent_message', payload: { text: reply, consolidated: true } })
+          this.emit(chatId, { kind: 'agent_message', payload: { text: reply, final: true, usage: { input: 3882, output: 2405 } } })
+          this.emit(chatId, { kind: 'session_status', payload: { state: 'idle' } })
+        })
+      },
+    })
+  }
+
+  private demoAnswer(chatId: string, answer: InquiryAnswer): void {
+    this.emit(chatId, { kind: 'inquiry_answered', payload: { request_id: answer.request_id } })
+    const pending = this.demoPending.get(chatId)
+    if (answer.approved) {
+      this.emit(chatId, { kind: 'session_status', payload: { state: 'active' } })
+      pending?.toolThenFinish()
+    } else {
+      this.emit(chatId, { kind: 'system_message', payload: { text: 'Approval rejected — the agent skipped the Slack post.' } })
+      this.emit(chatId, { kind: 'agent_message', payload: { text: 'Understood — I did not post to Slack. The raw analysis is still available if you want it.', final: true, usage: { input: 3882, output: 640 } } })
+      this.emit(chatId, { kind: 'session_status', payload: { state: 'idle' } })
+    }
+    this.demoPending.delete(chatId)
+  }
+
+  private demoCancel(chatId: string): void {
+    this.clearTimers(chatId)
+    this.demoPending.delete(chatId)
+    this.emit(chatId, { kind: 'system_message', payload: { text: 'Turn cancelled by you.' } })
+    this.emit(chatId, { kind: 'session_status', payload: { state: 'idle' } })
+  }
+}
+
+/* ── SSE parsing helpers ──────────────────────────────────────────── */
+
+function delimiter(buf: string): number {
+  const a = buf.indexOf('\n\n')
+  const b = buf.indexOf('\r\n\r\n')
+  if (a === -1) return b
+  if (b === -1) return a
+  return Math.min(a, b)
+}
+
+function parseEvent(raw: string): { id?: string; data: string } | null {
+  let id: string | undefined
+  const data: string[] = []
+  for (const line of raw.split(/\r?\n/)) {
+    if (line === '' || line.startsWith(':')) continue
+    const idx = line.indexOf(':')
+    const field = idx === -1 ? line : line.slice(0, idx)
+    const value = idx === -1 ? '' : line.slice(idx + 1).replace(/^ /, '')
+    if (field === 'id') id = value
+    else if (field === 'data') data.push(value)
+  }
+  if (data.length === 0) return null
+  return { id, data: data.join('\n') }
+}
+
+function delay(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const t = setTimeout(resolve, ms)
+    signal.addEventListener('abort', () => { clearTimeout(t); resolve() }, { once: true })
+  })
+}
+
+function triggerDownload(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
+/* ── Demo seed data ───────────────────────────────────────────────── */
+
+const DEMO_PROJECTS: Project[] = [
+  { id: 'p_ops', name: 'Ops & Incidents' },
+  { id: 'p_rev', name: 'Revenue' },
+]
+
+const DEMO_PICKABLE: PickableAgent[] = [
+  { id: 'ag_analytics', name: 'analytics-copilot', access: 'owner', status: 'running' },
+  { id: 'ag_finance', name: 'finance-qa', access: 'member', status: 'running' },
+  { id: 'ag_geo', name: 'geo-research', access: 'owner', status: 'paused' },
+]
+
+const DEMO_CHATS: Chat[] = [
+  { id: 'c1', name: 'Gateway outage triage', agent_id: 'ag_analytics', agent_name: 'analytics-copilot', project_id: 'p_ops', last: '2m' },
+  { id: 'c2', name: 'Q3 revenue variance', agent_id: 'ag_finance', agent_name: 'finance-qa', project_id: 'p_rev', last: '1h' },
+  { id: 'c3', name: 'Store coverage by region', agent_id: 'ag_geo', agent_name: 'geo-research', project_id: null, last: 'Mon' },
+]

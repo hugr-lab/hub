@@ -1,0 +1,30 @@
+name: Console CI
+
+# Typecheck + build the management console and the chat microfrontend on any
+# change under console/. Guards the SPA that is embedded into the hub binary.
+on:
+  push:
+    branches: [main]
+    paths: ['console/**', '.github/workflows/console-ci.yml']
+  pull_request:
+    paths: ['console/**', '.github/workflows/console-ci.yml']
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: console
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.14.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: console/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build # tsc -b + vite build
+      - run: pnpm build:chat

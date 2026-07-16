@@ -1,0 +1,107 @@
+/* Self-hosted fonts (bundled by Vite — CSP forbids external CDN). */
+@import '@fontsource/ibm-plex-sans/400.css';
+@import '@fontsource/ibm-plex-sans/500.css';
+@import '@fontsource/ibm-plex-sans/600.css';
+@import '@fontsource/ibm-plex-sans/700.css';
+@import '@fontsource/ibm-plex-mono/400.css';
+@import '@fontsource/ibm-plex-mono/500.css';
+@import '@fontsource/ibm-plex-mono/600.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Design tokens (BUILD-BLUEPRINT §1) ───────────────────────────── */
+:root {
+  --bg: #f6f8f7;
+  --surface: #ffffff;
+  --surface2: #eff3f2;
+  --surface3: #e6ecea;
+  --border: #e2e8e6;
+  --border2: #d3dcda;
+  --text: #16211f;
+  --text2: #5a6a67;
+  --text3: #8b9a96;
+  --accent: #1c7d78;
+  --accent-hi: #166661;
+  --accent-soft: #e3efee;
+  --accent-text: #ffffff;
+  --green: #1d9d64;
+  --amber: #c5820c;
+  --red: #cf4438;
+  --blue: #2f6fae;
+  --green-soft: #e2f4ea;
+  --amber-soft: #f8efdb;
+  --red-soft: #fae7e5;
+  --shadow: 0 1px 2px rgba(20, 30, 28, 0.06), 0 8px 24px rgba(20, 30, 28, 0.08);
+  --shadow-lg: 0 4px 12px rgba(20, 30, 28, 0.1), 0 24px 64px rgba(20, 30, 28, 0.18);
+}
+
+[data-theme='dark'] {
+  --bg: #0e1212;
+  --surface: #151b1a;
+  --surface2: #1b2321;
+  --surface3: #232d2b;
+  --border: #242e2c;
+  --border2: #313d3a;
+  --text: #e7edeb;
+  --text2: #9caba7;
+  --text3: #647370;
+  --accent: #3db3aa;
+  --accent-hi: #54c4bb;
+  --accent-soft: #173330;
+  --accent-text: #08201d;
+  --green: #3cc182;
+  --amber: #dfa631;
+  --red: #e26a5e;
+  --blue: #6aa5d8;
+  --green-soft: #12322a;
+  --amber-soft: #332a12;
+  --red-soft: #3a1d1a;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 4px 12px rgba(0, 0, 0, 0.5), 0 24px 64px rgba(0, 0, 0, 0.6);
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'IBM Plex Sans', system-ui, sans-serif;
+    font-size: 13.5px;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  /* Uppercase eyebrow label */
+  .eyebrow {
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text3);
+  }
+  /* Thin scrollbars that respect the theme. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border2) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 9px;
+    height: 9px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: var(--border2);
+    border-radius: 99px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+}
