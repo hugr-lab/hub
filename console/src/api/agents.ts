@@ -312,10 +312,10 @@ export async function listAgentAccess(agentId: string): Promise<AgentAccess[]> {
     () => (demoAccess[agentId] ?? []).slice(),
     async () => {
       const d = await postGraphQL<{ hub: { agent_access: AgentAccessRow[] } }>(
-        `query AgentAccess($id: String!) {
-          hub { agent_access(agent_id: $id) { user_id_grant user_name access_role created_at } }
+        `query AgentAccess($args: hub_agent_access_args!) {
+          hub { agent_access(args: $args) { user_id_grant user_name access_role created_at } }
         }`,
-        { id: agentId },
+        { args: { agent_id: agentId } },
       )
       return d.hub.agent_access.map<AgentAccess>((r) => ({
         agent_id: agentId,

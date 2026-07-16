@@ -28,7 +28,7 @@ const MOCK_GRANTS: AgentGrant[] = [
 
 interface RawAgentGrant {
   id: string
-  name: string
+  display_name: string
   status: string
   /** The caller's access role from `hub.db.user_agents` (owner ⊃ member). */
   access_role: string
@@ -37,11 +37,11 @@ interface RawAgentGrant {
 export async function listMyAgentGrants(): Promise<AgentGrant[]> {
   return withDemo(MOCK_GRANTS, async () => {
     const d = await postGraphQL<{ hub: { my_agent_instances: RawAgentGrant[] } }>(
-      `query { hub { my_agent_instances { id name status access_role } } }`,
+      `query { hub { my_agent_instances { id display_name status access_role } } }`,
     )
     return d.hub.my_agent_instances.map((a) => ({
       agentId: a.id,
-      name: a.name,
+      name: a.display_name,
       grant: a.access_role === 'owner' ? 'owner' : 'member',
       runtime: a.status,
     }))

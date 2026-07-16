@@ -38,7 +38,7 @@ export function useChat(client: ChatClient, chatId: string | null) {
 
     ;(async () => {
       try {
-        const backfill = await client.getEvents(chatId, 0)
+        const backfill = await client.getEvents(chatId)
         append(backfill)
       } catch {
         /* stream will still deliver live frames */

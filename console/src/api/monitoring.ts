@@ -149,18 +149,18 @@ const MOCK_FLEET: FleetRow[] = [
 
 interface RawAgentInstance {
   id: string
-  name: string
+  display_name: string
   status: string
 }
 
 export async function getFleetRollup(): Promise<FleetRow[]> {
   return withDemo(MOCK_FLEET, async () => {
     const d = await postGraphQL<{ hub: { my_agent_instances: RawAgentInstance[] } }>(
-      `query { hub { my_agent_instances { id name status } } }`,
+      `query { hub { my_agent_instances { id display_name status } } }`,
     )
     return d.hub.my_agent_instances.map((a) => ({
       id: a.id,
-      name: a.name,
+      name: a.display_name,
       // TODO: session count is not part of the documented `my_agent_instances`
       // shape — surface it once the fleet table exposes an active-session field.
       sessions: 0,
@@ -186,27 +186,48 @@ const MOCK_BUDGETS: LlmBudget[] = [
 ]
 
 interface RawBudget {
-  name: string
-  used: number
-  limit: number
+  id: string
+  scope: string
+  provider_id: string | null
+  period: string
+  max_tokens_in: number | null
+  max_tokens_out: number | null
+  max_requests: number | null
 }
 
+/**
+ * `hub.db.llm_budgets` is a budget-CONFIG table (token/request LIMITS per
+ * scope/period) — there is no consumption column, and no usage-aggregate table
+ * in the contract yet. So `used`/`pct` degrade to placeholders until a usage API
+ * exists; only the configured limit is real. (Demo keeps the richer $used/$limit
+ * illustration.)
+ */
 export async function getLlmBudgets(): Promise<LlmBudget[]> {
   return withDemo(MOCK_BUDGETS, async () => {
     const d = await postGraphQL<{ hub: { db: { llm_budgets: RawBudget[] } } }>(
-      `query { hub { db { llm_budgets { name used limit } } } }`,
+      `query { hub { db { llm_budgets { id scope provider_id period max_tokens_in max_tokens_out max_requests } } } }`,
     )
-    return d.hub.db.llm_budgets.map((b) => ({
-      name: b.name,
-      used: fmtUsd(b.used),
-      limit: fmtUsd(b.limit),
-      pct: b.limit > 0 ? Math.round((b.used / b.limit) * 100) : 0,
-    }))
+    return d.hub.db.llm_budgets.map((b) => {
+      const tokenLimit = (b.max_tokens_in ?? 0) + (b.max_tokens_out ?? 0)
+      const limit = tokenLimit
+        ? `${fmtTokens(tokenLimit)} tok/${b.period}`
+        : b.max_requests
+          ? `${b.max_requests} req/${b.period}`
+          : `—/${b.period}`
+      return {
+        name: b.provider_id ? `${b.scope} · ${b.provider_id}` : b.scope,
+        used: '—',
+        limit,
+        pct: 0,
+      }
+    })
   })
 }
 
-function fmtUsd(n: number): string {
-  return `$${Math.round(n)}`
+function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n % 1_000_000 ? 1 : 0)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(n % 1_000 ? 1 : 0)}K`
+  return String(n)
 }
 
 /* ── Recent activity feed ───────────────────────────────────── */

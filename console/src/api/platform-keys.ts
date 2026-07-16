@@ -121,9 +121,9 @@ const genKey = () =>
   Math.random().toString(36).slice(2, 12) +
   Math.random().toString(36).slice(2, 12)
 
-// NOTE: hugr-generated input type names below follow the standard
-// `<table>_mut_input_data` / `_mut_data` / `_filter_input` convention. Confirm
-// against the live schema when wiring the real backend (demo path is exercised).
+// hugr-generated input type names (verified against the live schema): insert →
+// `core_<table>_mut_input_data` (returns the row), update → `core_<table>_mut_data`
+// (returns OperationResult), filter → `core_<table>_filter` (NOT `_filter_input`).
 // ---------------------------------------------------------------------------
 // Fetchers + mutations
 // ---------------------------------------------------------------------------
@@ -187,7 +187,7 @@ export async function updateApiKey(name: string, patch: Partial<Omit<ApiKey, 'na
       if ('headers' in patch) data.headers = textToJson(patch.headers as string)
       if ('claims' in patch) data.claims = textToJson(patch.claims as string)
       await postGraphQL(
-        `mutation($filter: core_api_keys_filter_input!, $data: core_api_keys_mut_data!){ core { update_api_keys(filter: $filter, data: $data){ name } } }`,
+        `mutation($filter: core_api_keys_filter!, $data: core_api_keys_mut_data!){ core { update_api_keys(filter: $filter, data: $data){ success message } } }`,
         { filter: { name: { eq: name } }, data },
       )
     },
@@ -207,7 +207,7 @@ export async function deleteApiKey(name: string): Promise<void> {
     },
     async () => {
       await postGraphQL(
-        `mutation($filter: core_api_keys_filter_input!){ core { delete_api_keys(filter: $filter){ name } } }`,
+        `mutation($filter: core_api_keys_filter!){ core { delete_api_keys(filter: $filter){ success message } } }`,
         { filter: { name: { eq: name } } },
       )
     },

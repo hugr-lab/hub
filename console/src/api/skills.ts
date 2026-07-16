@@ -349,7 +349,7 @@ export async function listCapabilityGrants(): Promise<CapabilityGrants> {
     const d = await postGraphQL<{
       core: { roles: { name: string }[]; role_permissions: RolePermRow[] }
     }>(
-      `query SkillGrants($f: role_permissions_filter) {
+      `query SkillGrants($f: core_role_permissions_filter) {
         core {
           roles { name }
           role_permissions(filter: $f) { role type_name field_name disabled }

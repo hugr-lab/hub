@@ -177,7 +177,7 @@ export async function listDataSources(): Promise<DataSource[]> {
       const d = await postGraphQL<{ core: { data_sources: DataSource[] } }>(
         `query {
           core {
-            data_sources(order_by: { field: "name", direction: ASC }) {
+            data_sources(order_by: [{ field: "name", direction: ASC }]) {
               name type prefix as_module path description disabled read_only self_defined
             }
           }
@@ -256,12 +256,21 @@ export async function describeDataSourceSchema(name: string): Promise<SchemaType
   return withDemo(
     () => DEMO_SCHEMA.map((t) => ({ ...t })),
     async () => {
-      // Return shape is deployment-defined; coerce defensively (see TODO in task notes).
+      // describe_data_source_schema returns a JSON String scalar; parse it before
+      // coercing (coerceSchemaTypes wants the decoded array/object).
       const d = await postGraphQL<{ function: { core: { describe_data_source_schema: unknown } } }>(
         `query ($name: String!) { function { core { describe_data_source_schema(name: $name) } } }`,
         { name },
       )
-      return coerceSchemaTypes(d.function.core.describe_data_source_schema)
+      let raw = d.function.core.describe_data_source_schema
+      if (typeof raw === 'string') {
+        try {
+          raw = JSON.parse(raw)
+        } catch {
+          /* leave as-is; coerceSchemaTypes returns [] for a non-array */
+        }
+      }
+      return coerceSchemaTypes(raw)
     },
   )
 }
@@ -295,7 +304,7 @@ export async function insertDataSource(input: DataSourceInput): Promise<FnResult
     },
     async () => {
       const d = await postGraphQL<{ core: { insert_data_sources: { name: string } } }>(
-        `mutation ($data: data_sources_mut_input_data!) {
+        `mutation ($data: core_data_sources_mut_input_data!) {
           core { insert_data_sources(data: $data) { name } }
         }`,
         { data: input },
@@ -323,8 +332,8 @@ export async function updateDataSource(
     },
     async () => {
       await postGraphQL(
-        `mutation ($name: String!, $data: data_sources_mut_input_data!) {
-          core { update_data_sources(filter: { name: { eq: $name } }, data: $data) { name } }
+        `mutation ($name: String!, $data: core_data_sources_mut_data!) {
+          core { update_data_sources(filter: { name: { eq: $name } }, data: $data) { success message } }
         }`,
         { name, data },
       )
@@ -344,7 +353,7 @@ export async function deleteDataSource(name: string): Promise<FnResult> {
     async () => {
       await postGraphQL(
         `mutation ($name: String!) {
-          core { delete_data_sources(filter: { name: { eq: $name } }) { name } }
+          core { delete_data_sources(filter: { name: { eq: $name } }) { success message } }
         }`,
         { name },
       )
@@ -423,7 +432,7 @@ export async function listCatalogSources(): Promise<CatalogSource[]> {
       const d = await postGraphQL<{ core: { catalog_sources: CatalogSource[] } }>(
         `query {
           core {
-            catalog_sources(order_by: { field: "name", direction: ASC }) {
+            catalog_sources(order_by: [{ field: "name", direction: ASC }]) {
               name type description path
             }
           }
@@ -463,7 +472,7 @@ export async function insertCatalogSource(input: CatalogSourceInput): Promise<Fn
     },
     async () => {
       const d = await postGraphQL<{ core: { insert_catalog_sources: { name: string } } }>(
-        `mutation ($data: catalog_sources_mut_input_data!) {
+        `mutation ($data: core_catalog_sources_mut_input_data!) {
           core { insert_catalog_sources(data: $data) { name } }
         }`,
         { data: input },
@@ -485,8 +494,8 @@ export async function updateCatalogSource(
     },
     async () => {
       await postGraphQL(
-        `mutation ($name: String!, $data: catalog_sources_mut_input_data!) {
-          core { update_catalog_sources(filter: { name: { eq: $name } }, data: $data) { name } }
+        `mutation ($name: String!, $data: core_catalog_sources_mut_data!) {
+          core { update_catalog_sources(filter: { name: { eq: $name } }, data: $data) { success message } }
         }`,
         { name, data: patch },
       )
@@ -508,7 +517,7 @@ export async function deleteCatalogSource(name: string): Promise<FnResult> {
     async () => {
       await postGraphQL(
         `mutation ($name: String!) {
-          core { delete_catalog_sources(filter: { name: { eq: $name } }) { name } }
+          core { delete_catalog_sources(filter: { name: { eq: $name } }) { success message } }
         }`,
         { name },
       )
@@ -530,8 +539,8 @@ export async function linkCatalog(
     },
     async () => {
       await postGraphQL(
-        `mutation ($data: catalogs_mut_input_data!) {
-          core { insert_catalogs(data: $data) { catalog_name data_source_name } }
+        `mutation ($data: core_catalogs_mut_input_data!) {
+          core { insert_catalogs(data: $data) { success message } }
         }`,
         { data: { catalog_name, data_source_name } },
       )
@@ -558,7 +567,7 @@ export async function unlinkCatalog(
           core {
             delete_catalogs(
               filter: { catalog_name: { eq: $cat }, data_source_name: { eq: $ds } }
-            ) { catalog_name }
+            ) { success message }
           }
         }`,
         { cat: catalog_name, ds: data_source_name },

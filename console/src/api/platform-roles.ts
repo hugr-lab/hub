@@ -210,9 +210,9 @@ const permissionToInput = (p: RolePermission) => ({
   data: textToJson(p.data),
 })
 
-// NOTE: hugr-generated input type names below follow the standard
-// `<table>_mut_input_data` / `_mut_data` / `_filter_input` convention. Confirm
-// against the live schema when wiring the real backend (demo path is exercised).
+// hugr-generated input type names (verified against the live schema): insert →
+// `core_<table>_mut_input_data`, update → `core_<table>_mut_data`, filter →
+// `core_<table>_filter` (NOT `_filter_input`).
 // ---------------------------------------------------------------------------
 // Roles
 // ---------------------------------------------------------------------------
@@ -254,7 +254,7 @@ export async function updateRole(name: string, patch: Partial<Omit<Role, 'name'>
     },
     async () => {
       await postGraphQL(
-        `mutation($filter: core_roles_filter_input!, $data: core_roles_mut_data!){ core { update_roles(filter: $filter, data: $data){ name } } }`,
+        `mutation($filter: core_roles_filter!, $data: core_roles_mut_data!){ core { update_roles(filter: $filter, data: $data){ success message } } }`,
         { filter: { name: { eq: name } }, data: patch },
       )
     },
@@ -270,7 +270,7 @@ export async function deleteRole(name: string): Promise<void> {
     },
     async () => {
       await postGraphQL(
-        `mutation($filter: core_roles_filter_input!){ core { delete_roles(filter: $filter){ name } } }`,
+        `mutation($filter: core_roles_filter!){ core { delete_roles(filter: $filter){ success message } } }`,
         { filter: { name: { eq: name } } },
       )
     },
@@ -345,7 +345,7 @@ export async function updateRolePermission(orig: PermissionKey, next: RolePermis
     async () => {
       if (pkChanged) {
         await postGraphQL(
-          `mutation($filter: core_role_permissions_filter_input!){ core { delete_role_permissions(filter: $filter){ role } } }`,
+          `mutation($filter: core_role_permissions_filter!){ core { delete_role_permissions(filter: $filter){ success message } } }`,
           { filter: keyFilter(orig) },
         )
         await postGraphQL(
@@ -355,7 +355,7 @@ export async function updateRolePermission(orig: PermissionKey, next: RolePermis
         return
       }
       await postGraphQL(
-        `mutation($filter: core_role_permissions_filter_input!, $data: core_role_permissions_mut_data!){ core { update_role_permissions(filter: $filter, data: $data){ role } } }`,
+        `mutation($filter: core_role_permissions_filter!, $data: core_role_permissions_mut_data!){ core { update_role_permissions(filter: $filter, data: $data){ success message } } }`,
         {
           filter: keyFilter(orig),
           data: {
@@ -380,7 +380,7 @@ export async function deleteRolePermission(key: PermissionKey): Promise<void> {
     },
     async () => {
       await postGraphQL(
-        `mutation($filter: core_role_permissions_filter_input!){ core { delete_role_permissions(filter: $filter){ role } } }`,
+        `mutation($filter: core_role_permissions_filter!){ core { delete_role_permissions(filter: $filter){ success message } } }`,
         { filter: keyFilter(key) },
       )
     },
@@ -398,26 +398,28 @@ const keyFilter = (k: PermissionKey) => ({
 // ---------------------------------------------------------------------------
 
 interface RawVerdict {
-  field_name: string
-  access: string
+  field: string
+  enabled: boolean
+  visible: boolean
 }
 
-const normalizeVerdict = (access: string): Verdict => {
-  const a = access.toLowerCase()
-  if (a === 'hidden') return 'hidden'
-  if (a === 'deny' || a === 'disabled' || a === 'denied') return 'deny'
-  if (a === 'filtered' || a === 'filter') return 'filtered'
+/** Map a check_access entry (visible/enabled flags) to a UI verdict. */
+const verdictFrom = (v: RawVerdict): Verdict => {
+  if (!v.visible) return 'hidden'
+  if (!v.enabled) return 'deny'
   return 'allow'
 }
 
 /**
- * Effective-access verdicts for `fields` of `typeName` under `role`.
+ * Effective-access verdicts for `fields` of `typeName`.
  *
- * The server function's signature is `check_access(type_name, fields)` and it
- * evaluates for the caller; previewing an arbitrary role's access assumes
- * server-side impersonation (role passed for the demo computation + query key).
- * The real return field names (`field_name`, `access`) are assumed — confirm
- * against the live schema. The demo path computes verdicts from the mock rules.
+ * The server function is `check_access(type_name: String!, fields: String!)`
+ * where `fields` is a COMMA-SEPARATED list, returning
+ * `core_auth_auth_access_check_entry { field, enabled, visible }`. It evaluates
+ * for the CALLER — check_access has no role argument, so it cannot preview an
+ * arbitrary role's access (the `role` arg only keys the query cache + drives the
+ * offline demo, which computes verdicts from the mock rules). It also can't
+ * report a 'filtered' verdict (no filter flag on the entry). See B-followup.
  */
 export async function checkAccess(
   role: string,
@@ -430,15 +432,18 @@ export async function checkAccess(
       const d = await postGraphQL<{
         function: { core: { auth: { check_access: RawVerdict[] } } }
       }>(
-        `query($t: String!, $f: [String!]!){ function { core { auth { check_access(type_name: $t, fields: $f) { field_name access } } } } }`,
-        { t: typeName, f: fields },
+        `query($t: String!, $f: String!){ function { core { auth { check_access(type_name: $t, fields: $f) { field enabled visible } } } } }`,
+        { t: typeName, f: fields.join(',') },
       )
-      const byField = new Map(d.function.core.auth.check_access.map((v) => [v.field_name, v]))
+      const byField = new Map((d.function.core.auth.check_access ?? []).map((v) => [v.field, v]))
       return fields.map((f) => {
         const raw = byField.get(f)
-        return raw
-          ? { field: f, verdict: normalizeVerdict(raw.access), reason: `check_access → ${raw.access}` }
-          : { field: f, verdict: 'allow' as Verdict, reason: 'no rule — ALLOW by default' }
+        if (!raw) return { field: f, verdict: 'allow' as Verdict, reason: 'no rule — ALLOW by default' }
+        return {
+          field: f,
+          verdict: verdictFrom(raw),
+          reason: `check_access → visible=${raw.visible} enabled=${raw.enabled}`,
+        }
       })
     },
   )

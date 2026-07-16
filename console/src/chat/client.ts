@@ -147,22 +147,38 @@ export class ChatClient {
       this.demoChatList.unshift(chat)
       return chat
     }
-    const d = await this.gql<{ function: { hub: { create_chat: Chat } } }>(
-      `mutation($a:String!,$p:String,$n:String){ function { hub {
-        create_chat(agent_id:$a, project_id:$p, name:$n) { id name agent_id project_id }
+    // create_chat args are all String (NON_NULL): project_id='' = no project,
+    // title='' = server default. Returns hub_chat (field is `title`, not `name`).
+    const d = await this.gql<{
+      function: {
+        hub: {
+          create_chat: { id: string; title: string; agent_id: string; project_id: string | null }
+        }
+      }
+    }>(
+      `mutation($a:String!,$p:String!,$t:String!){ function { hub {
+        create_chat(agent_id:$a, project_id:$p, title:$t) { id title agent_id project_id }
       } } }`,
-      { a: agentId, p: opts?.projectId ?? null, n: opts?.name ?? null },
+      { a: agentId, p: opts?.projectId ?? '', t: opts?.name ?? '' },
     )
-    return d.function.hub.create_chat
+    const c = d.function.hub.create_chat
+    return { id: c.id, name: c.title, agent_id: c.agent_id, project_id: c.project_id }
   }
 
   async updateChat(id: string, patch: { name?: string; project_id?: string | null; archived?: boolean }): Promise<void> {
     if (this.demo) return
+    // All args String (NON_NULL): '' = unchanged; project_id='none' clears it;
+    // archived accepts 'true'/'false' ('' = unchanged). Returns hub_chat.
     await this.gql(
-      `mutation($id:String!,$n:String,$p:String,$ar:Boolean){ function { hub {
-        update_chat(id:$id, name:$n, project_id:$p, archived:$ar) { success }
+      `mutation($id:String!,$t:String!,$p:String!,$ar:String!){ function { hub {
+        update_chat(id:$id, title:$t, project_id:$p, archived:$ar) { id }
       } } }`,
-      { id, n: patch.name ?? null, p: patch.project_id ?? null, ar: patch.archived ?? null },
+      {
+        id,
+        t: patch.name ?? '',
+        p: patch.project_id === null ? 'none' : patch.project_id ?? '',
+        ar: patch.archived === undefined ? '' : String(patch.archived),
+      },
     )
   }
 
@@ -171,7 +187,8 @@ export class ChatClient {
       this.demoChatList = this.demoChatList.filter((c) => c.id !== id)
       return
     }
-    await this.gql(`mutation($id:String!){ function { hub { delete_chat(id:$id){ success } } } }`, { id })
+    // delete_chat returns hub_deleted_row { id, deleted }.
+    await this.gql(`mutation($id:String!){ function { hub { delete_chat(id:$id){ id deleted } } } }`, { id })
   }
 
   /* ── Live conversation (REST + SSE) ────────────────────────────── */
@@ -190,14 +207,17 @@ export class ChatClient {
     return res.json()
   }
 
-  async getEvents(chatId: string, minSeq = 0): Promise<Frame[]> {
+  /**
+   * Seed frames to show before the live stream connects. In demo we replay the
+   * in-memory log (the demo stream only emits NEW frames). In real mode the SSE
+   * stream itself replays the persisted backlog as frames (`openStream` connects
+   * in replay mode — no `?live=1`), so nothing is pre-loaded here: the `/events`
+   * REST endpoint returns raw `EventRow`s (scroll-back/inspection shape), not the
+   * `Frame`s the conversation view folds.
+   */
+  async getEvents(chatId: string): Promise<Frame[]> {
     if (this.demo) return [...(this.demoFrames.get(chatId) ?? [])]
-    const res = await fetch(`${this.apiBase}/api/v1/chats/${chatId}/events?min_seq=${minSeq}`, {
-      headers: await this.headers(),
-    })
-    if (!res.ok) throw new Error(`events HTTP ${res.status}`)
-    const body = (await res.json()) as { frames?: Frame[] } | Frame[]
-    return Array.isArray(body) ? body : (body.frames ?? [])
+    return []
   }
 
   async answerInquiry(chatId: string, answer: InquiryAnswer): Promise<void> {
@@ -232,24 +252,28 @@ export class ChatClient {
     if (!res.ok) throw new Error(`artifacts HTTP ${res.status}`)
     const body = (await res.json()) as { artifacts?: unknown[] } | unknown[]
     const list = (Array.isArray(body) ? body : (body.artifacts ?? [])) as Record<string, unknown>[]
+    // hugen returns protocol.ArtifactRef { id, name, mime, size, created_at }.
     return list.map((a) => ({
       id: String(a.id ?? a.name),
       name: String(a.name ?? a.filename ?? 'artifact'),
       size: a.size ? String(a.size) : undefined,
       by: a.by ? String(a.by) : undefined,
-      time: a.time ? String(a.time) : undefined,
+      time: a.created_at ? String(a.created_at) : a.time ? String(a.time) : undefined,
     }))
   }
 
   async uploadArtifact(chatId: string, file: File): Promise<void> {
     if (this.demo) return
-    const form = new FormData()
-    form.append('file', file)
-    const res = await fetch(`${this.apiBase}/api/v1/chats/${chatId}/artifacts`, {
-      method: 'POST',
-      headers: await this.headers(),
-      body: form,
-    })
+    // hugen ingests the RAW request body (not multipart) with the display name
+    // in ?name=. The gateway forwards both body and query verbatim.
+    const res = await fetch(
+      `${this.apiBase}/api/v1/chats/${chatId}/artifacts?name=${encodeURIComponent(file.name)}`,
+      {
+        method: 'POST',
+        headers: await this.headers({ 'Content-Type': file.type || 'application/octet-stream' }),
+        body: file,
+      },
+    )
     if (!res.ok) throw new Error(`upload HTTP ${res.status}`)
   }
 
@@ -290,7 +314,10 @@ export class ChatClient {
     let backoff = 500
     while (!signal.aborted) {
       try {
-        const res = await fetch(`${this.apiBase}/api/v1/chats/${chatId}/stream?live=1`, {
+        // No ?live=1 — replay the persisted backlog (as frames, after any
+        // Last-Event-ID cursor) then go live. `live=1` is the A2A-bridge mode
+        // that suppresses history; the console wants history + live.
+        const res = await fetch(`${this.apiBase}/api/v1/chats/${chatId}/stream`, {
           headers: await this.headers({
             Accept: 'text/event-stream',
             ...(lastEventId ? { 'Last-Event-ID': lastEventId } : {}),
