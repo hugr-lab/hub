@@ -155,14 +155,17 @@ const ok = (message: string): FnResult => ({ success: true, message })
  * Status helpers
  * ──────────────────────────────────────────────────────────────────────── */
 
-/** Map an arbitrary `data_source_status` string onto a UI status. */
+/**
+ * Map a `data_source_status` string onto a UI status. The engine's live
+ * vocabulary is `attached` (loaded & queryable → ready) / `detached` (not loaded
+ * → unloaded); the substring rules cover transitional / error phrasings and
+ * other providers. Anything unrecognised is treated as not-loaded.
+ */
 export function normalizeStatus(raw: string | null | undefined): DataSourceStatus {
   const s = (raw ?? '').toLowerCase()
-  if (s.includes('load') && s.includes('ing')) return 'loading'
-  if (s.includes('start')) return 'loading'
+  if (s === 'attaching' || (s.includes('load') && s.includes('ing')) || s.includes('start')) return 'loading'
   if (s.includes('error') || s.includes('fail')) return 'error'
-  if (s === 'ready' || s === 'loaded' || s === 'ok' || s === 'connected') return 'ready'
-  if (s === '' || s.includes('unload') || s.includes('not') || s.includes('disabled')) return 'unloaded'
+  if (s === 'attached' || s === 'ready' || s === 'loaded' || s === 'ok' || s === 'connected') return 'ready'
   return 'unloaded'
 }
 

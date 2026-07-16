@@ -1,5 +1,6 @@
 import { postGraphQL } from '@/lib/graphql'
 import { withDemo } from '@/lib/demo'
+import { normalizeStatus } from './platform-sources'
 
 /**
  * Monitoring / dashboard data layer. Every fetcher is self-contained and wraps
@@ -100,7 +101,8 @@ export async function getDataSourceHealth(): Promise<DataSourceHealth[]> {
     )
     const rows = d.core.data_sources
     // Live status comes from the per-source status function; degrade to the
-    // `disabled` column if that call is unavailable.
+    // `disabled` column if that call is unavailable. Normalize the engine's
+    // raw vocabulary (attached/detached/…) so the count + dots are correct.
     const statuses = await fetchDataSourceStatuses(rows.map((r) => r.name)).catch(
       () => ({}) as Record<string, string>,
     )
@@ -108,7 +110,7 @@ export async function getDataSourceHealth(): Promise<DataSourceHealth[]> {
       name: r.name,
       type: r.type,
       path: r.path,
-      status: statuses[r.name] ?? (r.disabled ? 'disabled' : 'unknown'),
+      status: normalizeStatus(statuses[r.name] ?? (r.disabled ? 'disabled' : '')),
     }))
   })
 }
