@@ -41,6 +41,7 @@ export function AgentsScreen() {
 
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [wizardOpen, setWizardOpen] = useState(false)
+  const [copySource, setCopySource] = useState<Agent | null>(null)
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ['agents'] })
 
@@ -144,6 +145,18 @@ export function AgentsScreen() {
         const canStop = a.runtime_status === 'running'
         return (
           <span className="flex justify-end gap-1.5">
+            <Button
+              variant="secondary"
+              size="sm"
+              title="Provision a new agent from this one's type"
+              onClick={(e) => {
+                e.stopPropagation()
+                setCopySource(a)
+                setWizardOpen(true)
+              }}
+            >
+              ⧉ Copy
+            </Button>
             {canStart && (
               <Button
                 variant="green"
@@ -187,7 +200,14 @@ export function AgentsScreen() {
         }
         actions={
           isAdmin ? (
-            <Button variant="primary" size="sm" onClick={() => setWizardOpen(true)}>
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => {
+                setCopySource(null)
+                setWizardOpen(true)
+              }}
+            >
               ＋ Create agent
             </Button>
           ) : undefined
@@ -232,7 +252,21 @@ export function AgentsScreen() {
         lifecyclePending={lifecyclePending}
       />
 
-      {isAdmin && <CreateAgentWizard open={wizardOpen} onOpenChange={setWizardOpen} />}
+      {isAdmin && (
+        <CreateAgentWizard
+          key={copySource?.id ?? 'new'}
+          open={wizardOpen}
+          onOpenChange={(o) => {
+            setWizardOpen(o)
+            if (!o) setCopySource(null)
+          }}
+          preset={
+            copySource
+              ? { name: `${copySource.name}-copy`, agentTypeId: copySource.agent_type_id }
+              : undefined
+          }
+        />
+      )}
     </Page>
   )
 }

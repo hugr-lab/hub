@@ -28,9 +28,12 @@ function errText(e: unknown): string {
 export function CreateAgentWizard({
   open,
   onOpenChange,
+  preset,
 }: {
   open: boolean
   onOpenChange: (o: boolean) => void
+  /** Seed values for "copy agent" — the wizard should be remounted (keyed) per source. */
+  preset?: { name?: string; agentTypeId?: string; configOverride?: string }
 }) {
   const qc = useQueryClient()
   const { success, error } = useToast()
@@ -40,11 +43,11 @@ export function CreateAgentWizard({
   const roles = useQuery({ queryKey: ['roles'], queryFn: listRoles })
 
   const [step, setStep] = useState(1)
-  const [name, setName] = useState('')
-  const [agentTypeId, setAgentTypeId] = useState('')
+  const [name, setName] = useState(preset?.name ?? '')
+  const [agentTypeId, setAgentTypeId] = useState(preset?.agentTypeId ?? '')
   const [roleMode, setRoleMode] = useState<RoleMode>('existing')
   const [existingRole, setExistingRole] = useState('')
-  const [override, setOverride] = useState('{}')
+  const [override, setOverride] = useState(preset?.configOverride ?? '{}')
   const [result, setResult] = useState<CreateAgentResult | null>(null)
   const [copied, setCopied] = useState(false)
 
@@ -58,11 +61,11 @@ export function CreateAgentWizard({
 
   const reset = () => {
     setStep(1)
-    setName('')
-    setAgentTypeId(agentTypes.data?.[0]?.id ?? '')
+    setName(preset?.name ?? '')
+    setAgentTypeId(preset?.agentTypeId ?? agentTypes.data?.[0]?.id ?? '')
     setRoleMode('existing')
     setExistingRole(roles.data?.[0]?.name ?? '')
-    setOverride('{}')
+    setOverride(preset?.configOverride ?? '{}')
     setResult(null)
     setCopied(false)
   }
