@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useEffect, useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, Copy } from 'lucide-react'
 import {
   Modal,
@@ -14,9 +14,8 @@ import {
 import { cn } from '@/lib/cn'
 import { useSession } from '@/lib/session'
 import { createAgent, type CreateAgentResult } from '@/api/agents'
-
-/** Existing floored roles offered in step 2. TODO: read from `core.roles`. */
-const EXISTING_ROLES = ['agent:analytics', 'agent:geo', 'analyst', 'viewer']
+import { listAgentTypes } from '@/api/agent-types'
+import { listRoles } from '@/api/platform-roles'
 
 type RoleMode = 'existing' | 'new'
 
@@ -37,20 +36,33 @@ export function CreateAgentWizard({
   const { success, error } = useToast()
   const { identity } = useSession()
 
+  const agentTypes = useQuery({ queryKey: ['agentTypes'], queryFn: listAgentTypes })
+  const roles = useQuery({ queryKey: ['roles'], queryFn: listRoles })
+
   const [step, setStep] = useState(1)
   const [name, setName] = useState('')
+  const [agentTypeId, setAgentTypeId] = useState('')
   const [roleMode, setRoleMode] = useState<RoleMode>('existing')
-  const [existingRole, setExistingRole] = useState(EXISTING_ROLES[0])
-  const [override, setOverride] = useState('{\n  "skills": []\n}')
+  const [existingRole, setExistingRole] = useState('')
+  const [override, setOverride] = useState('{}')
   const [result, setResult] = useState<CreateAgentResult | null>(null)
   const [copied, setCopied] = useState(false)
+
+  // Default the selectors to the first real option once the data arrives.
+  useEffect(() => {
+    if (!agentTypeId && agentTypes.data?.length) setAgentTypeId(agentTypes.data[0].id)
+  }, [agentTypes.data, agentTypeId])
+  useEffect(() => {
+    if (!existingRole && roles.data?.length) setExistingRole(roles.data[0].name)
+  }, [roles.data, existingRole])
 
   const reset = () => {
     setStep(1)
     setName('')
+    setAgentTypeId(agentTypes.data?.[0]?.id ?? '')
     setRoleMode('existing')
-    setExistingRole(EXISTING_ROLES[0])
-    setOverride('{\n  "skills": []\n}')
+    setExistingRole(roles.data?.[0]?.name ?? '')
+    setOverride('{}')
     setResult(null)
     setCopied(false)
   }
@@ -75,6 +87,7 @@ export function CreateAgentWizard({
     mutationFn: () =>
       createAgent({
         name: name.trim(),
+        agent_type_id: agentTypeId,
         hugr_role: roleMode === 'new' ? '' : existingRole,
         config_override: override,
         owner_user_id: identity.userId,
@@ -89,7 +102,7 @@ export function CreateAgentWizard({
     onError: (e) => error(errText(e)),
   })
 
-  const step1Valid = name.trim().length > 0
+  const step1Valid = name.trim().length > 0 && !!agentTypeId
   const canAdvance =
     (step === 1 && step1Valid) ||
     (step === 2) ||
@@ -172,6 +185,26 @@ export function CreateAgentWizard({
                 }}
               />
             </Field>
+            <Field
+              label="Agent type"
+              hint="The template (model, skills, container image) the agent is provisioned from — hub.agent.db.agent_types."
+            >
+              {agentTypes.isLoading ? (
+                <div className="text-2xs text-text3">Loading agent types…</div>
+              ) : agentTypes.data && agentTypes.data.length > 0 ? (
+                <Select value={agentTypeId} onChange={(e) => setAgentTypeId(e.target.value)}>
+                  {agentTypes.data.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name} ({t.id})
+                    </option>
+                  ))}
+                </Select>
+              ) : (
+                <Banner tone="error">
+                  No agent types defined. Create one in Agents → Types before provisioning an agent.
+                </Banner>
+              )}
+            </Field>
           </>
         )}
 
@@ -204,9 +237,9 @@ export function CreateAgentWizard({
                   setRoleMode('existing')
                 }}
               >
-                {EXISTING_ROLES.map((r) => (
-                  <option key={r} value={r}>
-                    {r}
+                {(roles.data ?? []).map((r) => (
+                  <option key={r.name} value={r.name}>
+                    {r.name}
                   </option>
                 ))}
               </Select>

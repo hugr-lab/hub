@@ -64,8 +64,8 @@ export interface CreateAgentInput {
   config_override?: string
   /** Owner grantee; '' → skip the owner grant. */
   owner_user_id?: string
-  /** Fleet template; defaults to `DEFAULT_AGENT_TYPE`. */
-  agent_type_id?: string
+  /** Agent type id — must exist in hub.agent.db.agent_types (create_agent FK). */
+  agent_type_id: string
 }
 
 export interface CreateAgentResult {
@@ -82,9 +82,6 @@ export interface UpdateAgentInput {
   status?: DesiredStatus
   config_override?: string
 }
-
-/** Fallback fleet template id used when the wizard doesn't collect one. */
-const DEFAULT_AGENT_TYPE = 'hugen'
 
 /* ── demo store ───────────────────────────────────────────────────────────
  * A mutable in-memory fleet so `?demo=1` is fully interactive: lifecycle and
@@ -509,7 +506,7 @@ export async function createAgent(input: CreateAgentInput): Promise<CreateAgentR
           agent_id: id,
           name: input.name,
           hugr_role: input.hugr_role || `agent:${slugify(input.name)}`,
-          agent_type_id: input.agent_type_id ?? DEFAULT_AGENT_TYPE,
+          agent_type_id: input.agent_type_id,
           owner: input.owner_user_id || 'm.keller',
           sessions: 0,
           desired_status: 'manual',
@@ -549,7 +546,7 @@ export async function createAgent(input: CreateAgentInput): Promise<CreateAgentR
         }`,
         {
           id: slugify(input.name),
-          type: input.agent_type_id ?? DEFAULT_AGENT_TYPE,
+          type: input.agent_type_id,
           name: input.name,
           role: input.hugr_role,
           owner: input.owner_user_id ?? '',
