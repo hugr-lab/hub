@@ -2,6 +2,35 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ChatClient, InquiryAnswer } from './client'
 import { deriveView, type Artifact, type Frame } from './frames'
 
+// The liveview snapshot is outbox-only (never replayed), so switching away and
+// back to a chat would lose the sidebar until the next live emit. Keep the last
+// liveview (+ recap) per chat across switches and seed a re-opened chat with
+// them, so its live view is restored immediately. Module-level → survives the
+// hook remount that a chat switch triggers.
+const stickyFrames = new Map<string, { liveview?: Frame; recap?: Frame }>()
+
+function stickyExt(f: Frame): 'liveview' | 'recap' | null {
+  const p = f.payload as Record<string, unknown> | undefined
+  if (f.kind !== 'extension_frame' || !p) return null
+  const ext = p.extension
+  return ext === 'liveview' || ext === 'recap' ? ext : null
+}
+
+function cacheSticky(chatId: string, f: Frame) {
+  const ext = stickyExt(f)
+  if (!ext) return
+  const entry = stickyFrames.get(chatId) ?? {}
+  entry[ext] = f
+  stickyFrames.set(chatId, entry)
+}
+
+function seedFrames(chatId: string | null): Frame[] {
+  if (!chatId) return []
+  const e = stickyFrames.get(chatId)
+  if (!e) return []
+  return [e.recap, e.liveview].filter(Boolean) as Frame[]
+}
+
 /**
  * Drives one chat conversation: backfills persisted frames, subscribes to the
  * live SSE stream, folds frames into a render view, and exposes turn actions.
@@ -33,8 +62,11 @@ export function useChat(client: ChatClient, chatId: string | null) {
       seen.current = new Set()
       return
     }
-    seen.current = new Set()
-    setFrames([])
+    // Seed from the sticky cache so the last-known live view is shown instantly
+    // on switch-back (before the stream replay / next live emit).
+    const seed = seedFrames(chatId)
+    seen.current = new Set(seed.map((f) => f.frame_id ?? String(f.seq)))
+    setFrames(seed)
     setConnected(false)
     const ac = new AbortController()
 
@@ -49,7 +81,10 @@ export function useChat(client: ChatClient, chatId: string | null) {
         signal: ac.signal,
         onOpen: () => setConnected(true),
         onError: () => setConnected(false),
-        onFrame: (f) => append([f]),
+        onFrame: (f) => {
+          cacheSticky(chatId, f)
+          append([f])
+        },
       })
     })()
 
