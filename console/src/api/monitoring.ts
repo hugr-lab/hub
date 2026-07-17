@@ -191,12 +191,13 @@ async function fetchActiveSessionsByAgent(): Promise<Record<string, number>> {
 export async function getFleetRollup(): Promise<FleetRow[]> {
   return withDemo(MOCK_FLEET, async () => {
     const [d, sessionsByAgent] = await Promise.all([
-      postGraphQL<{ hub: { my_agent_instances: RawAgentInstance[] } }>(
-        `query { hub { my_agent_instances { id display_name status } } }`,
+      // Monitoring is admin-only → the whole fleet (all_agent_instances).
+      postGraphQL<{ hub: { all_agent_instances: RawAgentInstance[] } }>(
+        `query { hub { all_agent_instances { id display_name status } } }`,
       ),
       fetchActiveSessionsByAgent(),
     ])
-    return d.hub.my_agent_instances.map((a) => ({
+    return d.hub.all_agent_instances.map((a) => ({
       id: a.id,
       name: a.display_name,
       sessions: sessionsByAgent[a.id] ?? 0,

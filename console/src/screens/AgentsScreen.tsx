@@ -35,8 +35,8 @@ export function AgentsScreen() {
   const { success, error } = useToast()
 
   const { data: agents = [], isLoading, isError } = useQuery({
-    queryKey: ['agents'],
-    queryFn: listAgents,
+    queryKey: ['agents', isAdmin],
+    queryFn: () => listAgents(isAdmin),
   })
 
   const [selectedId, setSelectedId] = useState<string | null>(null)

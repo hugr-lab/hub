@@ -261,23 +261,20 @@ interface AgentInstanceRow {
 }
 
 /**
- * Fleet the caller can see (`hub.my_agent_instances`) — identity + live
- * container status. Admins see the whole fleet; owners see only granted agents
- * (the server scopes the view). Cached under `['agents']` so the sidebar badge
- * can read its length.
+ * Fleet the caller can manage. `all=true` (admin console) reads
+ * `all_agent_instances` — EVERY agent with live status; `all=false` reads
+ * `my_agent_instances` — only the caller's granted agents. Chat + Me/Access
+ * always use the own-scoped my_agent_instances. Cached under `['agents', all]`.
  */
-export async function listAgents(): Promise<Agent[]> {
+export async function listAgents(all = false): Promise<Agent[]> {
+  const fn = all ? 'all_agent_instances' : 'my_agent_instances'
   return withDemo(
     () => demoAgents.slice(),
     async () => {
-      const d = await postGraphQL<{ hub: { my_agent_instances: AgentInstanceRow[] } }>(
-        `query Agents {
-          hub {
-            my_agent_instances { id agent_type_id display_name hugr_role status access_role }
-          }
-        }`,
+      const d = await postGraphQL<{ hub: Record<string, AgentInstanceRow[]> }>(
+        `query Agents { hub { ${fn} { id agent_type_id display_name hugr_role status access_role } } }`,
       )
-      return d.hub.my_agent_instances.map<Agent>((r) => ({
+      return (d.hub[fn] ?? []).map<Agent>((r) => ({
         id: r.id,
         agent_id: r.id,
         name: r.display_name,
