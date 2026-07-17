@@ -20,17 +20,21 @@ import {
   grantAgentAccess,
   revokeAgentAccess,
   updateAgent,
+  fetchAgentLogs,
   type Agent,
   type AccessRole,
 } from '@/api/agents'
 
-type AgentTab = 'overview' | 'config' | 'access'
+type AgentTab = 'overview' | 'config' | 'access' | 'logs'
 
 const TABS: TabDef<AgentTab>[] = [
   { value: 'overview', label: 'Overview' },
   { value: 'config', label: 'Config override' },
   { value: 'access', label: 'Access grants' },
 ]
+
+// Logs read the container directly (admin-only endpoint), so the tab is admin-only.
+const ADMIN_TABS: TabDef<AgentTab>[] = [...TABS, { value: 'logs', label: 'Logs' }]
 
 function subtitleOf(a: Agent): string {
   return [a.id, a.version, a.created_at && `created ${a.created_at}`].filter(Boolean).join(' · ')
@@ -116,7 +120,7 @@ function AgentDrawerBody({
 
   return (
     <div className="flex flex-col gap-4">
-      <Tabs tabs={TABS} value={tab} onChange={setTab} />
+      <Tabs tabs={isAdmin ? ADMIN_TABS : TABS} value={tab} onChange={setTab} />
       {tab === 'overview' && (
         <OverviewTab
           agent={agent}
@@ -132,6 +136,46 @@ function AgentDrawerBody({
       )}
       {tab === 'config' && <ConfigTab agent={agent} isAdmin={isAdmin} />}
       {tab === 'access' && <AccessTab agent={agent} isAdmin={isAdmin} />}
+      {tab === 'logs' && isAdmin && <LogsTab agent={agent} />}
+    </div>
+  )
+}
+
+/* ── logs ─────────────────────────────────────────────────────────────── */
+
+function LogsTab({ agent }: { agent: Agent }) {
+  const [tail, setTail] = useState(200)
+  const logs = useQuery({
+    queryKey: ['agentLogs', agent.id, tail],
+    queryFn: () => fetchAgentLogs(agent.id, tail),
+  })
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center gap-2">
+        <span className="text-xs text-text2">Last</span>
+        <Select className="w-auto" value={String(tail)} onChange={(e) => setTail(Number(e.target.value))}>
+          {[100, 200, 500, 1000, 2000].map((n) => (
+            <option key={n} value={n}>
+              {n}
+            </option>
+          ))}
+        </Select>
+        <span className="text-xs text-text2">lines · container stdout+stderr</span>
+        <span className="flex-1" />
+        <Button variant="secondary" size="sm" disabled={logs.isFetching} onClick={() => logs.refetch()}>
+          {logs.isFetching ? <Spinner size={14} /> : 'Refresh'}
+        </Button>
+      </div>
+      {logs.isError ? (
+        <Banner tone="error">
+          Could not read logs — {logs.error instanceof Error ? logs.error.message : 'error'} (agent must be
+          running).
+        </Banner>
+      ) : (
+        <pre className="max-h-[440px] overflow-auto whitespace-pre-wrap rounded-btn border border-border bg-surface2 p-2.5 font-mono text-2xs leading-relaxed text-text2">
+          {logs.isLoading ? 'Loading…' : logs.data || '(empty)'}
+        </pre>
+      )}
     </div>
   )
 }

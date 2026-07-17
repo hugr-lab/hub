@@ -30,6 +30,7 @@ func registerChatTransport(mux *http.ServeMux, a *HubApp) {
 	mux.HandleFunc("GET /api/v1/chats/{id}/artifacts", a.chatVerbHandler("artifacts", false))
 	mux.HandleFunc("POST /api/v1/chats/{id}/artifacts", a.chatVerbHandler("artifacts", false))
 	mux.HandleFunc("GET /api/v1/chats/{id}/artifacts/{aid}", a.chatArtifactHandler)
+	mux.HandleFunc("GET /api/v1/agents/{id}/logs", a.agentLogsHandler)
 }
 
 // chatContext authenticates the caller, loads the chat, and enforces the

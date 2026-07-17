@@ -71,6 +71,7 @@ export function AgentConfigEditor({ value, onChange, height = 320 }: AgentConfig
   const image = getStr(parsed, ['orchestration', 'image'])
   const model = getStr(parsed, ['models', 'model'])
   const mode = getStr(parsed, ['models', 'mode']) || 'remote'
+  const logLevel = getStr(parsed, ['orchestration', 'env', 'HUGEN_LOG_LEVEL'])
 
   return (
     <div className="flex flex-col gap-3">
@@ -97,13 +98,29 @@ export function AgentConfigEditor({ value, onChange, height = 320 }: AgentConfig
         </Field>
       </div>
 
-      <div className="grid grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 gap-3">
         <Field label="Mode">
           <Select value={mode} disabled={!editable} onChange={(e) => patch(['models', 'mode'], e.target.value)}>
             <option value="remote">remote</option>
             <option value="local">local</option>
           </Select>
         </Field>
+        <Field label="Log level" hint="orchestration.env.HUGEN_LOG_LEVEL — applied on next start">
+          <Select
+            value={logLevel}
+            disabled={!editable}
+            onChange={(e) => patch(['orchestration', 'env', 'HUGEN_LOG_LEVEL'], e.target.value)}
+          >
+            <option value="">default</option>
+            <option value="debug">debug</option>
+            <option value="info">info</option>
+            <option value="warn">warn</option>
+            <option value="error">error</option>
+          </Select>
+        </Field>
+      </div>
+
+      <div className="grid grid-cols-3 gap-3">
         <Field label="Memory (bytes)" hint="0 = default">
           <Input
             value={getStr(parsed, ['orchestration', 'memory_bytes'])}

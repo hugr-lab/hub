@@ -1,4 +1,5 @@
 import { postGraphQL } from '@/lib/graphql'
+import { restRaw } from '@/lib/rest'
 import { withDemo } from '@/lib/demo'
 
 /* ────────────────────────────────────────────────────────────────────────
@@ -596,6 +597,21 @@ export async function updateAgent(agentId: string, input: UpdateAgentInput): Pro
           override: overrideProvided ? JSON.parse(input.config_override as string) : {},
         },
       )
+    },
+  )
+}
+
+/**
+ * Tail of the agent container's stdout+stderr (admin). Reads the container log
+ * via the hub runtime, so it works even when the agent's own API is down.
+ */
+export async function fetchAgentLogs(agentId: string, tail = 200): Promise<string> {
+  return withDemo(
+    () => `# demo mode — no container\nagent ${agentId}: tail=${tail}\n`,
+    async () => {
+      const res = await restRaw(`/api/v1/agents/${encodeURIComponent(agentId)}/logs?tail=${tail}`)
+      if (!res.ok) throw new Error(`logs HTTP ${res.status}`)
+      return res.text()
     },
   )
 }
