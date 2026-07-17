@@ -133,6 +133,15 @@ export function deriveView(frames: Frame[]): ChatView {
 
   const answered = new Set<string>()
 
+  // Reasoning precedes the message/tool_call of an iteration; close it as soon
+  // as the next thing lands so "Thinking…" doesn't blink after the answer.
+  const closeReasoning = () => {
+    if (reasoningIdx !== -1) {
+      ;(items[reasoningIdx] as Extract<RenderItem, { kind: 'reasoning' }>).streaming = false
+      reasoningIdx = -1
+    }
+  }
+
   for (const f of frames) {
     const p = f.payload ?? {}
     switch (f.kind) {
@@ -144,10 +153,15 @@ export function deriveView(frames: Frame[]): ChatView {
         break
       }
       case 'agent_message': {
+        closeReasoning()
         const consolidated = p.consolidated === true
         const final = p.final === true
         const text = str(p.text)
         if (agentIdx === -1) {
+          // A consolidated/final frame with no text is a tool-only iteration —
+          // it carries tool_calls, not an assistant message. Don't open an
+          // empty bubble for it.
+          if ((consolidated || final) && !text) break
           agentIdx = items.length
           items.push({ kind: 'agent', id: f.frame_id, text: '', streaming: true })
         }
@@ -188,6 +202,7 @@ export function deriveView(frames: Frame[]): ChatView {
         break
       }
       case 'tool_call': {
+        closeReasoning()
         const toolId = str(p.tool_id) || f.frame_id
         toolIndex.set(toolId, items.length)
         items.push({
@@ -293,7 +308,23 @@ export function deriveView(frames: Frame[]): ChatView {
     }
   }
 
-  return { items, artifacts, inquiry, status, statusReason, missions, budget, lastUsage }
+  // Cleanup pass. The turn is over (idle/terminated) → nothing is still
+  // streaming. Drop closed-empty agent bubbles (tool-only iterations) and stale
+  // empty reasoning markers, keeping an empty reasoning ONLY as the live tail
+  // "Thinking…" indicator during an active turn.
+  const turnOver = status === 'idle' || status === 'terminated'
+  const cleaned: RenderItem[] = []
+  items.forEach((it, i) => {
+    if (turnOver && (it.kind === 'agent' || it.kind === 'reasoning')) it.streaming = false
+    if (it.kind === 'agent' && !it.text.trim() && !it.streaming) return
+    if (it.kind === 'reasoning' && !it.text.trim()) {
+      const liveTail = i === items.length - 1 && !turnOver && it.streaming
+      if (!liveTail) return
+    }
+    cleaned.push(it)
+  })
+
+  return { items: cleaned, artifacts, inquiry, status, statusReason, missions, budget, lastUsage }
 }
 
 /** Status pill label + color token. */
