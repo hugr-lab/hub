@@ -76,12 +76,50 @@ export interface Artifact {
   time?: string
 }
 
-export interface MissionRow {
+/** One node of the recursive sub-agent tree (liveview `children`). */
+export interface SubAgentNode {
   id: string
-  name: string
-  state: string
+  role?: string
+  skill?: string
+  tier?: string
   depth: number
-  async?: boolean
+  state?: string
+  lastTool?: string
+  children: SubAgentNode[]
+}
+
+/**
+ * The rich live-view projection, decoded from the single liveview/status
+ * extension frame (outbox-only, never replayed). Undefined until the first one
+ * arrives (or on reconnect to an idle session).
+ */
+export interface LiveStatus {
+  lifecycle?: string
+  tier?: string
+  lastTool?: { name: string; startedAt?: string }
+  recentActivity: { name: string; startedAt?: string }[]
+  /** loaded skill names + total tool count (extensions.skill). */
+  skills?: { loaded: string[]; tools: number }
+  /** token occupancy — the engine emits amounts, not a window ceiling. */
+  context: {
+    historyTokens?: number
+    promptTokens?: number
+    completionTokens?: number
+    toolsTokens?: number
+    skillsLoadedTokens?: number
+    skillsAvailableTokens?: number
+    taskTokens?: number
+  }
+  children: SubAgentNode[]
+  plan?: { active?: boolean; currentStep?: string; comments?: number }
+  mission?: { activeWave?: string; handoffCount?: number }
+}
+
+/** Recap marker (extension `recap`, op `set`): a rolling summary of the chat. */
+export interface Recap {
+  topic?: string
+  text?: string
+  categories?: string[]
 }
 
 export interface ChatView {
@@ -90,9 +128,10 @@ export interface ChatView {
   inquiry: Inquiry | null
   status: SessionState
   statusReason?: string
-  missions: MissionRow[]
-  /** context budget e.g. { used: 84100, limit: 200000 } */
-  budget?: { used: number; limit: number }
+  /** rich sidebar projection (skills, context, sub-agents); latest snapshot. */
+  live?: LiveStatus
+  /** rolling recap (topic + theme). */
+  recap?: Recap
   lastUsage?: string
 }
 
@@ -110,10 +149,83 @@ function fmtUsage(u: unknown): string | undefined {
   return `↑ ${up ?? '?'} · ↓ ${down ?? '?'} tok`
 }
 
+type Obj = Record<string, unknown>
+const asObj = (v: unknown): Obj => (v && typeof v === 'object' ? (v as Obj) : {})
+const num = (v: unknown): number | undefined => (v == null ? undefined : Number(v))
+
+// Decode the recursive liveview `children` map into a sub-agent tree.
+function parseChildren(children: unknown, meta: unknown, parentDepth: number): SubAgentNode[] {
+  if (!children || typeof children !== 'object') return []
+  const cm = asObj(meta)
+  return Object.entries(children as Obj).map(([id, raw]) => {
+    const c = asObj(raw)
+    const m = asObj(cm[id])
+    const depth = typeof c.depth === 'number' ? (c.depth as number) : parentDepth + 1
+    const lt = asObj(c.last_tool_call)
+    return {
+      id,
+      role: str(m.role || c.role) || undefined,
+      skill: str(m.skill || c.skill) || undefined,
+      tier: str(c.tier) || undefined,
+      depth,
+      state: str(c.lifecycle_state) || undefined,
+      lastTool: lt.name ? str(lt.name) : undefined,
+      children: parseChildren(c.children, c.child_meta, depth),
+    }
+  })
+}
+
+// Decode the liveview/status `data` blob into the LiveStatus projection.
+function parseLiveStatus(data: Obj): LiveStatus {
+  const exts = asObj(data.extensions)
+  const skillExt = exts.skill ? asObj(exts.skill) : undefined
+  const cb = asObj(data.context_budget)
+  const su = asObj(cb.session_usage)
+  const sk = asObj(cb.skills)
+  const plan = exts.plan ? asObj(exts.plan) : undefined
+  const mission = exts.mission ? asObj(exts.mission) : undefined
+  const lt = data.last_tool_call ? asObj(data.last_tool_call) : undefined
+  return {
+    lifecycle: str(data.lifecycle_state) || undefined,
+    tier: str(data.tier) || undefined,
+    lastTool: lt ? { name: str(lt.name), startedAt: str(lt.started_at) || undefined } : undefined,
+    recentActivity: Array.isArray(data.recent_activity)
+      ? (data.recent_activity as unknown[]).map((r) => {
+          const o = asObj(r)
+          return { name: str(o.name), startedAt: str(o.started_at) || undefined }
+        })
+      : [],
+    skills: skillExt
+      ? { loaded: Array.isArray(skillExt.loaded) ? (skillExt.loaded as unknown[]).map(str) : [], tools: Number(skillExt.tools ?? 0) }
+      : undefined,
+    context: {
+      historyTokens: num(cb.history_tokens),
+      promptTokens: num(su.prompt_tokens),
+      completionTokens: num(su.completion_tokens),
+      toolsTokens: num(cb.tools_tokens),
+      skillsLoadedTokens: num(sk.loaded_tokens),
+      skillsAvailableTokens: num(sk.available_tokens),
+      taskTokens: num(sk.task_tokens),
+    },
+    children: parseChildren(data.children, data.child_meta, typeof data.depth === 'number' ? (data.depth as number) : 0),
+    plan: plan
+      ? {
+          active: plan.Active === true || plan.active === true,
+          currentStep: str(plan.CurrentStep || plan.current_step) || undefined,
+          comments: Array.isArray(plan.Comments) ? (plan.Comments as unknown[]).length : num(plan.comments),
+        }
+      : undefined,
+    mission: mission
+      ? { activeWave: str(mission.active_wave) || undefined, handoffCount: num(mission.handoff_count) }
+      : undefined,
+  }
+}
+
 /**
  * Fold the ordered frame log into a renderable view: dedup agent/reasoning
  * streaming deltas into single bubbles, pair tool_call/tool_result, collect
- * artifacts, surface the pending inquiry, and derive status + budget.
+ * artifacts, surface the pending inquiry, and derive status + the live-view
+ * projection (skills, context, sub-agents) + recap.
  */
 export function deriveView(frames: Frame[]): ChatView {
   const items: RenderItem[] = []
@@ -122,8 +234,8 @@ export function deriveView(frames: Frame[]): ChatView {
   let inquiry: Inquiry | null = null
   let status: SessionState = 'idle'
   let statusReason: string | undefined
-  let missions: MissionRow[] = []
-  let budget: ChatView['budget']
+  let live: LiveStatus | undefined
+  let recap: Recap | undefined
   let lastUsage: string | undefined
 
   // Current open streaming items (per session step).
@@ -260,22 +372,15 @@ export function deriveView(frames: Frame[]): ChatView {
           items.push({ kind: 'artifact', id: f.frame_id, name, size, artifactId: aid })
           artifacts.push({ id: aid ?? f.frame_id, name, size, by: str(data.by) || 'agent', time: str(data.time) })
         } else if (ext === 'liveview' && op === 'status') {
-          const rows = (data.missions ?? data.subagents) as unknown[] | undefined
-          if (Array.isArray(rows)) {
-            missions = rows.map((r, i) => {
-              const o = r as Record<string, unknown>
-              return {
-                id: str(o.id) || String(i),
-                name: str(o.name),
-                state: str(o.state),
-                depth: typeof o.depth === 'number' ? o.depth : 0,
-                async: o.async === true,
-              }
-            })
-          }
-          if (data.budget && typeof data.budget === 'object') {
-            const b = data.budget as Record<string, unknown>
-            budget = { used: Number(b.used ?? 0), limit: Number(b.limit ?? 0) }
+          // One full snapshot; latest wins. Outbox-only → arrives live, never
+          // in replay, so it's undefined until the agent next emits.
+          live = parseLiveStatus(data)
+          if (live.lifecycle) status = live.lifecycle as SessionState
+        } else if (ext === 'recap') {
+          recap = {
+            topic: str(data.topic) || undefined,
+            text: str(data.text) || undefined,
+            categories: Array.isArray(data.categories) ? (data.categories as unknown[]).map(str) : undefined,
           }
         }
         break
@@ -290,14 +395,12 @@ export function deriveView(frames: Frame[]): ChatView {
         break
       }
       case 'session_status': {
+        // Durable lifecycle marker (persists + replays). liveview.lifecycle
+        // overrides it when a fresher snapshot is present.
         status = (str(p.state) as SessionState) || status
         statusReason = p.reason ? str(p.reason) : undefined
         const u = fmtUsage(p.usage)
         if (u) lastUsage = u
-        if (p.budget && typeof p.budget === 'object') {
-          const b = p.budget as Record<string, unknown>
-          budget = { used: Number(b.used ?? 0), limit: Number(b.limit ?? 0) }
-        }
         break
       }
       case 'session_terminated':
@@ -324,7 +427,7 @@ export function deriveView(frames: Frame[]): ChatView {
     cleaned.push(it)
   })
 
-  return { items: cleaned, artifacts, inquiry, status, statusReason, missions, budget, lastUsage }
+  return { items: cleaned, artifacts, inquiry, status, statusReason, live, recap, lastUsage }
 }
 
 /** Status pill label + color token. */
