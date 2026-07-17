@@ -29,6 +29,7 @@ const GROUPS: NavGroup[] = [
   {
     label: 'Platform',
     items: [
+      { id: 'agentTypes', label: 'Agent Types', to: '/platform/agent-types', icon: navIcons.agents, adminOnly: true },
       { id: 'ds', label: 'Data Sources', to: '/platform/data-sources', icon: navIcons.ds, adminOnly: true },
       { id: 'cat', label: 'Catalogs', to: '/platform/catalogs', icon: navIcons.cat, adminOnly: true },
       { id: 'schema', label: 'Schema Explorer', to: '/platform/schema', icon: navIcons.schema, adminOnly: true },
@@ -58,6 +59,7 @@ export const SCREEN_TITLES: Record<string, string> = {
   monitoring: 'Monitoring',
   chat: 'Chat',
   agents: 'Agents',
+  agentTypes: 'Agent Types',
   skills: 'Skills marketplace',
   ds: 'Data Sources',
   cat: 'Catalogs',

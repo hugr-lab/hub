@@ -15,6 +15,7 @@ import { CatalogsScreen } from './screens/platform/CatalogsScreen'
 import { RolesScreen } from './screens/platform/RolesScreen'
 import { ApiKeysScreen } from './screens/platform/ApiKeysScreen'
 import { SchemaExplorerScreen } from './screens/platform/SchemaExplorerScreen'
+import { AgentTypesScreen } from './screens/platform/AgentTypesScreen'
 
 function RootRedirect() {
   const { persona } = useSession()
@@ -75,6 +76,14 @@ function AppRoutes() {
           element={
             <RequireAdmin>
               <ApiKeysScreen />
+            </RequireAdmin>
+          }
+        />
+        <Route
+          path="/platform/agent-types"
+          element={
+            <RequireAdmin>
+              <AgentTypesScreen />
             </RequireAdmin>
           }
         />

@@ -6,7 +6,7 @@ import {
   Badge,
   Dot,
   Button,
-  Textarea,
+  JsonEditor,
   Input,
   Select,
   Banner,
@@ -246,15 +246,7 @@ function ConfigTab({ agent, isAdmin }: { agent: Agent; isAdmin: boolean }) {
         Per-agent <span className="font-mono">config_override</span> merged over the fleet default
         at converge time.
       </p>
-      <Textarea
-        mono
-        rows={10}
-        spellCheck={false}
-        className="bg-surface2 text-xs"
-        value={draft}
-        readOnly={!isAdmin}
-        onChange={(e) => setDraft(e.target.value)}
-      />
+      <JsonEditor value={draft} onChange={setDraft} readOnly={!isAdmin} height={280} />
       {jsonError && <Banner tone="error">Invalid JSON — {jsonError}</Banner>}
       {isAdmin && (
         <div className="flex justify-end">

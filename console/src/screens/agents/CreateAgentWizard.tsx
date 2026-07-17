@@ -5,10 +5,10 @@ import {
   Modal,
   Button,
   Input,
-  Textarea,
   Select,
   Field,
   Banner,
+  JsonEditor,
   useToast,
 } from '@/components/ui'
 import { cn } from '@/lib/cn'
@@ -268,15 +268,10 @@ export function CreateAgentWizard({
 
         {step === 3 && (
           <>
-            <p className="text-xs font-semibold text-text2">config_override (optional JSON)</p>
-            <Textarea
-              mono
-              rows={6}
-              spellCheck={false}
-              className="bg-surface2 text-xs"
-              value={override}
-              onChange={(e) => setOverride(e.target.value)}
-            />
+            <p className="text-xs font-semibold text-text2">
+              config_override (optional JSON) — merged over the agent type's config
+            </p>
+            <JsonEditor value={override} onChange={setOverride} height={220} />
             {overrideError && <Banner tone="error">Invalid JSON — {overrideError}</Banner>}
           </>
         )}
