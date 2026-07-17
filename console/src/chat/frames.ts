@@ -113,6 +113,9 @@ export interface LiveStatus {
   children: SubAgentNode[]
   plan?: { active?: boolean; currentStep?: string; comments?: number }
   mission?: { activeWave?: string; handoffCount?: number }
+  /** A HITL inquiry the runtime reports as pending — the fallback when the
+   *  (outbox-only) inquiry_request frame was missed (reconnect / late attach). */
+  pendingInquiry?: { requestId: string; type: string; question?: string }
 }
 
 /** Recap marker (extension `recap`, op `set`): a rolling summary of the chat. */
@@ -175,6 +178,24 @@ function parseChildren(children: unknown, meta: unknown, parentDepth: number): S
   })
 }
 
+// Find the first pending inquiry anywhere in the liveview tree (root or any
+// descendant). A mission plan-approval sits on the child session, so it may
+// surface under children[].pending_inquiry; answering is by request_id
+// regardless of which session raised it.
+function findPending(data: Obj): { requestId: string; type: string; question?: string } | undefined {
+  const pi = data.pending_inquiry ? asObj(data.pending_inquiry) : undefined
+  const rid = pi ? str(pi.request_id) : ''
+  if (rid) return { requestId: rid, type: (pi && str(pi.type)) || 'approval', question: (pi && str(pi.question)) || undefined }
+  const children = data.children
+  if (children && typeof children === 'object') {
+    for (const c of Object.values(children as Obj)) {
+      const found = findPending(asObj(c))
+      if (found) return found
+    }
+  }
+  return undefined
+}
+
 // Decode the liveview/status `data` blob into the LiveStatus projection.
 function parseLiveStatus(data: Obj): LiveStatus {
   const exts = asObj(data.extensions)
@@ -218,6 +239,7 @@ function parseLiveStatus(data: Obj): LiveStatus {
     mission: mission
       ? { activeWave: str(mission.active_wave) || undefined, handoffCount: num(mission.handoff_count) }
       : undefined,
+    pendingInquiry: findPending(data),
   }
 }
 
@@ -408,6 +430,18 @@ export function deriveView(frames: Frame[]): ChatView {
         break
       default:
         break
+    }
+  }
+
+  // Fallback: the runtime reports a pending inquiry but we never saw its
+  // (outbox-only) inquiry_request frame — e.g. a mission plan-approval raised
+  // before this stream attached, or a reconnect. Reconstruct a minimal modal so
+  // the user can still answer; otherwise the mission blocks forever.
+  if (!inquiry && live?.pendingInquiry && !answered.has(live.pendingInquiry.requestId)) {
+    inquiry = {
+      request_id: live.pendingInquiry.requestId,
+      type: (live.pendingInquiry.type as Inquiry['type']) ?? 'approval',
+      question: live.pendingInquiry.question,
     }
   }
 
