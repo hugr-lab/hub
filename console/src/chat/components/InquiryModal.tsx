@@ -3,6 +3,7 @@ import { AlertTriangle } from 'lucide-react'
 import { Input } from '@/components/ui'
 import type { InquiryAnswer } from '../client'
 import type { Inquiry } from '../frames'
+import { Markdown } from './Markdown'
 
 /**
  * HITL inquiry modal. Approval → reject / approve+auto / approve. Clarification
@@ -49,10 +50,14 @@ function ApprovalBody({ inquiry, onAnswer }: { inquiry: Inquiry; onAnswer: (a: I
   const [reason, setReason] = useState('')
   return (
     <>
-      {inquiry.question && <div className="text-[13px] font-medium">{inquiry.question}</div>}
+      {inquiry.question && (
+        <div className="max-h-[46vh] overflow-y-auto pr-1 text-[13px]">
+          <Markdown>{inquiry.question}</Markdown>
+        </div>
+      )}
       {inquiry.context && (
-        <div className="rounded-[9px] border border-border bg-surface2 px-3 py-2 text-xs leading-relaxed text-text2">
-          {inquiry.context}
+        <div className="max-h-40 overflow-y-auto rounded-[9px] border border-border bg-surface2 px-3 py-2 text-xs text-text2">
+          <Markdown>{inquiry.context}</Markdown>
         </div>
       )}
       <Input
@@ -102,7 +107,11 @@ function ClarificationBody({ inquiry, onAnswer }: { inquiry: Inquiry; onAnswer: 
 
   return (
     <>
-      {inquiry.question && <div className="text-[13px] font-medium">{inquiry.question}</div>}
+      {inquiry.question && (
+        <div className="text-[13px]">
+          <Markdown>{inquiry.question}</Markdown>
+        </div>
+      )}
 
       {clarifications.length > 0 ? (
         <div className="flex flex-col gap-3">

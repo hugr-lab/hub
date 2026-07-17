@@ -73,6 +73,7 @@ export function ChatApp(props: ChatAppProps) {
   // Panel state — live XOR artifacts; hidden in narrow mode.
   const [narrow, setNarrow] = useState(false)
   const [panel, setPanel] = useState<'none' | 'live' | 'artifacts'>('none')
+  const [answerError, setAnswerError] = useState<string | null>(null)
   const showPanel = !narrow && panel !== 'none'
 
   const createChat = (aid: string) => {
@@ -152,7 +153,22 @@ export function ChatApp(props: ChatAppProps) {
         />
       )}
 
-      {chat.view.inquiry && <InquiryModal inquiry={chat.view.inquiry} onAnswer={chat.answerInquiry} />}
+      {chat.view.inquiry && (
+        <InquiryModal
+          inquiry={chat.view.inquiry}
+          onAnswer={(a) => {
+            setAnswerError(null)
+            chat.answerInquiry(a).catch((e) =>
+              setAnswerError(e instanceof Error ? e.message : 'Failed to submit answer'),
+            )
+          }}
+        />
+      )}
+      {answerError && (
+        <div className="fixed bottom-4 left-1/2 z-[200] -translate-x-1/2 rounded-btn border border-red bg-surface px-3.5 py-2 text-xs text-red shadow-lg">
+          Inquiry answer failed: {answerError}
+        </div>
+      )}
     </div>
   )
 }

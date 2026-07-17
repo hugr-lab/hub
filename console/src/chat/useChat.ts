@@ -10,6 +10,7 @@ export function useChat(client: ChatClient, chatId: string | null) {
   const [frames, setFrames] = useState<Frame[]>([])
   const [connected, setConnected] = useState(false)
   const [loadedArtifacts, setLoadedArtifacts] = useState<Artifact[]>([])
+  const [answeredIds, setAnsweredIds] = useState<Set<string>>(new Set())
   const seen = useRef<Set<string>>(new Set())
 
   const append = useCallback((incoming: Frame[]) => {
@@ -26,6 +27,7 @@ export function useChat(client: ChatClient, chatId: string | null) {
 
   // (re)connect whenever the chat changes.
   useEffect(() => {
+    setAnsweredIds(new Set())
     if (!chatId) {
       setFrames([])
       seen.current = new Set()
@@ -59,7 +61,13 @@ export function useChat(client: ChatClient, chatId: string | null) {
     return () => ac.abort()
   }, [client, chatId, append])
 
-  const view = useMemo(() => deriveView(frames), [frames])
+  const view = useMemo(() => {
+    const v = deriveView(frames)
+    // Optimistically hide an inquiry we've already answered locally — the
+    // confirming inquiry_answered / cleared-pending frame may lag or be dropped.
+    if (v.inquiry && answeredIds.has(v.inquiry.request_id)) v.inquiry = null
+    return v
+  }, [frames, answeredIds])
 
   const artifacts = useMemo(() => {
     const byId = new Map<string, Artifact>()
@@ -82,7 +90,20 @@ export function useChat(client: ChatClient, chatId: string | null) {
 
   const answerInquiry = useCallback(
     async (answer: InquiryAnswer) => {
-      if (chatId) await client.answerInquiry(chatId, answer)
+      if (!chatId) return
+      // Close the modal immediately, then submit. On failure, re-open and
+      // rethrow so the caller can surface it (routing is by request_id).
+      setAnsweredIds((prev) => new Set(prev).add(answer.request_id))
+      try {
+        await client.answerInquiry(chatId, answer)
+      } catch (e) {
+        setAnsweredIds((prev) => {
+          const n = new Set(prev)
+          n.delete(answer.request_id)
+          return n
+        })
+        throw e
+      }
     },
     [client, chatId],
   )

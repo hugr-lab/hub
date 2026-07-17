@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { ChevronRight, FileText, Wrench } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import type { RenderItem } from '../frames'
+import { Markdown } from './Markdown'
 
 export function MessageItem({
   item,
@@ -24,8 +25,8 @@ export function MessageItem({
       return (
         <div className="flex flex-col">
           <div className="flex max-w-[86%] flex-col gap-1.5 self-start animate-fadeUp">
-            <div className="whitespace-pre-wrap rounded-[13px_13px_13px_3px] border border-border bg-surface px-3.5 py-2.5 text-[13px]">
-              {item.text}
+            <div className="rounded-[13px_13px_13px_3px] border border-border bg-surface px-3.5 py-2.5 text-[13px]">
+              <Markdown>{item.text}</Markdown>
               {item.streaming && (
                 <span className="ml-0.5 inline-block h-[13px] w-[7px] translate-y-0.5 rounded-[1px] bg-accent align-text-bottom animate-blinkc" />
               )}
