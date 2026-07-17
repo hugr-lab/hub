@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { cn } from '@/lib/cn'
 import type { ChatView } from '../frames'
 import { statusMeta } from '../frames'
@@ -20,6 +20,7 @@ export function Conversation({
   onSend,
   onCancel,
   onOpenArtifacts,
+  onRename,
 }: {
   view: ChatView
   running: boolean
@@ -35,9 +36,19 @@ export function Conversation({
   onSend: (text: string) => void
   onCancel: () => void
   onOpenArtifacts: () => void
+  /** Manual rename (pins the name — recap auto-title won't override it). */
+  onRename?: (name: string) => void
 }) {
   const listRef = useRef<HTMLDivElement>(null)
   const meta = statusMeta(view.status)
+
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState('')
+  const commitRename = () => {
+    setEditing(false)
+    const n = draft.trim()
+    if (n && n !== chatName) onRename?.(n)
+  }
 
   // Autoscroll to bottom on new content.
   useEffect(() => {
@@ -67,7 +78,31 @@ export function Conversation({
         {/* header */}
         <div className="flex items-center gap-2.5 border-b border-border bg-surface px-[18px] py-2.5">
           <div className="flex min-w-0 flex-col">
-            <span className="truncate text-[13px] font-semibold">{chatName}</span>
+            {onRename && editing ? (
+              <input
+                autoFocus
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onBlur={commitRename}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') commitRename()
+                  else if (e.key === 'Escape') setEditing(false)
+                }}
+                className="w-52 border-b border-accent bg-transparent text-[13px] font-semibold focus:outline-none"
+              />
+            ) : (
+              <button
+                className={cn('truncate text-left text-[13px] font-semibold', onRename && 'hover:text-accent')}
+                title={onRename ? 'Rename chat' : undefined}
+                onClick={() => {
+                  if (!onRename) return
+                  setDraft(chatName)
+                  setEditing(true)
+                }}
+              >
+                {chatName}
+              </button>
+            )}
             {agentName && <span className="text-xs text-text3">{agentName}</span>}
           </div>
           <span className="flex-1" />

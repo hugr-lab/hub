@@ -82,6 +82,27 @@ export function ChatApp(props: ChatAppProps) {
     })
   }
 
+  // Chats that already carry a non-default / pinned title (recap won't rename).
+  const titledRef = useRef<Set<string>>(new Set())
+  const isDefaultTitle = (name?: string) => !name || /^new chat$/i.test(name.trim())
+
+  // Auto-name a still-default chat from the recap topic, once. A manual rename
+  // pins the name (adds it to titledRef), so the recap never overrides it.
+  useEffect(() => {
+    const topic = chat.view.recap?.topic?.trim()
+    if (!chatId || !topic || !activeChat) return
+    if (titledRef.current.has(chatId) || !isDefaultTitle(activeChat.name)) return
+    titledRef.current.add(chatId)
+    client.updateChat(chatId, { name: topic }).then(() => chatsQ.refetch()).catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chat.view.recap?.topic, chatId, activeChat])
+
+  const renameChat = (name: string) => {
+    if (!chatId) return
+    titledRef.current.add(chatId)
+    client.updateChat(chatId, { name }).then(() => chatsQ.refetch()).catch(() => {})
+  }
+
   return (
     <div
       data-theme={theme}
@@ -114,6 +135,7 @@ export function ChatApp(props: ChatAppProps) {
           onSend={chat.sendMessage}
           onCancel={chat.cancelTurn}
           onOpenArtifacts={() => setPanel('artifacts')}
+          onRename={renameChat}
         />
       ) : (
         <div className="flex flex-1 items-center justify-center bg-bg text-sm text-text3">
