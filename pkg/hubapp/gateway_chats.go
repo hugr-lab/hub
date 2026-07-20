@@ -41,6 +41,10 @@ func registerChatTransport(mux *http.ServeMux, a *HubApp) {
 	mux.HandleFunc("POST /api/v1/chats/{id}/artifacts", a.chatVerbHandler("artifacts", false))
 	mux.HandleFunc("GET /api/v1/chats/{id}/artifacts/{aid}", a.chatArtifactHandler)
 	mux.HandleFunc("GET /api/v1/agents/{id}/logs", a.agentLogsHandler)
+	// Per-agent skills (hub-native; forwards to the agent's hugen /v1/skills).
+	mux.HandleFunc("GET /api/v1/agents/{id}/skills", a.agentSkillsListHandler)
+	mux.HandleFunc("GET /api/v1/agents/{id}/skills/{name}/export", a.agentSkillExportHandler)
+	mux.HandleFunc("POST /api/v1/agents/{id}/skills/install", a.agentSkillInstallHandler)
 }
 
 // chatContext authenticates the caller, loads the chat, and enforces the

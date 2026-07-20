@@ -46,6 +46,8 @@ export interface Agent {
   created_at: string
   /** Per-agent JSON merged over the fleet default at converge time. */
   config_override: string
+  /** Caller's grant on this agent (owner | member); drives owner-only UI. */
+  access_role?: AccessRole
 }
 
 export interface AgentAccess {
@@ -289,6 +291,7 @@ export async function listAgents(all = false): Promise<Agent[]> {
         version: '',
         created_at: '',
         config_override: '',
+        access_role: (r.access_role as AccessRole) || 'member',
       }))
     },
   )

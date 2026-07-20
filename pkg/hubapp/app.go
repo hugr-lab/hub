@@ -27,12 +27,12 @@ const (
 )
 
 type HubApp struct {
-	config        Config
-	logger        *slog.Logger
-	mux           *app.CatalogMux
-	client        *client.Client
-	server        *http.Server
-	tokenServer   *http.Server // dedicated /agent/token listener (HUB_AGENT_TOKEN_LISTEN), nil in shared mode
+	config      Config
+	logger      *slog.Logger
+	mux         *app.CatalogMux
+	client      *client.Client
+	server      *http.Server
+	tokenServer *http.Server // dedicated /agent/token listener (HUB_AGENT_TOKEN_LISTEN), nil in shared mode
 	// agentRuntime is the AgentRuntime seam (DockerRuntime today; a k8s-Pod
 	// runtime slots in behind it). nil when no orchestrator is reachable.
 	agentRuntime agentmgr.AgentRuntime
@@ -46,9 +46,11 @@ type HubApp struct {
 	bundleStore  BundleStore
 	skillsVerify *verifyCache
 
-	// accessCheck / chatLookup override the gateway's authz + chat-read seams
-	// in tests; nil → checkAgentAccess / fetchChat (gateway.go, gateway_chats.go).
+	// accessCheck / ownerCheck / chatLookup override the gateway's authz +
+	// chat-read seams in tests; nil → checkAgentAccess("") / checkAgentAccess
+	// ("owner") / fetchChat (gateway.go, gateway_chats.go).
 	accessCheck func(ctx context.Context, u auth.UserInfo, agentID string) error
+	ownerCheck  func(ctx context.Context, u auth.UserInfo, agentID string) error
 	chatLookup  func(ctx context.Context, id string) (chatRow, error)
 
 	// consoleAuth memoises hugr's /auth/config for the console's runtime-config

@@ -24,13 +24,15 @@ import {
   type Agent,
   type AccessRole,
 } from '@/api/agents'
+import { SkillsTab } from './SkillsTab'
 
-type AgentTab = 'overview' | 'config' | 'access' | 'logs'
+type AgentTab = 'overview' | 'config' | 'access' | 'skills' | 'logs'
 
 const TABS: TabDef<AgentTab>[] = [
   { value: 'overview', label: 'Overview' },
   { value: 'config', label: 'Config override' },
   { value: 'access', label: 'Access grants' },
+  { value: 'skills', label: 'Skills' },
 ]
 
 // Logs read the container directly (admin-only endpoint), so the tab is admin-only.
@@ -117,6 +119,8 @@ function AgentDrawerBody({
 
   const canStart = isAdmin && agent.runtime_status !== 'running' && agent.desired_status !== 'disabled'
   const canStop = isAdmin && agent.runtime_status === 'running'
+  // Owner or admin may export/install/publish skills; members see the list only.
+  const canManageSkills = isAdmin || agent.access_role === 'owner'
 
   return (
     <div className="flex flex-col gap-4">
@@ -136,6 +140,7 @@ function AgentDrawerBody({
       )}
       {tab === 'config' && <ConfigTab agent={agent} isAdmin={isAdmin} />}
       {tab === 'access' && <AccessTab agent={agent} isAdmin={isAdmin} />}
+      {tab === 'skills' && <SkillsTab agent={agent} canManage={canManageSkills} isAdmin={isAdmin} />}
       {tab === 'logs' && isAdmin && <LogsTab agent={agent} />}
     </div>
   )
