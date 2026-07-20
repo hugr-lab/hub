@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { useAuth } from '@/lib/auth'
 import { SessionProvider } from '@/lib/session'
+import { useAppMode } from '@/lib/appMode'
 import { probeIdentity } from '@/api/identity'
 import { LoginScreen } from '@/screens/LoginScreen'
 import { Spinner } from '@/components/ui'
@@ -33,6 +34,7 @@ function ErrorCard({ title, detail }: { title: string; detail?: string }) {
  */
 export function AuthGate({ children }: { children: React.ReactNode }) {
   const { status, error, login, logout } = useAuth()
+  const mode = useAppMode()
 
   const probe = useQuery({
     queryKey: ['identity-probe'],
@@ -52,7 +54,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     return <ErrorCard title="Could not load your identity" detail={String(probe.error ?? '')} />
 
   return (
-    <SessionProvider probe={probe.data} onSignOut={logout}>
+    <SessionProvider probe={probe.data} onSignOut={logout} appMode={mode === 'app'}>
       {children}
     </SessionProvider>
   )

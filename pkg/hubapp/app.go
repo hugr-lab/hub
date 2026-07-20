@@ -376,6 +376,20 @@ func (a *HubApp) Init(ctx context.Context) error {
 			mux.HandleFunc("GET /console", func(w http.ResponseWriter, r *http.Request) {
 				http.Redirect(w, r, "/console/", http.StatusMovedPermanently)
 			})
+			// Personal user workspace — the SAME SPA build served under /app
+			// (design 009 + user-app). Hashed assets stay absolute under
+			// /console/ (Vite base), so only the SPA's router basename + surface
+			// differ; config.json is still fetched from /console/config.json.
+			// Same public-asset auth exemption as /console.
+			if hApp, _, errApp := console.Handler("/app/", a.config.ConsoleDir); errApp == nil {
+				mux.Handle("GET /app/", hApp)
+				mux.HandleFunc("GET /app", func(w http.ResponseWriter, r *http.Request) {
+					http.Redirect(w, r, "/app/", http.StatusMovedPermanently)
+				})
+				a.logger.Info("user workspace mounted", "path", "/app/")
+			} else {
+				a.logger.Warn("user workspace disabled", "error", errApp)
+			}
 			// OIDC reverse-proxy: the CORS-sensitive PKCE legs the SPA makes as
 			// XHRs, forwarded same-origin to the provider (oidc_proxy.go).
 			mux.HandleFunc("POST /oidc/token", a.handleOIDCToken)

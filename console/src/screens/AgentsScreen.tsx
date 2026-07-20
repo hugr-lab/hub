@@ -30,7 +30,10 @@ function errText(e: unknown): string {
 }
 
 export function AgentsScreen() {
-  const { isAdmin } = useSession()
+  // effectiveAdmin: admin UI (create/start/stop/logs/all-scope) only when a real
+  // admin is on the admin persona; the /app workspace + "view as owner" get the
+  // personal, mine-scoped surface.
+  const { effectiveAdmin: isAdmin } = useSession()
   const qc = useQueryClient()
   const { success, error } = useToast()
 

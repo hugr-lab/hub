@@ -28,6 +28,25 @@ runtime image, `[hub]` = hub-service (F5), `[console]` = SPA.
   one for hub-service (the base dir where it CREATES per-agent folders) and one
   passed INTO the container (the mount target the agent writes to). Today the path
   is an ad-hoc local symlink. `[hub]` (+ Dockerfile mount `[hugen]`)
+- **Configurable volume mounts per agent (answer to "как настраиваются тома", 2026-07-20).**
+  *Current reality:* there is exactly ONE hard-coded bind mount and NO
+  user-configurable volume support. `docker_runtime.go` binds `HOST/agents/{id}`
+  → `/data` only when `HUB_STORAGE_PATH` is set (default `/var/hub-storage`);
+  inside the container `HUGEN_WORKSPACE_DIR=/data/workspace` +
+  `HUGEN_ARTIFACTS_DIR=/data/artifacts` + `HUGEN_STATE=/data/state` +
+  `HUGEN_SHARED_ROOT=/data/shared` all sit under `/data`, so workspaces +
+  artifacts persist across restart ONLY when StoragePath is set. The
+  `Orchestration` struct (`agentmgr/runtime.go`) carries only
+  image/memory_bytes/nano_cpus/pids_limit/env — **no Volumes/Mounts field**;
+  `HUGEN_SHARED_ROOT` is passed as env but nothing mounts a real host folder
+  there. *Direction:* add an `Orchestration.Mounts []MountSpec` field
+  (`{source, target, read_only, type: bind|volume}`), wire it into
+  `hostCfg.Mounts` alongside the existing `/data` bind, and surface it as
+  structured fields in `AgentConfigEditor.tsx` (today only raw JSON). Decide:
+  ro/rw defaults, named-volume vs host-bind, a per-agent-type shared folder for
+  cross-session/cross-agent exchange, and host-path allow-listing (don't let an
+  agent-type config bind arbitrary host paths). Composes with the durable-mount
+  bullet above. `[hub]` (agentmgr + orchestration) + `[console]` (config editor UI)
 
 ## Chat UX
 
