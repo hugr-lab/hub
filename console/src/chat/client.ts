@@ -14,6 +14,10 @@ export interface Chat {
   project_name?: string
   last_active_at?: string
   last?: string
+  root_session_id?: string | null
+  /** True when the bound session was terminated (dropped, not archived) — the
+   *  chat is read-only history and can't be restored to continue. */
+  dropped?: boolean
 }
 
 export interface PickableAgent {
@@ -30,6 +34,31 @@ export interface InquiryAnswer {
   reason?: string
   answers?: Record<string, { value: unknown; comment?: string }>
   auto_approve_tools?: boolean
+}
+
+/** One scheduled task owned by a chat's root session (hugen sessionTaskDTO). */
+export interface SessionTask {
+  id: string
+  name: string
+  description?: string
+  kind: string // wake | spawn
+  schedule_kind: string // once_in | once_at | cron | interval
+  schedule_spec?: string
+  timezone?: string
+  status: string // active | paused | cancelled | completed
+  pause_reason?: string
+  // When a recurring task stops: kind "until_cancel" | "count" | "until";
+  // spec holds the count (for count) or an RFC3339 instant (for until).
+  end_condition?: { kind: string; spec?: string }
+  next_fire?: string
+  created_at?: string
+}
+
+/** Result of listing a session's scheduled tasks. archivedCount = cancelled +
+ *  completed, so a UI can badge/expand history even when the live list is empty. */
+export interface SessionTasksResult {
+  tasks: SessionTask[]
+  archivedCount: number
 }
 
 export interface ChatClientOptions {
@@ -87,25 +116,39 @@ export class ChatClient {
     return [...d.hub.my_projects].sort((a, b) => a.name.localeCompare(b.name))
   }
 
-  async listChats(): Promise<Chat[]> {
+  async listChats(
+    archived = false,
+    cursor?: { beforeActiveAt: string; beforeId: string },
+    limit = 200,
+  ): Promise<Chat[]> {
     if (this.demo) return this.demoChats()
     // hub.my_chats is a keyset-paginated table function — all args are required
-    // (empty string / false = no filter). Field is `title`, not `name`.
+    // (empty string / false = no filter). Field is `title`, not `name`. Pass the
+    // last row's (last_active_at, id) back as the cursor for the next page.
     const d = await this.gql<{
-      hub: { my_chats: { id: string; title: string; agent_id: string; project_id: string | null; last_active_at: string }[] }
+      hub: {
+        my_chats: {
+          id: string
+          title: string
+          agent_id: string
+          project_id: string | null
+          last_active_at: string
+          root_session_id: string | null
+        }[]
+      }
     }>(
       `query($args: hub_my_chats_args!) {
-        hub { my_chats(args: $args) { id title agent_id project_id last_active_at } }
+        hub { my_chats(args: $args) { id title agent_id project_id last_active_at root_session_id } }
       }`,
       {
         args: {
-          limit: 200,
-          before_active_at: '',
-          before_id: '',
+          limit,
+          before_active_at: cursor?.beforeActiveAt ?? '',
+          before_id: cursor?.beforeId ?? '',
           project_id: '',
           agent_id: '',
           q: '',
-          archived: false,
+          archived,
         },
       },
     )
@@ -115,7 +158,23 @@ export class ChatClient {
       agent_id: c.agent_id,
       project_id: c.project_id,
       last_active_at: c.last_active_at,
+      root_session_id: c.root_session_id,
     }))
+  }
+
+  /** Statuses of the given sessions (hub.agent.db.sessions), keyed by id. Used to
+   *  tell a dropped (terminated) closed chat from an archived (resumable) one. */
+  async sessionStatuses(sessionIds: string[]): Promise<Record<string, string>> {
+    if (this.demo || sessionIds.length === 0) return {}
+    const d = await this.gql<{ hub: { agent: { db: { sessions: { id: string; status: string }[] } } } }>(
+      `query($ids: [String!]) {
+        hub { agent { db { sessions(filter: { id: { in: $ids } }) { id status } } } }
+      }`,
+      { ids: sessionIds },
+    )
+    const out: Record<string, string> = {}
+    for (const s of d.hub.agent.db.sessions) out[s.id] = s.status
+    return out
   }
 
   async listPickableAgents(): Promise<PickableAgent[]> {
@@ -260,6 +319,74 @@ export class ChatClient {
       by: a.by ? String(a.by) : undefined,
       time: a.created_at ? String(a.created_at) : a.time ? String(a.time) : undefined,
     }))
+  }
+
+  /** Scheduled tasks owned by this chat's root session. scope 'live' (default)
+   *  returns active + paused only (server-filtered — cheap for long histories);
+   *  'all' returns every status incl. cancelled / completed. Empty when the
+   *  agent has no scheduler wired or no matching tasks. */
+  async getTasks(chatId: string, scope: 'live' | 'all' = 'live'): Promise<SessionTasksResult> {
+    if (this.demo) return { tasks: [], archivedCount: 0 }
+    const qs = scope === 'all' ? '?status=all' : ''
+    const res = await fetch(`${this.apiBase}/api/v1/chats/${chatId}/tasks${qs}`, { headers: await this.headers() })
+    if (!res.ok) throw new Error(`tasks HTTP ${res.status}`)
+    const body = (await res.json()) as
+      | SessionTask[]
+      | { tasks?: SessionTask[]; archived_count?: number }
+    if (Array.isArray(body)) return { tasks: body, archivedCount: 0 }
+    return { tasks: body.tasks ?? [], archivedCount: body.archived_count ?? 0 }
+  }
+
+  /** Archive a chat: cancels its session's in-flight work (cascade) but keeps
+   *  the session resumable — restore revives it fully. Reversible. */
+  async archiveChat(chatId: string): Promise<void> {
+    if (this.demo) return
+    const res = await fetch(`${this.apiBase}/api/v1/chats/${chatId}/archive`, {
+      method: 'POST',
+      headers: await this.headers(),
+    })
+    if (!res.ok) throw new Error(`archive chat HTTP ${res.status}`)
+  }
+
+  /** Drop a chat: /end — terminates the session (keeps history but it can't be
+   *  revived) and archives. Restore shows read-only history. Not reversible. */
+  async dropChat(chatId: string): Promise<void> {
+    if (this.demo) return
+    const res = await fetch(`${this.apiBase}/api/v1/chats/${chatId}/drop`, {
+      method: 'POST',
+      headers: await this.headers(),
+    })
+    if (!res.ok) throw new Error(`drop chat HTTP ${res.status}`)
+  }
+
+  /** Cancel a scheduled task (stops it firing, keeps the row as history). */
+  async cancelTask(chatId: string, taskId: string): Promise<void> {
+    if (this.demo) return
+    const res = await fetch(`${this.apiBase}/api/v1/chats/${chatId}/tasks/${taskId}/cancel`, {
+      method: 'POST',
+      headers: await this.headers(),
+    })
+    if (!res.ok) throw new Error(`cancel task HTTP ${res.status}`)
+  }
+
+  /** Delete a scheduled task and its schedule entirely. */
+  async deleteTask(chatId: string, taskId: string): Promise<void> {
+    if (this.demo) return
+    const res = await fetch(`${this.apiBase}/api/v1/chats/${chatId}/tasks/${taskId}`, {
+      method: 'DELETE',
+      headers: await this.headers(),
+    })
+    if (!res.ok) throw new Error(`delete task HTTP ${res.status}`)
+  }
+
+  /** Pause ('pause') or resume ('resume') a scheduled task. */
+  async setTaskPaused(chatId: string, taskId: string, action: 'pause' | 'resume'): Promise<void> {
+    if (this.demo) return
+    const res = await fetch(`${this.apiBase}/api/v1/chats/${chatId}/tasks/${taskId}/${action}`, {
+      method: 'POST',
+      headers: await this.headers(),
+    })
+    if (!res.ok) throw new Error(`${action} task HTTP ${res.status}`)
   }
 
   async uploadArtifact(chatId: string, file: File): Promise<void> {

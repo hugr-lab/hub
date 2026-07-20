@@ -27,7 +27,7 @@ export function ChatScreen() {
       theme={theme}
       chatId={chatId ?? null}
       showRail
-      onChatChange={(id) => navigate(`/chat/${id}`)}
+      onChatChange={(id) => navigate(id ? `/chat/${id}` : '/chat')}
     />
   )
 }

@@ -36,7 +36,12 @@ runtime image, `[hub]` = hub-service (F5), `[console]` = SPA.
   store cache). `[console]` (+ paged `/events` already exists `[hugen]`)
 - **Last-activity time in the chat list** — "1 minute ago", switch to an absolute
   date after ~24h. `[console]` (data: `my_chats.last_active_at`)
-- **Close a session** from the UI. `[console]` + a close verb `[hub/hugen]`
+- **Chat lifecycle menu** — a "…" / context menu on each chat (in the rail and
+  next to the bell) with: **close** the chat + its agent session; **view closed
+  chats** in a paginated list; **restore** a closed chat. Data: chats already
+  carry `archived BOOLEAN` (hub.db); "close" should also close the agent session
+  (a close verb → `POST /v1/sessions/{id}/cancel` or a dedicated close). Restore =
+  unarchive + re-bind/resume the root session. `[console]` + `[hub]` + `[hugen]`
 - **Clear a session's context** (compact/reset) from the UI. `[console]` +
   `[hugen]` (compactor reset exists)
 

@@ -2,52 +2,14 @@
 <html lang="en" data-theme="light">
   <head>
     <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/console/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light dark" />
     <title>Hugr Hub Console</title>
-    <style>
-      body {
-        margin: 0;
-        min-height: 100vh;
-        display: grid;
-        place-items: center;
-        font-family: system-ui, sans-serif;
-        background: #f6f8f7;
-        color: #16211f;
-      }
-      .card {
-        max-width: 30rem;
-        padding: 2rem 2.25rem;
-        border: 1px solid #e2e8e6;
-        border-radius: 14px;
-        background: #fff;
-        box-shadow: 0 8px 24px rgba(20, 30, 28, 0.08);
-      }
-      h1 {
-        margin: 0 0 0.5rem;
-        font-size: 1.1rem;
-      }
-      p {
-        margin: 0.4rem 0;
-        color: #5a6a67;
-        font-size: 0.9rem;
-      }
-      code {
-        font-family: ui-monospace, monospace;
-        background: #eff3f2;
-        padding: 0.1rem 0.35rem;
-        border-radius: 5px;
-      }
-    </style>
+    <script type="module" crossorigin src="/console/assets/index-Ddo7J2g_.js"></script>
+    <link rel="stylesheet" crossorigin href="/console/assets/index-BKioSjgQ.css">
   </head>
   <body>
-    <div class="card">
-      <h1>Hugr Hub Console</h1>
-      <p>
-        This is the compile-time placeholder embedded via <code>go:embed</code>.
-        The real single-page app has not been built into <code>console/dist</code> yet.
-      </p>
-      <p>Run <code>make console-build</code> (or <code>pnpm --dir console build</code>) and rebuild the binary.</p>
-    </div>
+    <div id="root"></div>
   </body>
 </html>

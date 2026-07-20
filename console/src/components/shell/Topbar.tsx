@@ -1,9 +1,11 @@
-import { useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
+import { useQueryClient } from '@tanstack/react-query'
 import { Bell } from 'lucide-react'
 import { useTheme } from '@/lib/theme'
 import { useSession } from '@/lib/session'
 import { titleForPath } from '@/app/nav'
+import { useChatActivity } from '@/api/useChatActivity'
+import { markChatRead, eventKindLabel } from '@/api/notifications'
 import {
   Avatar,
   Button,
@@ -18,31 +20,35 @@ import {
   PopoverTrigger,
   themeIconPath,
 } from '@/components/ui'
-import { cn } from '@/lib/cn'
 
-interface Notif {
-  id: string
-  text: string
-  agent: string
-  time: string
-  unread: boolean
-  dot: string
+// relative "2m" / "1h" / "3d" for a bell timestamp.
+function ago(iso?: string): string {
+  if (!iso) return ''
+  const t = Date.parse(iso)
+  if (Number.isNaN(t)) return ''
+  const s = Math.max(0, Math.round((Date.now() - t) / 1000))
+  if (s < 60) return `${s}s`
+  if (s < 3600) return `${Math.round(s / 60)}m`
+  if (s < 86400) return `${Math.round(s / 3600)}h`
+  return `${Math.round(s / 86400)}d`
 }
-
-const MOCK_NOTIFS: Notif[] = [
-  { id: 'n1', text: 'analytics-copilot is waiting for your approval on http_post', agent: 'analytics-copilot', time: '2m', unread: true, dot: 'var(--amber)' },
-  { id: 'n2', text: 'Scheduled task “daily-revenue-report” completed', agent: 'finance-qa', time: '18m', unread: true, dot: 'var(--green)' },
-  { id: 'n3', text: 'gateway_offline_24h.csv artifact produced', agent: 'analytics-copilot', time: '1h', unread: false, dot: 'var(--surface3)' },
-]
 
 export function Topbar() {
   const { theme, toggle } = useTheme()
   const { identity, initials, signOut } = useSession()
   const { pathname } = useLocation()
   const navigate = useNavigate()
-  const [notifs, setNotifs] = useState(MOCK_NOTIFS)
-  const unread = notifs.filter((n) => n.unread).length
+  const qc = useQueryClient()
+  const { data: activity = [] } = useChatActivity()
+  const unreadChats = activity.filter((a) => a.unread > 0)
+  const badge = unreadChats.reduce((n, a) => n + a.unread, 0)
   const title = titleForPath(pathname)
+
+  const openChat = (id: string) => navigate(`/chat/${id}`)
+  const markAllRead = async () => {
+    await Promise.all(unreadChats.map((a) => markChatRead(a.chat_id, a.last_seq).catch(() => {})))
+    qc.invalidateQueries({ queryKey: ['chat-activity'] })
+  }
 
   return (
     <header className="flex h-[50px] flex-none items-center gap-3 border-b border-border bg-surface px-[18px]">
@@ -63,9 +69,9 @@ export function Topbar() {
             className="relative flex h-[30px] w-[30px] items-center justify-center rounded-[7px] border border-border bg-surface text-text2 hover:bg-surface2"
           >
             <Bell className="h-[15px] w-[15px]" />
-            {unread > 0 && (
+            {badge > 0 && (
               <span className="absolute -right-1 -top-1 flex h-[15px] min-w-[15px] items-center justify-center rounded-full bg-red px-[3px] text-[9.5px] font-bold text-white">
-                {unread}
+                {badge > 99 ? '99+' : badge}
               </span>
             )}
           </button>
@@ -73,32 +79,37 @@ export function Topbar() {
         <PopoverContent align="end" className="w-[330px] p-1.5">
           <div className="flex items-center border-b border-border px-2.5 pb-2 pt-1.5">
             <span className="flex-1 text-sm font-semibold">Notifications</span>
-            <button
-              onClick={() => setNotifs((ns) => ns.map((n) => ({ ...n, unread: false })))}
-              className="text-xs font-semibold text-accent"
-            >
-              Mark all read
-            </button>
+            {unreadChats.length > 0 && (
+              <button onClick={markAllRead} className="text-xs font-semibold text-accent">
+                Mark all read
+              </button>
+            )}
           </div>
-          {notifs.map((n) => (
-            <button
-              key={n.id}
-              onClick={() => setNotifs((ns) => ns.map((x) => (x.id === n.id ? { ...x, unread: false } : x)))}
-              className={cn(
-                'flex w-full items-start gap-2.5 border-b border-border px-2.5 py-2 text-left last:border-b-0 hover:bg-surface2',
-                n.unread && 'bg-surface2',
-              )}
-            >
-              <span className="mt-[5px] h-[7px] w-[7px] flex-none rounded-full" style={{ background: n.dot }} />
-              <span className="flex flex-col gap-0.5">
-                <span className="text-xs leading-snug text-text">{n.text}</span>
-                <span className="text-2xs text-text3">
-                  {n.agent} · {n.time}
-                </span>
-              </span>
-            </button>
-          ))}
-          <div className="px-2.5 pb-1 pt-2 text-2xs text-text3">Scheduled tasks &amp; agent session events</div>
+          {unreadChats.length === 0 ? (
+            <div className="px-2.5 py-6 text-center text-xs text-text3">You're all caught up.</div>
+          ) : (
+            unreadChats.map((a) => {
+              const ev = eventKindLabel(a.last_event?.kind)
+              return (
+                <button
+                  key={a.chat_id}
+                  onClick={() => openChat(a.chat_id)}
+                  className="flex w-full items-start gap-2.5 border-b border-border bg-surface2 px-2.5 py-2 text-left last:border-b-0 hover:bg-surface3"
+                >
+                  <span className="mt-[5px] h-[7px] w-[7px] flex-none rounded-full" style={{ background: ev.dot }} />
+                  <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                    <span className="truncate text-xs leading-snug text-text">
+                      <span className="font-semibold">{a.title || 'Chat'}</span> {ev.text}
+                    </span>
+                    <span className="text-2xs text-text3">
+                      {a.unread} new{a.last_event?.at ? ` · ${ago(a.last_event.at)}` : ''}
+                    </span>
+                  </span>
+                </button>
+              )
+            })
+          )}
+          <div className="px-2.5 pb-1 pt-2 text-2xs text-text3">Agent session events across your chats</div>
         </PopoverContent>
       </Popover>
 

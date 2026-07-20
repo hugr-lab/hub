@@ -1,20 +1,40 @@
-import { useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Send } from 'lucide-react'
 import { cn } from '@/lib/cn'
 
+// Unsent drafts per chat. The Composer instance persists across chat switches
+// (it doesn't remount), so without this the typed-but-unsent text would bleed
+// into the next chat. Module-level → survives re-renders; keyed by chat id.
+const draftByChat = new Map<string, string>()
+
 export function Composer({
+  chatId,
   running,
   runningLabel,
   onSend,
   onCancel,
 }: {
+  chatId?: string | null
   running: boolean
   runningLabel: string
   onSend: (text: string) => void
   onCancel: () => void
 }) {
-  const [draft, setDraft] = useState('')
+  const [draft, setDraft] = useState(() => (chatId ? draftByChat.get(chatId) ?? '' : ''))
   const ref = useRef<HTMLTextAreaElement>(null)
+
+  // Load this chat's saved draft when the chat changes.
+  useEffect(() => {
+    setDraft(chatId ? draftByChat.get(chatId) ?? '' : '')
+  }, [chatId])
+
+  // Save on every edit, keyed by the current chat.
+  const update = (v: string) => {
+    setDraft(v)
+    if (!chatId) return
+    if (v) draftByChat.set(chatId, v)
+    else draftByChat.delete(chatId)
+  }
 
   useLayoutEffect(() => {
     const el = ref.current
@@ -28,6 +48,7 @@ export function Composer({
     if (!text) return
     onSend(text)
     setDraft('')
+    if (chatId) draftByChat.delete(chatId)
   }
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -58,7 +79,7 @@ export function Composer({
           ref={ref}
           rows={1}
           value={draft}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={(e) => update(e.target.value)}
           onKeyDown={onKeyDown}
           placeholder="Message the agent… (Enter to send)"
           className="max-h-[120px] min-h-[22px] flex-1 resize-none border-none bg-transparent py-1 text-[13px] text-text placeholder:text-text3 focus:outline-none"

@@ -8,6 +8,9 @@ import { Composer } from './Composer'
 export function Conversation({
   view,
   running,
+  loading = false,
+  unreachable = false,
+  chatId,
   chatName,
   agentName,
   narrow,
@@ -24,6 +27,11 @@ export function Conversation({
 }: {
   view: ChatView
   running: boolean
+  /** True while the stream is (re)connecting — history hasn't loaded yet. */
+  loading?: boolean
+  /** True when the stream never connected — the agent is likely stopped. */
+  unreachable?: boolean
+  chatId?: string | null
   chatName: string
   agentName?: string
   narrow: boolean
@@ -137,18 +145,30 @@ export function Conversation({
           aria-live="polite"
           className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto px-[18px] pb-2 pt-[18px]"
         >
-          {view.items.length === 0 && (
-            <div className="m-auto max-w-xs text-center text-xs text-text3">
-              Send a message to start the conversation with {agentName ?? 'the agent'}.
-            </div>
-          )}
+          {view.items.length === 0 &&
+            (unreachable ? (
+              <div className="m-auto flex max-w-xs flex-col items-center gap-1.5 text-center text-xs text-text3">
+                <span className="h-[7px] w-[7px] rounded-full bg-red" />
+                Can’t reach {agentName ?? 'the agent'} — it looks stopped.
+                <span className="text-2xs">Start the agent to load history and continue.</span>
+              </div>
+            ) : loading ? (
+              <div className="m-auto flex items-center gap-2 text-xs text-text3">
+                <span className="h-3 w-3 animate-spin rounded-full border-[1.5px] border-border2 border-t-accent" />
+                Loading history…
+              </div>
+            ) : (
+              <div className="m-auto max-w-xs text-center text-xs text-text3">
+                Send a message to start the conversation with {agentName ?? 'the agent'}.
+              </div>
+            ))}
           {view.items.map((item) => (
             <MessageItem key={item.id} item={item} onOpenArtifacts={onOpenArtifacts} />
           ))}
           <div className="h-1.5" />
         </div>
 
-        <Composer running={running} runningLabel={runningLabel} onSend={onSend} onCancel={onCancel} />
+        <Composer chatId={chatId} running={running} runningLabel={runningLabel} onSend={onSend} onCancel={onCancel} />
       </div>
     </div>
   )

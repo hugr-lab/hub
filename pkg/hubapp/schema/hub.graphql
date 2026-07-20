@@ -180,6 +180,10 @@ type chats @table(name: "chats") {
   coerces to the zero time engine-side — query-engine ask #9 — so an
   archived_at could never be cleared)"""
   archived: Boolean
+  """Per-chat read cursor (Stage 2 notifications): the highest session-event seq
+  the user has seen. Advanced by POST /api/v1/chats/{id}/read; unread badges +
+  the bell derive from (session last_seq − this). DB column defaults to 0."""
+  last_read_seq: Int
 }
 
 """Token and request budget limits per user, role, or global scope.

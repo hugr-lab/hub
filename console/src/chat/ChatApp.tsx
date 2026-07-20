@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { cn } from '@/lib/cn'
 import { ChatClient, type Chat } from './client'
 import { useChat } from './useChat'
 import { ChatRail, type ChatGroup } from './components/ChatRail'
@@ -104,6 +105,85 @@ export function ChatApp(props: ChatAppProps) {
     client.updateChat(chatId, { name }).then(() => chatsQ.refetch()).catch(() => {})
   }
 
+  // Rename any chat from the rail (without opening it). Pins the title so the
+  // recap auto-namer won't override it.
+  const renameChatById = (id: string, name: string) => {
+    titledRef.current.add(id)
+    client
+      .updateChat(id, { name })
+      .then(() => {
+        chatsQ.refetch()
+        if (railMode === 'closed') loadClosed(true)
+      })
+      .catch(() => {})
+  }
+
+  // ── chat lifecycle: close (archive) / restore / delete ──
+  const [railMode, setRailMode] = useState<'live' | 'closed'>('live')
+  const [closed, setClosed] = useState<Chat[]>([])
+  const [closedDone, setClosedDone] = useState(false)
+  const [closedLoading, setClosedLoading] = useState(false)
+
+  // Keyset-paginated archived chats. reset=true refetches the first page.
+  const loadClosed = useCallback(
+    async (reset: boolean) => {
+      setClosedLoading(true)
+      try {
+        const last = reset ? undefined : closed[closed.length - 1]
+        const cursor = last ? { beforeActiveAt: last.last_active_at ?? '', beforeId: last.id } : undefined
+        const page = await client.listChats(true, cursor, 50)
+        // Mark dropped chats (terminated session) so they render read-only —
+        // archive = resumable (Restore), drop = terminal (no Restore).
+        const sids = page.map((c) => c.root_session_id).filter(Boolean) as string[]
+        const statuses = await client.sessionStatuses(sids).catch(() => ({}) as Record<string, string>)
+        const marked = page.map((c) => ({
+          ...c,
+          dropped: c.root_session_id ? statuses[c.root_session_id] === 'terminated' : false,
+        }))
+        setClosed((prev) => (reset ? marked : [...prev, ...marked]))
+        setClosedDone(page.length < 50)
+      } finally {
+        setClosedLoading(false)
+      }
+    },
+    [client, closed],
+  )
+
+  const setRailModeAndLoad = (m: 'live' | 'closed') => {
+    setRailMode(m)
+    if (m === 'closed') loadClosed(true)
+  }
+
+  const [pendingAction, setPendingAction] = useState<{ id: string; kind: 'archive' | 'drop' } | null>(null)
+  const runAction = (id: string, kind: 'archive' | 'drop') => {
+    setPendingAction(null)
+    // Leave the archived chat's view — it's not the live conversation anymore.
+    if (id === chatId) select('')
+    const p = kind === 'drop' ? client.dropChat(id) : client.archiveChat(id)
+    p.then(() => chatsQ.refetch()).catch(() => {})
+  }
+  const archiveChat = (id: string) => {
+    // Archive cancels the current turn — warn only when the open chat is working.
+    if (id === chatId && chat.running) {
+      setPendingAction({ id, kind: 'archive' })
+      return
+    }
+    runAction(id, 'archive')
+  }
+  const dropChat = (id: string) => {
+    // Drop terminates the session irreversibly — always confirm.
+    setPendingAction({ id, kind: 'drop' })
+  }
+  const restoreChat = (id: string) => {
+    client
+      .updateChat(id, { archived: false })
+      .then(() => {
+        chatsQ.refetch()
+        loadClosed(true)
+      })
+      .catch(() => {})
+  }
+
   return (
     <div
       data-theme={theme}
@@ -117,6 +197,16 @@ export function ChatApp(props: ChatAppProps) {
           pickableAgents={agentsQ.data ?? []}
           onSelectChat={select}
           onCreateChat={createChat}
+          mode={railMode}
+          onSetMode={setRailModeAndLoad}
+          closedChats={closed}
+          closedDone={closedDone}
+          closedLoading={closedLoading}
+          onLoadMoreClosed={() => loadClosed(false)}
+          onArchiveChat={archiveChat}
+          onDropChat={dropChat}
+          onRestoreChat={restoreChat}
+          onRenameChat={renameChatById}
         />
       )}
 
@@ -124,6 +214,9 @@ export function ChatApp(props: ChatAppProps) {
         <Conversation
           view={chat.view}
           running={chat.running}
+          loading={!chat.connected}
+          unreachable={chat.unreachable}
+          chatId={chatId}
           chatName={activeChat?.name ?? 'Chat'}
           agentName={activeChat?.agent_name ?? activeChat?.agent_id}
           narrow={narrow}
@@ -144,7 +237,17 @@ export function ChatApp(props: ChatAppProps) {
         </div>
       )}
 
-      {showPanel && panel === 'live' && <LiveViewPanel view={chat.view} />}
+      {showPanel && panel === 'live' && (
+        <LiveViewPanel
+          view={chat.view}
+          tasks={chat.tasks}
+          archivedTaskCount={chat.archivedTaskCount}
+          scheduleScope={chat.scheduleScope}
+          onToggleScheduleScope={chat.toggleScheduleScope}
+          onCancelTask={chat.cancelTask}
+          onSetTaskPaused={chat.setTaskPaused}
+        />
+      )}
       {showPanel && panel === 'artifacts' && (
         <ArtifactsPanel
           artifacts={chat.artifacts}
@@ -167,6 +270,53 @@ export function ChatApp(props: ChatAppProps) {
       {answerError && (
         <div className="fixed bottom-4 left-1/2 z-[200] -translate-x-1/2 rounded-btn border border-red bg-surface px-3.5 py-2 text-xs text-red shadow-lg">
           Inquiry answer failed: {answerError}
+        </div>
+      )}
+      {pendingAction && (
+        <div
+          className="fixed inset-0 z-[200] flex items-center justify-center bg-black/30"
+          onClick={() => setPendingAction(null)}
+        >
+          <div
+            className="w-[360px] rounded-panel border border-border bg-surface p-4 shadow-lg animate-fadeUp"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {pendingAction.kind === 'drop' ? (
+              <>
+                <div className="text-sm font-semibold">Drop this chat?</div>
+                <p className="mt-1.5 text-xs leading-snug text-text2">
+                  This ends the session permanently (<span className="font-mono">/end</span>) and
+                  archives the chat. History is kept but read-only — it <b>cannot be restored to
+                  continue</b>. To just pause it, use Archive instead.
+                </p>
+              </>
+            ) : (
+              <>
+                <div className="text-sm font-semibold">Archive this chat?</div>
+                <p className="mt-1.5 text-xs leading-snug text-text2">
+                  The agent is working. Archiving cancels the current turn (and any running
+                  missions). The session stays intact — restore the chat later to continue.
+                </p>
+              </>
+            )}
+            <div className="mt-3.5 flex justify-end gap-2">
+              <button
+                onClick={() => setPendingAction(null)}
+                className="rounded-btn border border-border px-3 py-1.5 text-xs font-semibold text-text2 hover:bg-surface2"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => runAction(pendingAction.id, pendingAction.kind)}
+                className={cn(
+                  'rounded-btn px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90',
+                  pendingAction.kind === 'drop' ? 'bg-red' : 'bg-accent',
+                )}
+              >
+                {pendingAction.kind === 'drop' ? 'Drop' : 'Archive'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

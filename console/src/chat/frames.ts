@@ -53,8 +53,8 @@ export interface Inquiry {
 /* ── Folded render items ──────────────────────────────────────────── */
 
 export type RenderItem =
-  | { kind: 'user'; id: string; text: string }
-  | { kind: 'agent'; id: string; text: string; streaming: boolean; usage?: string }
+  | { kind: 'user'; id: string; text: string; at?: string }
+  | { kind: 'agent'; id: string; text: string; streaming: boolean; usage?: string; at?: string }
   | { kind: 'reasoning'; id: string; text: string; streaming: boolean; elapsedMs?: number }
   | {
       kind: 'tool'
@@ -280,8 +280,15 @@ export function deriveView(frames: Frame[]): ChatView {
     const p = f.payload ?? {}
     switch (f.kind) {
       case 'user_message': {
-        items.push({ kind: 'user', id: f.frame_id, text: str(p.text) })
-        // A new user turn ends any open agent/reasoning steps.
+        const text = str(p.text)
+        // Runtime-injected synthetic prompts (async-mission summary, async
+        // schedule-fire results, …) are tagged with a [system:…] marker. They
+        // drive a turn but are plumbing, not user content — don't render them
+        // as a user bubble; the agent's reply below carries the real result.
+        if (!/^\s*\[system:/.test(text)) {
+          items.push({ kind: 'user', id: f.frame_id, text, at: f.occurred_at })
+        }
+        // A new user turn (real or synthetic) ends any open agent/reasoning steps.
         agentIdx = -1
         reasoningIdx = -1
         break
@@ -297,12 +304,13 @@ export function deriveView(frames: Frame[]): ChatView {
           // empty bubble for it.
           if ((consolidated || final) && !text) break
           agentIdx = items.length
-          items.push({ kind: 'agent', id: f.frame_id, text: '', streaming: true })
+          items.push({ kind: 'agent', id: f.frame_id, text: '', streaming: true, at: f.occurred_at })
         }
         const it = items[agentIdx] as Extract<RenderItem, { kind: 'agent' }>
         if (consolidated || final) {
           it.text = text || it.text
           it.streaming = false
+          if (f.occurred_at) it.at = f.occurred_at // stamp with completion time
           const usage = fmtUsage(p.usage)
           if (final && usage) {
             it.usage = usage
@@ -375,8 +383,14 @@ export function deriveView(frames: Frame[]): ChatView {
         }
         break
       }
-      case 'inquiry_answered': {
-        const rid = str(p.request_id)
+      // inquiry_answered = a dedicated marker; inquiry_response = the persisted
+      // user answer the runtime replays on reconnect/switch-back (the live
+      // pending-inquiry clear is outbox-only and never replayed). Either marks
+      // the request_id answered so the modal doesn't re-open from a stale status.
+      case 'inquiry_answered':
+      case 'inquiry_response': {
+        const src = (p.request_id ? p : (p.payload ?? p)) as Record<string, unknown>
+        const rid = str(src.request_id)
         if (rid) {
           answered.add(rid)
           if (inquiry?.request_id === rid) inquiry = null

@@ -4,6 +4,14 @@ import { cn } from '@/lib/cn'
 import type { RenderItem } from '../frames'
 import { Markdown } from './Markdown'
 
+// clockTime renders a message timestamp as local HH:MM.
+function clockTime(iso?: string): string {
+  if (!iso) return ''
+  const t = Date.parse(iso)
+  if (Number.isNaN(t)) return ''
+  return new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+}
+
 export function MessageItem({
   item,
   onOpenArtifacts,
@@ -18,21 +26,25 @@ export function MessageItem({
           <div className="max-w-[78%] self-end whitespace-pre-wrap rounded-[13px_13px_3px_13px] bg-accent px-[13px] py-2 text-[13px] text-accent-text animate-fadeUp">
             {item.text}
           </div>
+          {item.at && <span className="mt-0.5 self-end pr-1 text-2xs text-text3">{clockTime(item.at)}</span>}
         </div>
       )
 
     case 'agent':
       return (
         <div className="flex flex-col">
-          <div className="flex max-w-[86%] flex-col gap-1.5 self-start animate-fadeUp">
+          <div className="flex max-w-[86%] flex-col gap-1 self-start animate-fadeUp">
             <div className="rounded-[13px_13px_13px_3px] border border-border bg-surface px-3.5 py-2.5 text-[13px]">
               <Markdown>{item.text}</Markdown>
               {item.streaming && (
                 <span className="ml-0.5 inline-block h-[13px] w-[7px] translate-y-0.5 rounded-[1px] bg-accent align-text-bottom animate-blinkc" />
               )}
             </div>
-            {item.usage && (
-              <div className="pl-1 font-mono text-2xs text-text3">final · {item.usage}</div>
+            {(item.at || item.usage) && !item.streaming && (
+              <div className="pl-1 text-2xs text-text3">
+                {clockTime(item.at)}
+                {item.usage ? <span className="font-mono"> · {item.usage}</span> : ''}
+              </div>
             )}
           </div>
         </div>
