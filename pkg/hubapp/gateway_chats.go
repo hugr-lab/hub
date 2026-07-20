@@ -61,9 +61,12 @@ func (a *HubApp) chatContext(w http.ResponseWriter, r *http.Request) (auth.UserI
 		gatewayError(w, http.StatusNotFound, "chat_not_found", "chat not found")
 		return auth.UserInfo{}, chatRow{}, false
 	}
-	if err := a.checkAccess(r.Context(), u, chat.AgentID); err != nil {
+	// Agent-access re-check (member-level policy) on top of the chat-owner
+	// scope above, so a revoked grant bites immediately.
+	if err := a.authorizeAgent(r.Context(), u, chat.AgentID, accessMember); err != nil {
 		a.logger.Info("agent access denied", "agent", chat.AgentID, "user", u.ID, "chat", chat.ID, "error", err)
-		gatewayError(w, http.StatusForbidden, "no_agent_access", "no access to agent "+chat.AgentID)
+		code, msg := agentDenyEnvelope(accessMember, chat.AgentID)
+		gatewayError(w, http.StatusForbidden, code, msg)
 		return auth.UserInfo{}, chatRow{}, false
 	}
 	return u, chat, true

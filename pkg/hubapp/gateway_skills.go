@@ -16,7 +16,7 @@ import (
 //	POST /api/v1/agents/{id}/skills/install        → install a bundle (owner/admin)
 
 func (a *HubApp) agentSkillsListHandler(w http.ResponseWriter, r *http.Request) {
-	a.forwardAgentSkills(w, r, false, "/v1/skills")
+	a.forwardAgentSkills(w, r, accessMember, "/v1/skills")
 }
 
 func (a *HubApp) agentSkillExportHandler(w http.ResponseWriter, r *http.Request) {
@@ -25,34 +25,27 @@ func (a *HubApp) agentSkillExportHandler(w http.ResponseWriter, r *http.Request)
 		gatewayError(w, http.StatusBadRequest, "bad_request", "skill name required")
 		return
 	}
-	a.forwardAgentSkills(w, r, true, "/v1/skills/"+url.PathEscape(name)+"/export")
+	a.forwardAgentSkills(w, r, accessOwner, "/v1/skills/"+url.PathEscape(name)+"/export")
 }
 
 func (a *HubApp) agentSkillInstallHandler(w http.ResponseWriter, r *http.Request) {
-	a.forwardAgentSkills(w, r, true, "/v1/skills/install")
+	a.forwardAgentSkills(w, r, accessOwner, "/v1/skills/install")
 }
 
-// forwardAgentSkills authorizes the caller — owner/admin for privileged ops
-// (export / install), member+ for reads (list) — then reverse-proxies to the
+// forwardAgentSkills authorizes the caller at the policy level (member for list,
+// owner for export/install — see gateway_authz.go), then reverse-proxies to the
 // agent's hugen skills API at rest, forwarding the user bearer and the request
 // query (e.g. ?overwrite=true on install).
-func (a *HubApp) forwardAgentSkills(w http.ResponseWriter, r *http.Request, privileged bool, rest string) {
+func (a *HubApp) forwardAgentSkills(w http.ResponseWriter, r *http.Request, level agentAccessLevel, rest string) {
 	u, ok := a.gatewayCaller(w, r)
 	if !ok {
 		return
 	}
 	agentID := r.PathValue("id")
 
-	authz := a.checkAccess
-	if privileged {
-		authz = a.checkOwner
-	}
-	if err := authz(r.Context(), u, agentID); err != nil {
-		code, msg := "no_agent_access", "no access to agent "+agentID
-		if privileged {
-			code, msg = "owner_required", "installing or exporting a skill requires owner or admin access"
-		}
-		a.logger.Info("agent skills op denied", "agent", agentID, "user", u.ID, "privileged", privileged, "error", err)
+	if err := a.authorizeAgent(r.Context(), u, agentID, level); err != nil {
+		code, msg := agentDenyEnvelope(level, agentID)
+		a.logger.Info("agent skills op denied", "agent", agentID, "user", u.ID, "level", level, "error", err)
 		gatewayError(w, http.StatusForbidden, code, msg)
 		return
 	}
