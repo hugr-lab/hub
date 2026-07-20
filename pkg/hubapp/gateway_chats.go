@@ -45,6 +45,10 @@ func registerChatTransport(mux *http.ServeMux, a *HubApp) {
 	mux.HandleFunc("GET /api/v1/agents/{id}/skills", a.agentSkillsListHandler)
 	mux.HandleFunc("GET /api/v1/agents/{id}/skills/{name}/export", a.agentSkillExportHandler)
 	mux.HandleFunc("POST /api/v1/agents/{id}/skills/install", a.agentSkillInstallHandler)
+	// Per-agent MCP tool providers (list forwards to hugen; mutate = owner).
+	mux.HandleFunc("GET /api/v1/agents/{id}/tool-providers", a.agentToolProvidersListHandler)
+	mux.HandleFunc("POST /api/v1/agents/{id}/tool-providers", a.agentToolProviderUpsertHandler)
+	mux.HandleFunc("DELETE /api/v1/agents/{id}/tool-providers/{name}", a.agentToolProviderDeleteHandler)
 }
 
 // chatContext authenticates the caller, loads the chat, and enforces the
