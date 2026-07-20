@@ -61,7 +61,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const managerRef = useRef<UserManager | null>(null)
 
   const login = useCallback(() => {
-    managerRef.current?.signinRedirect().catch((e) => setError(String(e)))
+    // The registered redirect_uri is always …/console/ (the fixed Vite base), so
+    // a cold login from the /app workspace would otherwise land on /console.
+    // Carry the current path in the OIDC `state` and restore it on callback — no
+    // second redirect_uri to register with the provider.
+    const returnTo = window.location.pathname + window.location.search
+    managerRef.current?.signinRedirect({ state: { returnTo } }).catch((e) => setError(String(e)))
   }, [])
 
   const logout = useCallback(() => {
@@ -101,6 +106,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (hasAuthCallback()) {
           user = await um.signinRedirectCallback()
           cleanUrl()
+          // Restore the pre-login surface (e.g. /app/...) — the callback always
+          // lands on the registered /console/ redirect_uri. Only same-origin
+          // relative paths (single leading slash, not protocol-relative) are
+          // honoured, so a tampered state can't drive an open redirect.
+          const returnTo = (user?.state as { returnTo?: string } | undefined)?.returnTo
+          const here = window.location.pathname + window.location.search
+          if (returnTo && returnTo.startsWith('/') && !returnTo.startsWith('//') && returnTo !== here) {
+            window.location.replace(returnTo)
+            return
+          }
         } else {
           user = await um.getUser()
           if (user?.expired) {

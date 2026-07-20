@@ -51,6 +51,13 @@ func NewDockerRuntime(cfg RuntimeConfig, logger *slog.Logger) (*DockerRuntime, e
 		cfg:    cfg,
 		logger: logger,
 	}
+	if cfg.PublishAPI {
+		// The hub's authz model rests on agents being reachable ONLY through the
+		// hub (their API port lives on the internal agent network). Publishing a
+		// host port breaks that guarantee — a user could hit the agent directly,
+		// bypassing the hub's agent-access gate. Dev convenience only.
+		logger.Warn("HUB_AGENT_PUBLISH_API is set — agent API ports are published to the host, bypassing the hub-only network guarantee; DEV ONLY, never enable in production")
+	}
 	return rt, nil
 }
 

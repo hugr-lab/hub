@@ -67,13 +67,14 @@ func (a *HubApp) agentProxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	agentID := r.PathValue("id")
 
-	// Platform-layer authz: user_agents grant, re-checked on every call so a
-	// revocation bites immediately. Admin capability / management bypass live
-	// inside checkAgentAccess. Denial details stay in the log — the body
-	// carries a fixed message (no hugr/DB internals to callers).
-	if err := a.checkAccess(r.Context(), u, agentID); err != nil {
+	// Agent-access authz (policy: the generic passthrough is member-level — see
+	// gateway_authz.go). Re-checked on every call so a revocation bites
+	// immediately; admin-capability / management bypass live inside. Denial
+	// details stay in the log — the body carries a fixed message.
+	if err := a.authorizeAgent(r.Context(), u, agentID, accessMember); err != nil {
 		a.logger.Info("agent access denied", "agent", agentID, "user", u.ID, "error", err)
-		gatewayError(w, http.StatusForbidden, "no_agent_access", "no access to agent "+agentID)
+		code, msg := agentDenyEnvelope(accessMember, agentID)
+		gatewayError(w, http.StatusForbidden, code, msg)
 		return
 	}
 
@@ -85,6 +86,17 @@ func (a *HubApp) agentProxyHandler(w http.ResponseWriter, r *http.Request) {
 	rest := "/" + r.PathValue("path")
 	if !strings.HasPrefix(rest, "/v1/") {
 		gatewayError(w, http.StatusNotFound, "not_found", "only the hugen /v1 API is proxied")
+		return
+	}
+
+	// Skills are NOT served on this generic passthrough — they go through the
+	// hub-native, per-op-authorized endpoints at /api/v1/agents/{id}/skills
+	// (gateway_skills.go: list is member+, export/install are owner/admin).
+	// Blocking them here keeps the passthrough free of skills authz AND closes
+	// the member bypass it would otherwise open (the passthrough only enforces
+	// member+ access, so a member could reach /v1/skills/install directly).
+	if strings.HasPrefix(rest, "/v1/skills") {
+		gatewayError(w, http.StatusNotFound, "not_found", "skills are served at /api/v1/agents/{id}/skills")
 		return
 	}
 
@@ -227,6 +239,17 @@ func (a *HubApp) checkAccess(ctx context.Context, u auth.UserInfo, agentID strin
 		return a.accessCheck(ctx, u, agentID)
 	}
 	return a.checkAgentAccess(ctx, u, agentID, "")
+}
+
+// checkOwner is the owner/admin authz seam for privileged skills ops (install /
+// export) — defaults to checkAgentAccess(…, "owner"), which admits management
+// auth, the admin capability, and an explicit owner grant. Tests override
+// ownerCheck.
+func (a *HubApp) checkOwner(ctx context.Context, u auth.UserInfo, agentID string) error {
+	if a.ownerCheck != nil {
+		return a.ownerCheck(ctx, u, agentID)
+	}
+	return a.checkAgentAccess(ctx, u, agentID, "owner")
 }
 
 // isStreamRequest reports whether the proxied call is an SSE stream — the

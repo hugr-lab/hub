@@ -43,7 +43,8 @@ function formatBytes(n: number): string {
 }
 
 export function SkillsScreen() {
-  const { isAdmin } = useSession()
+  // Admin marketplace tab only on the real admin surface (not /app or view-as-owner).
+  const { effectiveAdmin: isAdmin } = useSession()
   const { success, error: toastError } = useToast()
   const qc = useQueryClient()
 

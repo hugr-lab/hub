@@ -17,8 +17,12 @@ func (a *HubApp) agentLogsHandler(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := a.requireAdmin(withIdentity(r.Context(), u), u); err != nil {
-		gatewayError(w, http.StatusForbidden, "forbidden", "admin only")
+	// Admin-level (policy: raw container logs cross user boundaries on a shared
+	// agent — see gateway_authz.go). authorizeAgent → requireAdmin → hasCapability
+	// already impersonates the caller, so no outer withIdentity is needed.
+	if err := a.authorizeAgent(r.Context(), u, r.PathValue("id"), accessAdmin); err != nil {
+		code, msg := agentDenyEnvelope(accessAdmin, r.PathValue("id"))
+		gatewayError(w, http.StatusForbidden, code, msg)
 		return
 	}
 	if a.agentRuntime == nil {

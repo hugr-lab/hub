@@ -27,12 +27,12 @@ const (
 )
 
 type HubApp struct {
-	config        Config
-	logger        *slog.Logger
-	mux           *app.CatalogMux
-	client        *client.Client
-	server        *http.Server
-	tokenServer   *http.Server // dedicated /agent/token listener (HUB_AGENT_TOKEN_LISTEN), nil in shared mode
+	config      Config
+	logger      *slog.Logger
+	mux         *app.CatalogMux
+	client      *client.Client
+	server      *http.Server
+	tokenServer *http.Server // dedicated /agent/token listener (HUB_AGENT_TOKEN_LISTEN), nil in shared mode
 	// agentRuntime is the AgentRuntime seam (DockerRuntime today; a k8s-Pod
 	// runtime slots in behind it). nil when no orchestrator is reachable.
 	agentRuntime agentmgr.AgentRuntime
@@ -46,9 +46,11 @@ type HubApp struct {
 	bundleStore  BundleStore
 	skillsVerify *verifyCache
 
-	// accessCheck / chatLookup override the gateway's authz + chat-read seams
-	// in tests; nil → checkAgentAccess / fetchChat (gateway.go, gateway_chats.go).
+	// accessCheck / ownerCheck / chatLookup override the gateway's authz +
+	// chat-read seams in tests; nil → checkAgentAccess("") / checkAgentAccess
+	// ("owner") / fetchChat (gateway.go, gateway_chats.go).
 	accessCheck func(ctx context.Context, u auth.UserInfo, agentID string) error
+	ownerCheck  func(ctx context.Context, u auth.UserInfo, agentID string) error
 	chatLookup  func(ctx context.Context, id string) (chatRow, error)
 
 	// consoleAuth memoises hugr's /auth/config for the console's runtime-config
@@ -376,6 +378,20 @@ func (a *HubApp) Init(ctx context.Context) error {
 			mux.HandleFunc("GET /console", func(w http.ResponseWriter, r *http.Request) {
 				http.Redirect(w, r, "/console/", http.StatusMovedPermanently)
 			})
+			// Personal user workspace — the SAME SPA build served under /app
+			// (design 009 + user-app). Hashed assets stay absolute under
+			// /console/ (Vite base), so only the SPA's router basename + surface
+			// differ; config.json is still fetched from /console/config.json.
+			// Same public-asset auth exemption as /console.
+			if hApp, _, errApp := console.Handler("/app/", a.config.ConsoleDir); errApp == nil {
+				mux.Handle("GET /app/", hApp)
+				mux.HandleFunc("GET /app", func(w http.ResponseWriter, r *http.Request) {
+					http.Redirect(w, r, "/app/", http.StatusMovedPermanently)
+				})
+				a.logger.Info("user workspace mounted", "path", "/app/")
+			} else {
+				a.logger.Warn("user workspace disabled", "error", errApp)
+			}
 			// OIDC reverse-proxy: the CORS-sensitive PKCE legs the SPA makes as
 			// XHRs, forwarded same-origin to the provider (oidc_proxy.go).
 			mux.HandleFunc("POST /oidc/token", a.handleOIDCToken)

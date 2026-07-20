@@ -15,6 +15,14 @@ interface SessionCtx {
   identity: Identity
   /** Real capability derived from `hub:management.admin`. */
   isAdmin: boolean
+  /**
+   * Admin UI is shown only when the user is really an admin AND currently
+   * viewing the admin persona. This is what screens should gate affordances on
+   * (lifecycle, admin tabs, all-vs-mine scope): an admin previewing "owner", or
+   * anyone in the /app workspace (persona pinned to owner), gets the personal
+   * surface. `isAdmin` remains the raw capability (e.g. for the /me page).
+   */
+  effectiveAdmin: boolean
   /** Effective "view as" — admins may preview the owner surface. */
   persona: Persona
   setPersona: (p: Persona) => void
@@ -32,13 +40,18 @@ const Ctx = createContext<SessionCtx | null>(null)
 export function SessionProvider({
   probe,
   onSignOut,
+  appMode = false,
   children,
 }: {
   probe: IdentityProbe
   onSignOut: () => void
+  /** /app workspace surface — persona is pinned to owner and cannot switch. */
+  appMode?: boolean
   children: ReactNode
 }) {
-  const [persona, setPersonaState] = useState<Persona>(probe.isAdmin ? 'admin' : 'owner')
+  const [persona, setPersonaState] = useState<Persona>(
+    appMode ? 'owner' : probe.isAdmin ? 'admin' : 'owner',
+  )
 
   const identity: Identity = {
     userId: probe.me.user_id,
@@ -51,13 +64,14 @@ export function SessionProvider({
     () => ({
       identity,
       isAdmin: probe.isAdmin,
+      effectiveAdmin: probe.isAdmin && persona === 'admin',
       persona,
-      setPersona: (p) => probe.isAdmin && setPersonaState(p),
+      setPersona: (p) => !appMode && probe.isAdmin && setPersonaState(p),
       initials: initialsOf(identity.name),
       signOut: onSignOut,
     }),
     // identity fields are stable for a given probe
-    [probe.isAdmin, persona, identity.name, identity.userId, onSignOut],
+    [probe.isAdmin, persona, appMode, identity.name, identity.userId, onSignOut],
   )
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>
