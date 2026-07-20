@@ -2,6 +2,7 @@ package agentmgr
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/docker/go-connections/nat"
@@ -28,13 +29,18 @@ func TestOrchestrationFromConfig(t *testing.T) {
 			config: `{"models":{"router":"x"}}`,
 			want:   Orchestration{},
 		},
+		{
+			name:   "env block",
+			config: `{"orchestration":{"image":"hugen:m3","env":{"HUGEN_LOG_LEVEL":"debug","FOO":"bar"}}}`,
+			want:   Orchestration{Image: "hugen:m3", Env: map[string]string{"HUGEN_LOG_LEVEL": "debug", "FOO": "bar"}},
+		},
 		{name: "empty", config: "", want: Orchestration{}},
 		{name: "malformed", config: `{not json`, want: Orchestration{}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := OrchestrationFromConfig(json.RawMessage(tt.config))
-			if got != tt.want {
+			if !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("OrchestrationFromConfig(%q) = %+v, want %+v", tt.config, got, tt.want)
 			}
 			// ImageFromConfig is the thin wrapper — must agree on the image.

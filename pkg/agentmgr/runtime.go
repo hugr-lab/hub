@@ -13,9 +13,10 @@ import (
 // "unset → fall back to the runtime default / unlimited".
 type Orchestration struct {
 	Image       string
-	MemoryBytes int64 // Memory limit in bytes (container.Resources.Memory)
-	NanoCPUs    int64 // CPU quota in 1e-9 CPUs (container.Resources.NanoCPUs)
-	PidsLimit   int64 // Max PIDs (container.Resources.PidsLimit)
+	MemoryBytes int64             // Memory limit in bytes (container.Resources.Memory)
+	NanoCPUs    int64             // CPU quota in 1e-9 CPUs (container.Resources.NanoCPUs)
+	PidsLimit   int64             // Max PIDs (container.Resources.PidsLimit)
+	Env         map[string]string // extra container env injected at spawn (e.g. HUGEN_LOG_LEVEL, LLM keys)
 }
 
 // OrchestrationFromConfig extracts the orchestration block from an
@@ -28,10 +29,11 @@ func OrchestrationFromConfig(config json.RawMessage) Orchestration {
 	}
 	var c struct {
 		Orchestration struct {
-			Image       string `json:"image"`
-			MemoryBytes int64  `json:"memory_bytes"`
-			NanoCPUs    int64  `json:"nano_cpus"`
-			PidsLimit   int64  `json:"pids_limit"`
+			Image       string            `json:"image"`
+			MemoryBytes int64             `json:"memory_bytes"`
+			NanoCPUs    int64             `json:"nano_cpus"`
+			PidsLimit   int64             `json:"pids_limit"`
+			Env         map[string]string `json:"env"`
 		} `json:"orchestration"`
 	}
 	if err := json.Unmarshal(config, &c); err != nil {
@@ -42,6 +44,7 @@ func OrchestrationFromConfig(config json.RawMessage) Orchestration {
 		MemoryBytes: c.Orchestration.MemoryBytes,
 		NanoCPUs:    c.Orchestration.NanoCPUs,
 		PidsLimit:   c.Orchestration.PidsLimit,
+		Env:         c.Orchestration.Env,
 	}
 }
 
@@ -131,6 +134,10 @@ type AgentRuntime interface {
 	// Reconstruct rebuilds the local runtime-state cache from the orchestrator on
 	// boot (hub-restart survival), so Status/ListRunning are accurate immediately.
 	Reconstruct(ctx context.Context)
+
+	// Logs returns the tail of the agent container's combined stdout+stderr (up to
+	// `tail` lines; <=0 → a sane default). For the console's agent Logs view.
+	Logs(ctx context.Context, agentID string, tail int) (string, error)
 }
 
 // Compile-time proof that the Docker impl satisfies the runtime contract.
@@ -147,10 +154,11 @@ type AgentIdentity struct {
 	HugrUserID   string
 	HugrUserName string
 	HugrRole     string
-	Image        string // agent_type.config.orchestration.image
-	MemoryBytes  int64  // orchestration.memory_bytes (0 = runtime default)
-	NanoCPUs     int64  // orchestration.nano_cpus   (0 = runtime default)
-	PidsLimit    int64  // orchestration.pids_limit  (0 = runtime default)
+	Image        string            // agent_type.config.orchestration.image
+	MemoryBytes  int64             // orchestration.memory_bytes (0 = runtime default)
+	NanoCPUs     int64             // orchestration.nano_cpus   (0 = runtime default)
+	PidsLimit    int64             // orchestration.pids_limit  (0 = runtime default)
+	Env          map[string]string // orchestration.env — extra container env at spawn
 	// Manual marks a 'manual' desired-state agent (spec §4): the container is
 	// created with restart-policy 'no' so a crash stays down until an explicit
 	// start_agent relaunches it (the supervisor never auto-revives it).

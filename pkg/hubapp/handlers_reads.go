@@ -16,6 +16,7 @@ package hubapp
 // removed with the HB6 store-prune.
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -47,7 +48,7 @@ func (a *HubApp) registerReadFunctions() error {
 // ───── my_agent_instances ─────
 
 func (a *HubApp) registerMyAgentInstances() error {
-	return a.mux.HandleTableFunc("default", "my_agent_instances", a.handleMyAgentInstances,
+	if err := a.mux.HandleTableFunc("default", "my_agent_instances", a.handleMyAgentInstances,
 		app.ArgFromContext("user_id", app.String, app.AuthUserID),
 		app.ArgFromContext("user_name", app.String, app.AuthUserName),
 		app.ArgFromContext("role", app.String, app.AuthRole),
@@ -58,7 +59,23 @@ func (a *HubApp) registerMyAgentInstances() error {
 		app.Col("hugr_role", app.String),
 		app.Col("status", app.String),
 		app.Col("access_role", app.String),
-		app.Desc("Agent instances the current user has access to, enriched with container runtime status. Admins see all agents."),
+		app.Desc("Agent instances the current user has a grant on (own agents), enriched with container runtime status. The chat picker + Me/Access read this."),
+	); err != nil {
+		return err
+	}
+	// Admin-only whole-fleet variant for the management console.
+	return a.mux.HandleTableFunc("default", "all_agent_instances", a.handleAllAgentInstances,
+		app.ArgFromContext("user_id", app.String, app.AuthUserID),
+		app.ArgFromContext("user_name", app.String, app.AuthUserName),
+		app.ArgFromContext("role", app.String, app.AuthRole),
+		app.ArgFromContext("auth_type", app.String, app.AuthType),
+		app.ColPK("id", app.String),
+		app.Col("agent_type_id", app.String),
+		app.Col("display_name", app.String),
+		app.Col("hugr_role", app.String),
+		app.Col("status", app.String),
+		app.Col("access_role", app.String),
+		app.Desc("EVERY agent in the fleet with live runtime status — admin only (hub:management.admin). The console's agent-management screen reads this; chatting stays gated to my_agent_instances."),
 	)
 }
 
@@ -69,43 +86,19 @@ func (a *HubApp) handleMyAgentInstances(w *app.Result, r *app.Request) error {
 	}
 	ctx := withIdentity(r.Context(), u)
 
-	type row struct {
-		id, agentTypeID, displayName, hugrRole, accessRole string
-	}
-	var rows []row
+	var rows []agentInstanceRow
 
-	// Only engine-internal management auth lists everything. Everyone else —
+	// Only engine-internal management auth lists everything here. Everyone else —
 	// including OIDC users whose deployment calls them "admin" — goes through
-	// hub.db.user_agents grants. The management-auth branch lists the whole Agent
-	// DB (hub.agent.db.agents); Hugr RBAC gates the principal.
+	// hub.db.user_agents grants (own agents; the chat picker + Me/Access rely on
+	// this being MINE-only). An admin console lists the whole fleet via the
+	// dedicated `all_agent_instances` function instead.
 	if u.AuthType == "management" {
-		// Identity canon is the Agent DB (hub.agent.db.agents), NOT the legacy
-		// platform hub.db.agents duplicate (dropped in HB6). name/role map to the
-		// display_name/hugr_role columns this table function exposes.
-		res, err := a.client.Query(ctx,
-			`{ hub { agent { db { agents {
-				id agent_type_id name role
-			} } } } }`, nil,
-		)
+		all, err := a.listAllAgentRows(ctx)
 		if err != nil {
-			return fmt.Errorf("list agents: %w", err)
+			return err
 		}
-		defer res.Close()
-		if res.Err() != nil {
-			return fmt.Errorf("list agents: %w", res.Err())
-		}
-		var agents []struct {
-			ID          string `json:"id"`
-			AgentTypeID string `json:"agent_type_id"`
-			Name        string `json:"name"`
-			Role        string `json:"role"`
-		}
-		if err := res.ScanData("hub.agent.db.agents", &agents); err != nil && !isNoData(err) {
-			return fmt.Errorf("scan agents: %w", err)
-		}
-		for _, ag := range agents {
-			rows = append(rows, row{ag.ID, ag.AgentTypeID, ag.Name, ag.Role, "admin"})
-		}
+		rows = all
 	} else {
 		// The `agent` field is the cross-source @join (graph.graphql) from the
 		// platform grant into the Agent DB identity — LIST-typed (single element),
@@ -141,26 +134,86 @@ func (a *HubApp) handleMyAgentInstances(w *app.Result, r *app.Request) error {
 				continue // grant to a deleted agent — no identity to show
 			}
 			ag := ua.Agent[0]
-			rows = append(rows, row{ag.ID, ag.AgentTypeID, ag.Name, ag.Role, ua.Role})
+			rows = append(rows, agentInstanceRow{ag.ID, ag.AgentTypeID, ag.Name, ag.Role, ua.Role})
 		}
 	}
 
+	return a.appendAgentInstances(w, rows)
+}
+
+// agentInstanceRow is one identity row before the live runtime status is
+// stamped by appendAgentInstances.
+type agentInstanceRow struct {
+	id, agentTypeID, displayName, hugrRole, accessRole string
+}
+
+// listAllAgentRows reads the whole fleet from the Agent DB identity canon
+// (hub.agent.db.agents) — used by the management-auth my_agent_instances branch
+// and the admin-only all_agent_instances function. accessRole is "admin".
+func (a *HubApp) listAllAgentRows(ctx context.Context) ([]agentInstanceRow, error) {
+	res, err := a.client.Query(ctx,
+		`{ hub { agent { db { agents { id agent_type_id name role } } } } }`, nil,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list agents: %w", err)
+	}
+	defer res.Close()
+	if res.Err() != nil {
+		return nil, fmt.Errorf("list agents: %w", res.Err())
+	}
+	var agents []struct {
+		ID          string `json:"id"`
+		AgentTypeID string `json:"agent_type_id"`
+		Name        string `json:"name"`
+		Role        string `json:"role"`
+	}
+	if err := res.ScanData("hub.agent.db.agents", &agents); err != nil && !isNoData(err) {
+		return nil, fmt.Errorf("scan agents: %w", err)
+	}
+	rows := make([]agentInstanceRow, 0, len(agents))
+	for _, ag := range agents {
+		rows = append(rows, agentInstanceRow{ag.ID, ag.AgentTypeID, ag.Name, ag.Role, "admin"})
+	}
+	return rows, nil
+}
+
+// appendAgentInstances stamps each identity row with its LIVE runtime status
+// (from the agent runtime cache) and emits it as a table-function row.
+func (a *HubApp) appendAgentInstances(w *app.Result, rows []agentInstanceRow) error {
 	for _, rr := range rows {
 		status := "stopped"
 		if a.agentRuntime != nil {
-			st := a.agentRuntime.Status(rr.id)
-			if st.Status != "" {
+			if st := a.agentRuntime.Status(rr.id); st.Status != "" {
 				status = st.Status
 			}
 		}
-		if err := w.Append(
-			rr.id, rr.agentTypeID, rr.displayName, rr.hugrRole,
-			status, rr.accessRole,
-		); err != nil {
+		if err := w.Append(rr.id, rr.agentTypeID, rr.displayName, rr.hugrRole, status, rr.accessRole); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// handleAllAgentInstances backs the admin-only `all_agent_instances` table
+// function: the WHOLE fleet (every agent, not just the caller's grants) with
+// live status. The console's admin agent-management screen reads it; chatting is
+// still gated to the caller's own agents via my_agent_instances + checkAccess.
+func (a *HubApp) handleAllAgentInstances(w *app.Result, r *app.Request) error {
+	u := userFromArgs(r)
+	if err := requireUser(u); err != nil {
+		return err
+	}
+	ctx := withIdentity(r.Context(), u)
+	if u.AuthType != "management" {
+		if err := a.requireAdmin(ctx, u); err != nil {
+			return fmt.Errorf("all_agent_instances is admin only: %w", err)
+		}
+	}
+	rows, err := a.listAllAgentRows(ctx)
+	if err != nil {
+		return err
+	}
+	return a.appendAgentInstances(w, rows)
 }
 
 // ───── small helpers ─────

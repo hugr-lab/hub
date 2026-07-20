@@ -34,7 +34,7 @@ const chatTitleDefault = "New Chat"
 const keysetMargin = 100
 
 // chatProjection is the single column list every chat read uses.
-const chatProjection = `id project_id user_id agent_id title root_session_id created_at updated_at last_active_at archived`
+const chatProjection = `id project_id user_id agent_id title root_session_id created_at updated_at last_active_at archived last_read_seq`
 
 // chatRow mirrors hub.db.chats. Timestamps stay RFC3339 strings end-to-end —
 // my_chats hands last_active_at/id back to the client as the opaque-enough
@@ -53,6 +53,9 @@ type chatRow struct {
 	// null Timestamp mutation value to the zero time instead of SQL NULL
 	// (query-engine ask #9), so "unarchive" could never be expressed.
 	Archived bool `json:"archived"`
+	// LastReadSeq is the per-chat read cursor (Stage 2 notifications). The
+	// frontend advances it via POST …/read; unread = session last_seq − this.
+	LastReadSeq int `json:"last_read_seq"`
 }
 
 // fmtTime renders row timestamps for the string-typed function columns (the

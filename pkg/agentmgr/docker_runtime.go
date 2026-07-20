@@ -1,8 +1,10 @@
 package agentmgr
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -14,6 +16,7 @@ import (
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/mount"
 	dockerclient "github.com/docker/docker/client"
+	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/docker/go-connections/nat"
 )
 
@@ -152,14 +155,28 @@ func (rt *DockerRuntime) Start(ctx context.Context, agent AgentIdentity) error {
 	// Remove any stale container with the same name (a prior crashed spawn).
 	_ = rt.docker.ContainerRemove(ctx, containerName, container.RemoveOptions{Force: true})
 
-	env := []string{
-		"HUGR_URL=" + rt.cfg.HugrURL,
-		"HUGR_ISSUER=" + rt.cfg.HugrIssuer,
-		"HUGR_ACCESS_TOKEN=" + secret,
-		"HUGR_TOKEN_URL=" + rt.cfg.TokenURL,
+	envMap := map[string]string{
+		"HUGR_URL":          rt.cfg.HugrURL,
+		"HUGR_ISSUER":       rt.cfg.HugrIssuer,
+		"HUGR_ACCESS_TOKEN": secret,
+		"HUGR_TOKEN_URL":    rt.cfg.TokenURL,
 	}
 	if rt.cfg.LogLevel != "" {
-		env = append(env, "HUGEN_LOG_LEVEL="+rt.cfg.LogLevel)
+		envMap["HUGEN_LOG_LEVEL"] = rt.cfg.LogLevel
+	}
+	// Overlay the agent_type's orchestration.env (e.g. HUGEN_LOG_LEVEL, LLM keys).
+	// The hub-owned remote-mode credentials are reserved — an agent type can never
+	// override them (a stale/forged token would break the agent's identity).
+	reserved := map[string]bool{"HUGR_URL": true, "HUGR_ISSUER": true, "HUGR_ACCESS_TOKEN": true, "HUGR_TOKEN_URL": true}
+	for k, v := range agent.Env {
+		if k == "" || reserved[k] {
+			continue
+		}
+		envMap[k] = v
+	}
+	env := make([]string, 0, len(envMap))
+	for k, v := range envMap {
+		env = append(env, k+"="+v)
 	}
 
 	containerCfg := &container.Config{
@@ -387,6 +404,29 @@ func (rt *DockerRuntime) Remove(ctx context.Context, agentID string) error {
 // (^[a-z0-9][a-z0-9-]{0,40}$) so this is always a safe Docker name / DNS label.
 func containerNameFor(agentID string) string {
 	return "hub-agent-" + agentID
+}
+
+// Logs returns the tail of the agent container's combined stdout+stderr.
+func (rt *DockerRuntime) Logs(ctx context.Context, agentID string, tail int) (string, error) {
+	if tail <= 0 {
+		tail = 200
+	}
+	rc, err := rt.docker.ContainerLogs(ctx, containerNameFor(agentID), container.LogsOptions{
+		ShowStdout: true,
+		ShowStderr: true,
+		Tail:       strconv.Itoa(tail),
+	})
+	if err != nil {
+		return "", fmt.Errorf("container logs %q: %w", agentID, err)
+	}
+	defer rc.Close()
+	// Non-TTY container logs are multiplexed (8-byte stream headers per chunk);
+	// demux stdout+stderr into one plain-text buffer.
+	var buf bytes.Buffer
+	if _, err := stdcopy.StdCopy(&buf, &buf, rc); err != nil && err != io.EOF {
+		return buf.String(), fmt.Errorf("read container logs %q: %w", agentID, err)
+	}
+	return buf.String(), nil
 }
 
 // APIBaseURL resolves the dial target for the agent's HTTP API from the local

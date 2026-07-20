@@ -33,6 +33,7 @@ func (f *fakeRuntime) Observe(context.Context, string) (agentmgr.Observation, er
 func (f *fakeRuntime) ListManaged(context.Context) ([]agentmgr.ManagedRef, error) { return nil, nil }
 func (f *fakeRuntime) SetSecretMinter(agentmgr.SecretMinter)                      {}
 func (f *fakeRuntime) Reconstruct(context.Context)                                {}
+func (f *fakeRuntime) Logs(context.Context, string, int) (string, error)          { return "", nil }
 func (f *fakeRuntime) APIBaseURL(agentID string) (string, error) {
 	if b, ok := f.base[agentID]; ok {
 		return b, nil

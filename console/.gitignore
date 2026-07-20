@@ -1,0 +1,12 @@
+node_modules/
+dist-chat/
+.vite/
+*.tsbuildinfo
+# tsc emit artifacts for the .ts vite configs (source is the .ts, not these)
+vite.config.js
+vite.config.d.ts
+vite.chat.config.js
+vite.chat.config.d.ts
+.DS_Store
+npm-debug.log*
+pnpm-debug.log*

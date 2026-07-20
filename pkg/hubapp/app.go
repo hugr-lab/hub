@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/hugr-lab/airport-go/catalog"
+	"github.com/hugr-lab/hub/console"
 	"github.com/hugr-lab/hub/pkg/agentmgr"
 	"github.com/hugr-lab/hub/pkg/auth"
 	"github.com/hugr-lab/hugen/pkg/store/schema"
@@ -22,7 +23,7 @@ import (
 
 const (
 	appName    = "hub"
-	appVersion = "0.3.5"
+	appVersion = "0.3.6"
 )
 
 type HubApp struct {
@@ -49,6 +50,14 @@ type HubApp struct {
 	// in tests; nil → checkAgentAccess / fetchChat (gateway.go, gateway_chats.go).
 	accessCheck func(ctx context.Context, u auth.UserInfo, agentID string) error
 	chatLookup  func(ctx context.Context, id string) (chatRow, error)
+
+	// consoleAuth memoises hugr's /auth/config for the console's runtime-config
+	// endpoint (console.go).
+	consoleAuth consoleAuthCache
+
+	// oidcDisc memoises the provider's discovery document for the console OIDC
+	// reverse-proxy (oidc_proxy.go).
+	oidcDisc oidcDiscoveryCache
 }
 
 func New(cfg Config, logger *slog.Logger, c *client.Client) *HubApp {
@@ -351,6 +360,36 @@ func (a *HubApp) Init(ctx context.Context) error {
 		// above, active agents revive after a hub restart. Started after the minter
 		// so its first pass can spawn.
 		a.startSupervisor()
+	}
+
+	// Management console SPA (design 009) — the embedded Vite build served at
+	// /console with SPA-fallback routing, plus a public runtime-config endpoint.
+	// Static assets + config.json are exempt from the auth middleware (they are
+	// public, read before login); the SPA authenticates its own /hugr + /api/v1
+	// calls with the user's OIDC token.
+	if a.config.ConsoleEnabled {
+		if h, fromDisk, err := console.Handler("/console/", a.config.ConsoleDir); err != nil {
+			a.logger.Warn("management console disabled", "error", err)
+		} else {
+			mux.HandleFunc("GET /console/config.json", a.handleConsoleConfig)
+			mux.Handle("GET /console/", h)
+			mux.HandleFunc("GET /console", func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, "/console/", http.StatusMovedPermanently)
+			})
+			// OIDC reverse-proxy: the CORS-sensitive PKCE legs the SPA makes as
+			// XHRs, forwarded same-origin to the provider (oidc_proxy.go).
+			mux.HandleFunc("POST /oidc/token", a.handleOIDCToken)
+			mux.HandleFunc("GET /oidc/userinfo", a.handleOIDCUserinfo)
+			mux.HandleFunc("GET /oidc/certs", a.handleOIDCJwks)
+			source := "embedded"
+			if fromDisk {
+				source = a.config.ConsoleDir
+			} else if a.config.ConsoleDir != "" {
+				a.logger.Warn("console: HUB_CONSOLE_DIR set but has no index.html — using embedded build",
+					"dir", a.config.ConsoleDir)
+			}
+			a.logger.Info("management console mounted", "path", "/console/", "source", source)
+		}
 	}
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {

@@ -22,6 +22,11 @@ __pycache__/
 dist/
 build/
 
+# The console SPA build output is managed by console/.gitignore +
+# console/dist/.gitignore (which keeps the go:embed placeholder index.html);
+# re-include it so the broad Python `dist/` rule above doesn't swallow it.
+!console/dist/
+
 # Node
 node_modules/
 
@@ -37,6 +42,7 @@ extensions/*/.venv/
 /hub-agent
 /result-store-mcp
 /kernel-mcp
+bin/
 
 # Docker
 hub-data/

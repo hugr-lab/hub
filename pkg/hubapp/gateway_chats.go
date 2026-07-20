@@ -27,9 +27,20 @@ func registerChatTransport(mux *http.ServeMux, a *HubApp) {
 	mux.HandleFunc("POST /api/v1/chats/{id}/cancel", a.chatVerbHandler("cancel", false))
 	mux.HandleFunc("GET /api/v1/chats/{id}/stream", a.chatVerbHandler("stream", false))
 	mux.HandleFunc("GET /api/v1/chats/{id}/events", a.chatVerbHandler("events", false))
+	// Stage 2 notifications: read-cursor + activity aggregate (see gateway_notifications.go).
+	mux.HandleFunc("GET /api/v1/chats/activity", a.chatsActivityHandler)
+	mux.HandleFunc("POST /api/v1/chats/{id}/read", a.chatReadHandler)
+	mux.HandleFunc("POST /api/v1/chats/{id}/archive", a.chatArchiveHandler)
+	mux.HandleFunc("POST /api/v1/chats/{id}/drop", a.chatDropHandler)
+	mux.HandleFunc("GET /api/v1/chats/{id}/tasks", a.chatVerbHandler("tasks", false))
+	mux.HandleFunc("POST /api/v1/chats/{id}/tasks/{taskId}/cancel", a.chatTaskHandler("/cancel"))
+	mux.HandleFunc("POST /api/v1/chats/{id}/tasks/{taskId}/pause", a.chatTaskHandler("/pause"))
+	mux.HandleFunc("POST /api/v1/chats/{id}/tasks/{taskId}/resume", a.chatTaskHandler("/resume"))
+	mux.HandleFunc("DELETE /api/v1/chats/{id}/tasks/{taskId}", a.chatTaskHandler(""))
 	mux.HandleFunc("GET /api/v1/chats/{id}/artifacts", a.chatVerbHandler("artifacts", false))
 	mux.HandleFunc("POST /api/v1/chats/{id}/artifacts", a.chatVerbHandler("artifacts", false))
 	mux.HandleFunc("GET /api/v1/chats/{id}/artifacts/{aid}", a.chatArtifactHandler)
+	mux.HandleFunc("GET /api/v1/agents/{id}/logs", a.agentLogsHandler)
 }
 
 // chatContext authenticates the caller, loads the chat, and enforces the
@@ -76,6 +87,30 @@ func (a *HubApp) chatVerbHandler(verb string, bumpActivity bool) http.HandlerFun
 			a.bumpChatActivity(r.Context(), chat.ID)
 		}
 		a.proxyToAgent(w, r, chat.AgentID, base, "/v1/sessions/"+sid+"/"+verb)
+	}
+}
+
+// chatTaskHandler proxies a task-lifecycle write to the agent's per-session
+// task endpoint. suffix is "/cancel" (POST) or "" (DELETE). The extra {taskId}
+// path segment keeps these out of the generic verb table. The request method is
+// forwarded as-is by proxyToAgent.
+func (a *HubApp) chatTaskHandler(suffix string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		_, chat, ok := a.chatContext(w, r)
+		if !ok {
+			return
+		}
+		sid := deref(chat.RootSessionID)
+		if sid == "" {
+			gatewayError(w, http.StatusConflict, "chat_not_bound",
+				"no session yet — send the first message to bind one")
+			return
+		}
+		base, ok := a.resolveAgentBase(w, r, chat.AgentID)
+		if !ok {
+			return
+		}
+		a.proxyToAgent(w, r, chat.AgentID, base, "/v1/sessions/"+sid+"/tasks/"+r.PathValue("taskId")+suffix)
 	}
 }
 
@@ -258,6 +293,26 @@ func (a *HubApp) closeAgentSession(ctx context.Context, base, bearer, sid string
 		return
 	}
 	req.Header.Set("Authorization", bearer)
+	if resp, err := gatewayClient().Do(req); err == nil {
+		resp.Body.Close()
+	}
+}
+
+// cancelAgentSession best-effort cancels a session's in-flight work with cascade
+// (aborts the root turn + terminates the sub-agent / mission subtree) WITHOUT
+// terminating the root. The root stays resumable (status active) so archive is
+// reversible — restore revives it and its schedules survive. Contrast
+// closeAgentSession (drop), which terminates irreversibly. Detached deadline.
+func (a *HubApp) cancelAgentSession(ctx context.Context, base, bearer, sid string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	body := strings.NewReader(`{"cascade":true,"reason":"user_archive: chat archived"}`)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/v1/sessions/"+sid+"/cancel", body)
+	if err != nil {
+		return
+	}
+	req.Header.Set("Authorization", bearer)
+	req.Header.Set("Content-Type", "application/json")
 	if resp, err := gatewayClient().Do(req); err == nil {
 		resp.Body.Close()
 	}

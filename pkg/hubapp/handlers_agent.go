@@ -467,6 +467,7 @@ func agentIdentityFromRecord(rec agentRecord) (agentmgr.AgentIdentity, error) {
 		MemoryBytes:  orch.MemoryBytes,
 		NanoCPUs:     orch.NanoCPUs,
 		PidsLimit:    orch.PidsLimit,
+		Env:          orch.Env,
 		Manual:       rec.Status == "manual",
 	}, nil
 }

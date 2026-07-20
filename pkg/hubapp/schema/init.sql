@@ -91,7 +91,8 @@ CREATE TABLE IF NOT EXISTS chats (
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now(),
   last_active_at TIMESTAMPTZ DEFAULT now(),
-  archived BOOLEAN NOT NULL DEFAULT FALSE
+  archived BOOLEAN NOT NULL DEFAULT FALSE,
+  last_read_seq INTEGER NOT NULL DEFAULT 0
 );
 
 -- LLM budgets (provider_id references Hugr data source name, no FK)
