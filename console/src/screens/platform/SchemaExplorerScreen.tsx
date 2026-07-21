@@ -308,7 +308,7 @@ function DetailPanel({ node, tree }: { node: SchemaNode | null; tree: SchemaTree
         key: 'type',
         header: 'Type',
         width: 'minmax(0,1fr)',
-        cell: (f) => <span className="font-mono text-xs text-accent">{f.type}</span>,
+        cell: (f) => <span className="break-all font-mono text-xs text-accent">{f.type}</span>,
       },
       {
         key: 'desc',

@@ -45,6 +45,7 @@ export type LoadSpec =
   | { t: 'gqlField'; returnName: string; returnKind: string; args: RawArg[]; fieldId: string }
   | { t: 'static'; children: SchemaNode[] }
   | { t: 'logicalModule'; name: string }
+  | { t: 'logicalObjectExpand'; name: string }
   | { t: 'logicalTypes'; scope: 'SYSTEM' | 'SOURCE' }
 
 /** How to render the detail panel when a node is selected (undefined → none). */
@@ -186,6 +187,8 @@ export async function loadChildren(node: SchemaNode, role?: string): Promise<Sch
       return gqlFieldChildren(node.load, role)
     case 'logicalModule':
       return logicalModuleChildren(node.id, node.load.name, role)
+    case 'logicalObjectExpand':
+      return logicalObjectExpandChildren(node.id, node.load.name, role)
     case 'logicalTypes':
       return logicalTypesChildren(node.id, node.load.scope, role)
   }
@@ -390,12 +393,12 @@ function inputFieldNode(parentId: string, f: RawArg, _role?: string): SchemaNode
 
 interface LModule {
   name: string
-  dataObjects: { name: string; type: string; description?: string | null }[]
-  functions: { name: string; type: string; isTable: boolean }[]
+  dataObjects: { name: string; type: string; description?: string | null; dataSourceName?: string | null }[]
+  functions: { name: string; type: string; isTable: boolean; dataSourceName?: string | null }[]
   modules: { name: string }[]
 }
 
-const MODULE_BODY = `dataObjects { name type description } functions { name type isTable } modules { name }`
+const MODULE_BODY = `dataObjects { name type description dataSourceName } functions { name type isTable dataSourceName } modules { name }`
 
 async function loadLogicalRoots(role?: string): Promise<SchemaNode[]> {
   return withDemo(
@@ -439,17 +442,18 @@ function moduleBodyToNodes(parentId: string, m: LModule, isRoot: boolean): Schem
       detail: { t: 'logicalModule' as const, name: sm.name },
     })),
   )
-  // Objects are leaves — their fields / relations / keys / properties render in
-  // the detail panel, so there's no dead expand arrow for relation-less tables.
+  // Objects expand into Relations / Fields groups (drill through the relation
+  // graph recursively); the data source is shown after the type.
   const objects = sortNodes(
     (m.dataObjects ?? []).map((o) => ({
       id: `${parentId}>o:${o.name}`,
       label: o.name,
       kind: (o.type === 'VIEW' ? 'view' : 'object') as NodeKind,
-      typeLabel: o.type,
+      typeLabel: withSource(o.type, o.dataSourceName),
       hasDescription: !!o.description,
-      expandable: false,
+      expandable: true,
       selectable: true,
+      load: { t: 'logicalObjectExpand' as const, name: o.name },
       detail: { t: 'logicalObject' as const, name: o.name },
     })),
   )
@@ -458,7 +462,7 @@ function moduleBodyToNodes(parentId: string, m: LModule, isRoot: boolean): Schem
       id: `${parentId}>f:${f.name}`,
       label: f.name,
       kind: 'function' as const,
-      typeLabel: f.isTable ? 'table function' : f.type.toLowerCase(),
+      typeLabel: withSource(f.isTable ? 'table function' : f.type.toLowerCase(), f.dataSourceName),
       expandable: false,
       selectable: true,
       detail: { t: 'logicalFunction' as const, module: m.name, name: f.name },
@@ -542,8 +546,91 @@ interface LRelation {
   direction: string
   kind: string
   fieldName: string
-  dataObject: { name: string } | null
+  dataObject: { name: string; dataSourceName?: string | null } | null
   through: { name: string } | null
+}
+
+interface LObjField {
+  name: string
+  description: string | null
+  hugr_type?: string | null
+  type: IntroTypeRef
+}
+
+function withSource(type: string, source?: string | null): string {
+  return source ? `${type} · ${source}` : type
+}
+
+/**
+ * A data object's children: a Relations group (each relation drills into the
+ * far object, recursively) and a Fields group. Fields that reference another
+ * data object (relations, `@join`, table-function-call joins) are themselves
+ * expandable and drill into that object.
+ */
+async function logicalObjectExpandChildren(parentId: string, objName: string, role?: string): Promise<SchemaNode[]> {
+  const d = await postGraphQL<{
+    _dataObject: { relations: LRelation[]; fields: LObjField[] | null } | null
+  }>(
+    `query ($name: String!) {
+      _dataObject(name: $name) {
+        relations { name direction kind fieldName dataObject { name dataSourceName } through { name } }
+        fields { name description hugr_type type { ${REF} } }
+      }
+    }`,
+    { name: objName },
+    roleHeaders(role),
+  )
+  const o = d._dataObject
+  if (!o) return []
+  const relNodes = sortNodes((o.relations ?? []).map((r) => relationNode(parentId, r)))
+  const fieldNodes = sortNodes(
+    (o.fields ?? []).filter((f) => !f.name.startsWith('__')).map((f) => objFieldNode(parentId, objName, f)),
+  )
+  const groups: SchemaNode[] = []
+  if (relNodes.length) groups.push(staticGroup(parentId, 'rel', 'Relations', relNodes))
+  if (fieldNodes.length) groups.push(staticGroup(parentId, 'fld', 'Fields', fieldNodes))
+  return groups
+}
+
+const REL_TONE: Record<string, BadgeTone> = { M2M: 'blue', JOIN: 'amber', FK: 'neutral' }
+
+function relationNode(parentId: string, r: LRelation): SchemaNode {
+  const target = r.dataObject?.name ?? ''
+  const src = r.dataObject?.dataSourceName
+  const arrow = r.direction === 'BACK' ? '←' : '→'
+  return {
+    id: `${parentId}>r:${r.name}`,
+    label: r.fieldName || r.name,
+    kind: 'relation',
+    typeLabel: `${arrow} ${target}${src ? ` · ${src}` : ''}`,
+    badges: [{ text: r.kind, tone: REL_TONE[r.kind] ?? 'neutral' }],
+    expandable: !!target,
+    selectable: !!target,
+    load: target ? { t: 'logicalObjectExpand', name: target } : undefined,
+    detail: target ? { t: 'logicalObject', name: target } : undefined,
+  }
+}
+
+function objFieldNode(parentId: string, ownerName: string, f: LObjField): SchemaNode {
+  const u = unwrap(f.type)
+  const retName = u?.name ?? ''
+  const retKind = u?.kind
+  // A field references a data object when it returns an OBJECT whose name is not
+  // an engine-generated helper (`_xxx_aggregation`, `_join`, …) — i.e. a real
+  // table/view: relations, `@join` fields, table-function-call joins.
+  const isObjRef = (retKind === 'OBJECT' || retKind === 'INTERFACE') && !!retName && !retName.startsWith('_')
+  return {
+    id: `${parentId}>f:${f.name}`,
+    label: f.name,
+    kind: 'field',
+    typeLabel: renderTypeRef(f.type),
+    badges: hugrBadge(f.hugr_type ?? undefined),
+    hasDescription: !!f.description,
+    expandable: isObjRef,
+    selectable: true,
+    load: isObjRef ? { t: 'logicalObjectExpand', name: retName } : undefined,
+    detail: { t: 'gqlField', typeName: ownerName, name: f.name, typeLabel: renderTypeRef(f.type) },
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -698,12 +785,6 @@ async function logicalModuleDetail(name: string, node: SchemaNode, role?: string
     relations: [],
     saveKind: 'module',
   }
-}
-
-interface LObjField {
-  name: string
-  description: string | null
-  type: IntroTypeRef
 }
 
 async function logicalObjectDetail(name: string, node: SchemaNode, role?: string): Promise<NodeDetail> {
