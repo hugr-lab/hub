@@ -3,10 +3,14 @@ import { cn } from '@/lib/cn'
 /** Standard scrollable page: padding 20px 22px, column, gap. */
 export function Page({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
   return (
-    <div
-      className={cn('flex flex-1 flex-col gap-4 overflow-y-auto px-[22px] py-5', className)}
-      {...props}
-    />
+    // The scroll container must be a plain block, NOT a flex column: a flex
+    // column would let tall children (a DataTable's `overflow-hidden` wrapper)
+    // flex-shrink to fit and clip their rows, so there'd be nothing to scroll.
+    // As a block, the inner content keeps its full height; min-h-0 + flex-1 bound
+    // this element to the shell's `main`, and overflow-y-auto then scrolls it.
+    <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className={cn('flex flex-col gap-4 px-[22px] py-5', className)} {...props} />
+    </div>
   )
 }
 

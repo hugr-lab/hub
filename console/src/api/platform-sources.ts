@@ -46,6 +46,8 @@ export interface DataSource {
   disabled: boolean
   read_only: boolean
   self_defined: boolean
+  /** Catalog sources feeding this data source (M2M via `core.catalogs`). */
+  catalogs?: { name: string }[]
 }
 
 /** A nested catalog attached on `insert_data_sources`. */
@@ -64,6 +66,7 @@ export interface DataSourceInput {
   as_module?: boolean
   read_only?: boolean
   self_defined?: boolean
+  disabled?: boolean
   /** Attach schema catalogs on insert (ignored by update). */
   catalogs?: NestedCatalog[]
 }
@@ -77,10 +80,18 @@ export interface SchemaType {
   fields: string
 }
 
+/**
+ * Catalog source kinds. Authoritative list from the engine
+ * (`query-engine/pkg/catalog/sources/sources.go`) — `type` is a plain String
+ * scalar in the GraphQL schema (no enum to introspect), so this curated set is
+ * necessary. Keep in sync if the engine adds a kind.
+ */
+export const CATALOG_SOURCE_TYPES = ['localFS', 'uri', 'uriFile', 'text'] as const
+
 /** Row of `core.catalog_sources`. */
 export interface CatalogSource {
   name: string
-  type: 'localFS' | 'uri' | string
+  type: (typeof CATALOG_SOURCE_TYPES)[number] | string
   description: string
   path: string
 }
@@ -142,12 +153,25 @@ const demoLinks: CatalogLink[] = [
   { catalog_name: 'geo-domain', data_source_name: 'geo-files' },
 ]
 
-const DEMO_SCHEMA: SchemaType[] = [
-  { name: 'gateways', kind: '@table', count: 9, fields: 'id ID! · site String · last_seen Timestamp · status String · location Geometry' },
-  { name: 'readings', kind: '@table', count: 6, fields: 'gateway_id → gateways.id · metric String · value Float · at Timestamp' },
-  { name: 'daily_rollup', kind: '@view', count: 5, fields: 'day Date · site String · avg_value Float · sample_count Int' },
-  { name: 'sites_h3', kind: '@function', count: 3, fields: 'h3_cell(resolution Int) → String · geometry aggregations' },
-]
+const DEMO_SDL = `type gateways @table(name: "gateways") {
+	id: ID! @pk
+	site: String!
+	last_seen: Timestamp
+	status: String
+	location: Geometry
+}
+type readings @table(name: "readings") {
+	gateway_id: String! @field_references(references_name: "gateways", field: "id")
+	metric: String!
+	value: Float
+	at: Timestamp
+}
+type daily_rollup @view(name: "daily_rollup") {
+	day: Date!
+	site: String!
+	avg_value: Float
+	sample_count: Int
+}`
 
 const ok = (message: string): FnResult => ({ success: true, message })
 
@@ -175,13 +199,20 @@ export function normalizeStatus(raw: string | null | undefined): DataSourceStatu
 
 export async function listDataSources(): Promise<DataSource[]> {
   return withDemo(
-    () => demoDataSources.map((d) => ({ ...d })),
+    () =>
+      demoDataSources.map((d) => ({
+        ...d,
+        catalogs: demoLinks
+          .filter((l) => l.data_source_name === d.name)
+          .map((l) => ({ name: l.catalog_name })),
+      })),
     async () => {
       const d = await postGraphQL<{ core: { data_sources: DataSource[] } }>(
         `query {
           core {
             data_sources(order_by: [{ field: "name", direction: ASC }]) {
               name type prefix as_module path description disabled read_only self_defined
+              catalogs { name }
             }
           }
         }`,
@@ -254,26 +285,64 @@ function coerceSchemaTypes(raw: unknown): SchemaType[] {
   })
 }
 
+/**
+ * Parse the GraphQL SDL text that `describe_data_source_schema` returns into
+ * display rows. The engine emits SDL (not JSON), e.g.
+ *   type customers @table(name: "customers") {
+ *     id: String! @pk @field_source(field: "customer_id")
+ *     company_name: String!
+ *   }
+ * so we split top-level definition blocks and summarise each. Field bodies never
+ * nest braces in this dialect, so a non-greedy `{…}` match is safe.
+ */
+export function parseSchemaSDL(sdl: string): SchemaType[] {
+  const out: SchemaType[] = []
+  const block = /\b(type|input|interface|enum)\s+([A-Za-z_]\w*)([^{]*)\{([^}]*)\}/g
+  let m: RegExpExecArray | null
+  while ((m = block.exec(sdl)) !== null) {
+    const [, keyword, name, header, body] = m
+    // kind = the first directive (@table/@view/@function/…), else the keyword.
+    const dir = /@(\w+)/.exec(header)
+    const kind = dir ? `@${dir[1]}` : keyword
+    const fields = body
+      .split('\n')
+      .map((l) => l.trim().replace(/\s+@.*$/, '').replace(/,$/, '').trim())
+      .filter(Boolean)
+    out.push({ name, kind, count: fields.length, fields: fields.join(' · ') })
+  }
+  return out
+}
+
+/** Result of `describe_data_source_schema`: the raw SDL plus parsed type rows. */
+export interface SchemaDescription {
+  /** The GraphQL SDL text as returned by the engine (for display + download). */
+  sdl: string
+  /** Parsed type blocks (for the header count / structured view). */
+  types: SchemaType[]
+}
+
 /** Introspect a source via `describe_data_source_schema(name)`. */
-export async function describeDataSourceSchema(name: string): Promise<SchemaType[]> {
+export async function describeDataSourceSchema(name: string): Promise<SchemaDescription> {
   return withDemo(
-    () => DEMO_SCHEMA.map((t) => ({ ...t })),
+    () => ({ sdl: DEMO_SDL, types: parseSchemaSDL(DEMO_SDL) }),
     async () => {
-      // describe_data_source_schema returns a JSON String scalar; parse it before
-      // coercing (coerceSchemaTypes wants the decoded array/object).
       const d = await postGraphQL<{ function: { core: { describe_data_source_schema: unknown } } }>(
         `query ($name: String!) { function { core { describe_data_source_schema(name: $name) } } }`,
         { name },
       )
-      let raw = d.function.core.describe_data_source_schema
+      const raw = d.function.core.describe_data_source_schema
       if (typeof raw === 'string') {
+        // Primary path: the engine returns SDL text.
+        const types = parseSchemaSDL(raw)
+        if (types.length) return { sdl: raw, types }
+        // Fallback: a provider that returns a JSON array/object.
         try {
-          raw = JSON.parse(raw)
+          return { sdl: raw, types: coerceSchemaTypes(JSON.parse(raw)) }
         } catch {
-          /* leave as-is; coerceSchemaTypes returns [] for a non-array */
+          return { sdl: raw, types: [] }
         }
       }
-      return coerceSchemaTypes(raw)
+      return { sdl: '', types: coerceSchemaTypes(raw) }
     },
   )
 }
@@ -294,7 +363,7 @@ export async function insertDataSource(input: DataSourceInput): Promise<FnResult
         as_module: input.as_module ?? false,
         read_only: input.read_only ?? false,
         self_defined: input.self_defined ?? false,
-        disabled: false,
+        disabled: input.disabled ?? false,
       })
       demoStatuses[input.name] = 'unloaded'
       for (const c of input.catalogs ?? []) {
@@ -584,21 +653,6 @@ export async function unlinkCatalog(
  * Schema maintenance functions (per catalog source)
  * ──────────────────────────────────────────────────────────────────────── */
 
-export async function schemaReindex(name: string, batchSize = 500): Promise<FnResult> {
-  return withDemo(
-    () => ok(`_schema_reindex("${name}", batch_size: ${batchSize}) → queued`),
-    async () => {
-      const d = await postGraphQL<{ function: { core: { _schema_reindex: FnResult } } }>(
-        `mutation ($name: String!, $batch: Int!) {
-          function { core { _schema_reindex(name: $name, batch_size: $batch) { success message } } }
-        }`,
-        { name, batch: batchSize },
-      )
-      return d.function.core._schema_reindex
-    },
-  )
-}
-
 export async function schemaVersionClean(name: string): Promise<FnResult> {
   return withDemo(
     () => ok(`_schema_version_clean("${name}") → stale versions removed`),
@@ -610,21 +664,6 @@ export async function schemaVersionClean(name: string): Promise<FnResult> {
         { name },
       )
       return d.function.core._schema_version_clean
-    },
-  )
-}
-
-export async function schemaHardRemove(name: string): Promise<FnResult> {
-  return withDemo(
-    () => ok(`_schema_hard_remove("${name}") → removed`),
-    async () => {
-      const d = await postGraphQL<{ function: { core: { _schema_hard_remove: FnResult } } }>(
-        `mutation ($name: String!) {
-          function { core { _schema_hard_remove(name: $name) { success message } } }
-        }`,
-        { name },
-      )
-      return d.function.core._schema_hard_remove
     },
   )
 }
