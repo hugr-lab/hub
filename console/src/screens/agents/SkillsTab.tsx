@@ -182,7 +182,8 @@ function SkillRow({
         </div>
         {sk.description && <span className="text-2xs text-text2 line-clamp-2">{sk.description}</span>}
       </div>
-      {canManage && (
+      {/* System skills are agent-core (embedded) — not user-exported/published. */}
+      {canManage && sk.origin !== 'system' && (
         <div className="flex flex-none items-center gap-1">
           {sk.exportable && (
             <Button size="sm" variant="ghost" onClick={onExport} title="Download bundle (.tar.gz)">

@@ -60,8 +60,14 @@ func (a *HubApp) chatContext(w http.ResponseWriter, r *http.Request) (auth.UserI
 		return auth.UserInfo{}, chatRow{}, false
 	}
 	chat, err := a.lookupChat(r.Context(), r.PathValue("id"))
+	// Strict chat-owner scope: only the creator (chats.user_id) may drive the
+	// live session — an admin does NOT bypass here (deliberately unlike the
+	// GraphQL-plane chatOwned, which admits admin for management ops like
+	// rename/archive). The transport plane injects messages / cancels / streams
+	// a user's live chat; an admin doing that to someone else's session is a
+	// privacy breach, so it stays owner-only. Missing and foreign chats are
+	// indistinguishable by design (both 404).
 	if err != nil || chat.UserID != u.ID {
-		// Missing and foreign chats are indistinguishable by design.
 		gatewayError(w, http.StatusNotFound, "chat_not_found", "chat not found")
 		return auth.UserInfo{}, chatRow{}, false
 	}
