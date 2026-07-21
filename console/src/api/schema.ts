@@ -55,6 +55,17 @@ export type DetailSpec =
   | { t: 'logicalObject'; name: string }
   | { t: 'logicalModule'; name: string }
   | { t: 'logicalFunction'; module: string; name: string }
+  | {
+      t: 'logicalRelation'
+      owner: string
+      fieldName: string
+      kind: string
+      direction: string
+      sourceKeys: string[]
+      destinationKeys: string[]
+      destination: string
+      through: string | null
+    }
 
 export interface SchemaNode {
   id: string
@@ -546,8 +557,10 @@ interface LRelation {
   direction: string
   kind: string
   fieldName: string
-  dataObject: { name: string; dataSourceName?: string | null } | null
-  through: { name: string } | null
+  sourceKeys?: string[]
+  destinationKeys?: string[]
+  dataObject: { name: string; type?: string; dataSourceName?: string | null } | null
+  through: { name: string; type?: string; dataSourceName?: string | null } | null
 }
 
 interface LObjField {
@@ -573,7 +586,11 @@ async function logicalObjectExpandChildren(parentId: string, objName: string, ro
   }>(
     `query ($name: String!) {
       _dataObject(name: $name) {
-        relations { name direction kind fieldName dataObject { name dataSourceName } through { name } }
+        relations {
+          name direction kind fieldName sourceKeys destinationKeys
+          dataObject { name type dataSourceName }
+          through { name type dataSourceName }
+        }
         fields { name description hugr_type type { ${REF} } }
       }
     }`,
@@ -582,7 +599,9 @@ async function logicalObjectExpandChildren(parentId: string, objName: string, ro
   )
   const o = d._dataObject
   if (!o) return []
-  const relNodes = sortNodes((o.relations ?? []).map((r) => relationNode(parentId, r)))
+  // Key relation nodes by fieldName (unique) — `_Relation.name` is the FK/edge
+  // name and repeats across a table's relations (id collisions → shared select).
+  const relNodes = sortNodes((o.relations ?? []).map((r) => relationNode(parentId, objName, r)))
   const fieldNodes = sortNodes(
     (o.fields ?? []).filter((f) => !f.name.startsWith('__')).map((f) => objFieldNode(parentId, objName, f)),
   )
@@ -594,20 +613,62 @@ async function logicalObjectExpandChildren(parentId: string, objName: string, ro
 
 const REL_TONE: Record<string, BadgeTone> = { M2M: 'blue', JOIN: 'amber', FK: 'neutral' }
 
-function relationNode(parentId: string, r: LRelation): SchemaNode {
-  const target = r.dataObject?.name ?? ''
-  const src = r.dataObject?.dataSourceName
-  const arrow = r.direction === 'BACK' ? '←' : '→'
+/** A table / view leaf that drills into its own Relations + Fields. */
+function objectNode(
+  parentId: string,
+  key: string,
+  name: string,
+  type: string | undefined,
+  source: string | undefined | null,
+  extraBadges: NodeBadge[] = [],
+): SchemaNode {
   return {
-    id: `${parentId}>r:${r.name}`,
+    id: `${parentId}>${key}:${name}`,
+    label: name,
+    kind: (type === 'VIEW' ? 'view' : 'object') as NodeKind,
+    typeLabel: withSource(type ?? 'TABLE', source),
+    badges: extraBadges,
+    expandable: true,
+    selectable: true,
+    load: { t: 'logicalObjectExpand', name },
+    detail: { t: 'logicalObject', name },
+  }
+}
+
+/**
+ * A relation node opens into its destination table (and the M2M junction table,
+ * if any) — each drillable. Selecting it shows the relation's own properties
+ * (keys / kind / direction) and edits the description of the field it generates.
+ */
+function relationNode(parentId: string, owner: string, r: LRelation): SchemaNode {
+  const dest = r.dataObject
+  const src = dest?.dataSourceName
+  const arrow = r.direction === 'BACK' ? '←' : '→'
+  const id = `${parentId}>r:${r.fieldName || r.name}`
+  const children: SchemaNode[] = []
+  if (dest?.name) children.push(objectNode(id, 'dest', dest.name, dest.type, dest.dataSourceName))
+  if (r.through?.name)
+    children.push(objectNode(id, 'm2m', r.through.name, r.through.type, r.through.dataSourceName, [{ text: 'junction', tone: 'blue' }]))
+  return {
+    id,
     label: r.fieldName || r.name,
     kind: 'relation',
-    typeLabel: `${arrow} ${target}${src ? ` · ${src}` : ''}`,
+    typeLabel: `${arrow} ${dest?.name ?? '?'}${src ? ` · ${src}` : ''}`,
     badges: [{ text: r.kind, tone: REL_TONE[r.kind] ?? 'neutral' }],
-    expandable: !!target,
-    selectable: !!target,
-    load: target ? { t: 'logicalObjectExpand', name: target } : undefined,
-    detail: target ? { t: 'logicalObject', name: target } : undefined,
+    expandable: children.length > 0,
+    selectable: true,
+    load: children.length ? { t: 'static', children } : undefined,
+    detail: {
+      t: 'logicalRelation',
+      owner,
+      fieldName: r.fieldName || r.name,
+      kind: r.kind,
+      direction: r.direction,
+      sourceKeys: r.sourceKeys ?? [],
+      destinationKeys: r.destinationKeys ?? [],
+      destination: dest?.name ?? '',
+      through: r.through?.name ?? null,
+    },
   }
 }
 
@@ -654,6 +715,53 @@ export async function loadDetail(node: SchemaNode, role?: string): Promise<NodeD
       return logicalObjectDetail(spec.name, node, role)
     case 'logicalFunction':
       return logicalFunctionDetail(spec.module, spec.name, node, role)
+    case 'logicalRelation':
+      return logicalRelationDetail(spec, node, role)
+  }
+}
+
+async function logicalRelationDetail(
+  spec: Extract<DetailSpec, { t: 'logicalRelation' }>,
+  node: SchemaNode,
+  role?: string,
+): Promise<NodeDetail> {
+  // The relation materialises a field on the owner object — read + edit that
+  // field's description via `_schema_update_field_desc(owner, fieldName)`.
+  let description = ''
+  try {
+    const t = await introspectType(spec.owner, role)
+    description = (t.fields ?? []).find((f) => f.name === spec.fieldName)?.description ?? ''
+  } catch {
+    /* leave blank */
+  }
+  const relations: DetailRelation[] = [
+    {
+      name: spec.fieldName,
+      target: spec.destination,
+      direction: spec.direction === 'BACK' ? 'in' : 'out',
+      kind: spec.kind,
+    },
+  ]
+  if (spec.through) relations.push({ name: 'through', target: spec.through, direction: 'out', kind: 'junction' })
+  const keys =
+    spec.sourceKeys.length || spec.destinationKeys.length
+      ? `keys: ${spec.sourceKeys.join(', ') || '—'} → ${spec.destinationKeys.join(', ') || '—'}`
+      : ''
+  return {
+    id: node.id,
+    name: spec.fieldName,
+    kind: 'relation',
+    badges: [
+      { text: spec.kind, tone: REL_TONE[spec.kind] ?? 'neutral' },
+      { text: spec.direction === 'BACK' ? 'BACK' : 'FORWARD', tone: 'neutral' },
+      { text: `field of ${spec.owner}`, tone: 'neutral' },
+    ],
+    meta: keys,
+    description,
+    fields: [],
+    relations,
+    saveKind: 'field',
+    typeName: spec.owner,
   }
 }
 
@@ -964,6 +1072,8 @@ function demoDetail(node: SchemaNode): NodeDetail {
       return { ...base, badges: [{ text: 'MODULE', tone: 'blue' }], saveKind: 'module' }
     case 'logicalFunction':
       return { ...base, badges: [{ text: 'FUNCTION', tone: 'amber' }], saveKind: null }
+    case 'logicalRelation':
+      return { ...base, name: spec.fieldName, badges: [{ text: spec.kind, tone: 'blue' }], saveKind: 'field', typeName: spec.owner }
   }
 }
 
