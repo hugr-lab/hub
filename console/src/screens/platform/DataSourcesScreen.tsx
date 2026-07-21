@@ -11,12 +11,18 @@ import {
   EmptyState,
   Field,
   Input,
+  Menu,
+  MenuContent,
+  MenuItem,
+  MenuSeparator,
+  MenuTrigger,
   Select,
   Spinner,
   useToast,
   type Column,
 } from '@/components/ui'
 import {
+  CATALOG_SOURCE_TYPES,
   checkpointDataSource,
   DATA_SOURCE_TYPES,
   deleteDataSource,
@@ -25,7 +31,6 @@ import {
   insertDataSource,
   listDataSources,
   loadDataSource,
-  schemaReindex,
   unloadDataSource,
   updateDataSource,
   type DataSource,
@@ -44,6 +49,7 @@ interface DsForm {
   as_module: boolean
   read_only: boolean
   self_defined: boolean
+  disabled: boolean
   catalogs: NestedCatalog[]
 }
 
@@ -58,6 +64,7 @@ function emptyForm(): DsForm {
     as_module: true,
     read_only: false,
     self_defined: false,
+    disabled: false,
     catalogs: [],
   }
 }
@@ -105,18 +112,13 @@ export function DataSourcesScreen() {
     onError: onFail,
   })
   const unload = useMutation({
-    mutationFn: (name: string) => unloadDataSource(name, false),
-    onMutate: (name) => setStatus(name, 'unloaded'),
+    mutationFn: (v: { name: string; hard: boolean }) => unloadDataSource(v.name, v.hard),
+    onMutate: (v) => setStatus(v.name, 'unloaded'),
     onSuccess: onFn,
     onError: onFail,
   })
   const checkpoint = useMutation({
     mutationFn: (name: string) => checkpointDataSource(name),
-    onSuccess: (res) => success(res.message),
-    onError: onFail,
-  })
-  const reindex = useMutation({
-    mutationFn: (name: string) => schemaReindex(name),
     onSuccess: (res) => success(res.message),
     onError: onFail,
   })
@@ -136,6 +138,7 @@ export function DataSourcesScreen() {
         as_module: f.as_module,
         read_only: f.read_only,
         self_defined: f.self_defined,
+        disabled: f.disabled,
       }
       return f.original === null
         ? insertDataSource({ ...data, catalogs: f.catalogs.length ? f.catalogs : undefined })
@@ -210,7 +213,7 @@ export function DataSourcesScreen() {
     {
       key: 'path',
       header: 'Path / DSN',
-      width: 'minmax(0,1.4fr)',
+      width: 'minmax(0,1.1fr)',
       cell: (d) => (
         <span className="truncate font-mono text-2xs text-text3" title={d.path}>
           {d.path}
@@ -218,9 +221,31 @@ export function DataSourcesScreen() {
       ),
     },
     {
+      key: 'catalogs',
+      header: 'Catalogs',
+      width: 'minmax(0,0.9fr)',
+      cell: (d) => {
+        const cats = d.catalogs ?? []
+        if (cats.length === 0) return <span className="text-2xs text-text3">—</span>
+        return (
+          <div className="flex flex-wrap gap-1" title={cats.map((c) => c.name).join(', ')}>
+            {cats.slice(0, 2).map((c) => (
+              <span
+                key={c.name}
+                className="truncate rounded-chip bg-accent-soft px-1.5 py-0.5 font-mono text-2xs font-semibold text-accent"
+              >
+                {c.name}
+              </span>
+            ))}
+            {cats.length > 2 && <span className="text-2xs text-text3">+{cats.length - 2}</span>}
+          </div>
+        )
+      },
+    },
+    {
       key: 'flags',
       header: 'Flags',
-      width: 'minmax(0,0.9fr)',
+      width: 'minmax(0,0.8fr)',
       cell: (d) => (
         <div className="flex flex-wrap gap-1">
           {d.as_module && <Badge tone="blue">module</Badge>}
@@ -232,36 +257,21 @@ export function DataSourcesScreen() {
     {
       key: 'actions',
       header: 'Actions',
-      width: '250px',
+      width: '210px',
       align: 'right',
       cell: (d) => {
         const st = statusOf(d.name)
         const isLoad = st === 'unloaded' || st === 'error'
+        const loaded = st === 'ready'
         return (
           <div className="flex items-center justify-end gap-1">
             <Button
               size="sm"
               variant={isLoad ? 'green' : 'amber'}
               disabled={st === 'loading'}
-              onClick={() => (isLoad ? load.mutate(d.name) : unload.mutate(d.name))}
+              onClick={() => (isLoad ? load.mutate(d.name) : unload.mutate({ name: d.name, hard: false }))}
             >
               {isLoad ? 'Load' : 'Unload'}
-            </Button>
-            <Button
-              size="sm"
-              variant="secondary"
-              onClick={() => reindex.mutate(d.name)}
-              title="_schema_reindex(name, batch_size) — generated catalog"
-            >
-              Reindex
-            </Button>
-            <Button
-              size="sm"
-              variant="secondary"
-              onClick={() => checkpoint.mutate(d.name)}
-              title="checkpoint(name)"
-            >
-              CP
             </Button>
             <Button
               size="sm"
@@ -271,6 +281,24 @@ export function DataSourcesScreen() {
             >
               Schema
             </Button>
+            <Menu>
+              <MenuTrigger asChild>
+                <Button size="icon" variant="ghost" aria-label="more actions">
+                  ⋯
+                </Button>
+              </MenuTrigger>
+              <MenuContent>
+                <MenuItem onSelect={() => checkpoint.mutate(d.name)}>Checkpoint</MenuItem>
+                {loaded && (
+                  <>
+                    <MenuSeparator />
+                    <MenuItem danger onSelect={() => unload.mutate({ name: d.name, hard: true })}>
+                      Hard unload
+                    </MenuItem>
+                  </>
+                )}
+              </MenuContent>
+            </Menu>
           </div>
         )
       },
@@ -282,6 +310,10 @@ export function DataSourcesScreen() {
     form?.original === null
       ? 'insert_data_sources(data:{…})'
       : `update_data_sources(filter:{name:{eq:"${form?.original ?? ''}"}})`
+  // Catalogs feeding the source being edited (M2M, managed on the Catalogs screen).
+  const linkedCatalogs = form?.original
+    ? (sources.data?.find((d) => d.name === form.original)?.catalogs ?? [])
+    : []
 
   return (
     <Page>
@@ -422,7 +454,31 @@ export function DataSourcesScreen() {
                 />
                 self_defined
               </label>
+              <label className="flex cursor-pointer items-center gap-2 text-sm">
+                <CheckboxBox checked={form.disabled} onCheckedChange={(v) => patch({ disabled: v })} />
+                disabled
+              </label>
             </div>
+
+            {form.original !== null && (
+              <div className="flex flex-col gap-1.5">
+                <span className="text-xs font-medium text-text2">Linked catalogs</span>
+                {linkedCatalogs.length === 0 ? (
+                  <span className="text-2xs text-text3">None — attach one on the Catalogs screen.</span>
+                ) : (
+                  <div className="flex flex-wrap gap-1.5">
+                    {linkedCatalogs.map((c) => (
+                      <span
+                        key={c.name}
+                        className="rounded-chip bg-accent-soft px-2 py-0.5 font-mono text-2xs font-semibold text-accent"
+                      >
+                        {c.name}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
 
             {form.original === null && (
               <div className="flex flex-col gap-2">
@@ -457,8 +513,11 @@ export function DataSourcesScreen() {
                           value={c.type}
                           onChange={(e) => patchCatalog(form, patch, i, { type: e.target.value })}
                         >
-                          <option value="localFS">localFS</option>
-                          <option value="uri">uri</option>
+                          {CATALOG_SOURCE_TYPES.map((t) => (
+                            <option key={t} value={t}>
+                              {t}
+                            </option>
+                          ))}
                         </Select>
                         <Input
                           mono
@@ -492,7 +551,21 @@ export function DataSourcesScreen() {
         onOpenChange={(o) => !o && setSchemaFor(null)}
         title={schemaFor ?? ''}
         subtitle="describe_data_source_schema(name)"
-        width={440}
+        width={560}
+        footer={
+          schema.data?.sdl ? (
+            <>
+              <span className="mr-auto text-2xs text-text3">{schema.data.types.length} types</span>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => downloadText(`${schemaFor}.graphql`, schema.data!.sdl)}
+              >
+                ↓ Download .graphql
+              </Button>
+            </>
+          ) : undefined
+        }
       >
         {schema.isLoading ? (
           <div className="flex justify-center py-8">
@@ -503,29 +576,29 @@ export function DataSourcesScreen() {
             title="Couldn't describe schema"
             description={schema.error instanceof Error ? schema.error.message : undefined}
           />
-        ) : (schema.data ?? []).length === 0 ? (
+        ) : !schema.data?.sdl ? (
           <EmptyState title="No schema" description="This source exposes no types yet." />
         ) : (
-          <div className="flex flex-col gap-2">
-            {(schema.data ?? []).map((t) => (
-              <div
-                key={t.name}
-                className="flex flex-col gap-1.5 rounded-card border border-border px-3 py-2.5"
-              >
-                <div className="flex items-baseline gap-2">
-                  <span className="font-mono text-xs font-semibold">{t.name}</span>
-                  <Badge tone="neutral">{t.kind}</Badge>
-                  <span className="flex-1" />
-                  <span className="text-2xs text-text3">{t.count} fields</span>
-                </div>
-                <div className="font-mono text-2xs leading-relaxed text-text3">{t.fields}</div>
-              </div>
-            ))}
-          </div>
+          <pre className="overflow-x-auto whitespace-pre rounded-card border border-border bg-surface2 p-3 font-mono text-2xs leading-relaxed text-text2 [tab-size:2]">
+            {schema.data.sdl}
+          </pre>
         )}
       </Drawer>
     </Page>
   )
+}
+
+/** Trigger a client-side download of `text` as `filename` (no server round-trip). */
+function downloadText(filename: string, text: string) {
+  const blob = new Blob([text], { type: 'text/plain;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
 }
 
 function toForm(d: DataSource): DsForm {
@@ -539,6 +612,7 @@ function toForm(d: DataSource): DsForm {
     as_module: d.as_module,
     read_only: d.read_only,
     self_defined: d.self_defined,
+    disabled: d.disabled,
     catalogs: [],
   }
 }
