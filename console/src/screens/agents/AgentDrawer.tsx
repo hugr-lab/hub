@@ -25,14 +25,16 @@ import {
   type AccessRole,
 } from '@/api/agents'
 import { SkillsTab } from './SkillsTab'
+import { ToolsTab } from './ToolsTab'
 
-type AgentTab = 'overview' | 'config' | 'access' | 'skills' | 'logs'
+type AgentTab = 'overview' | 'config' | 'access' | 'skills' | 'tools' | 'logs'
 
 const TABS: TabDef<AgentTab>[] = [
   { value: 'overview', label: 'Overview' },
   { value: 'config', label: 'Config override' },
   { value: 'access', label: 'Access grants' },
   { value: 'skills', label: 'Skills' },
+  { value: 'tools', label: 'MCP tools' },
 ]
 
 // Logs read the container directly (admin-only endpoint), so the tab is admin-only.
@@ -141,6 +143,7 @@ function AgentDrawerBody({
       {tab === 'config' && <ConfigTab agent={agent} isAdmin={isAdmin} />}
       {tab === 'access' && <AccessTab agent={agent} isAdmin={isAdmin} />}
       {tab === 'skills' && <SkillsTab agent={agent} canManage={canManageSkills} isAdmin={isAdmin} />}
+      {tab === 'tools' && <ToolsTab agent={agent} canManage={canManageSkills} />}
       {tab === 'logs' && isAdmin && <LogsTab agent={agent} />}
     </div>
   )
