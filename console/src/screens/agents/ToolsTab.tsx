@@ -20,7 +20,7 @@ const EMPTY_FORM: ToolProviderInput = { name: '', transport: 'http', endpoint: '
  */
 export function ToolsTab({ agent, canManage }: { agent: Agent; canManage: boolean }) {
   const qc = useQueryClient()
-  const { success, error: toastError } = useToast()
+  const { toast, success, error: toastError } = useToast()
   const running = agent.runtime_status === 'running'
   const [adding, setAdding] = useState(false)
   const [form, setForm] = useState<ToolProviderInput>(EMPTY_FORM)
@@ -34,8 +34,12 @@ export function ToolsTab({ agent, canManage }: { agent: Agent; canManage: boolea
 
   const upsert = useMutation({
     mutationFn: (input: ToolProviderInput) => upsertToolProvider(agent.id, input),
-    onSuccess: () => {
-      success('MCP server saved')
+    onSuccess: (res) => {
+      if (res?.applied === false) {
+        toast('Saved — but the agent is unreachable, so it will apply on the next reload.', { tone: 'info' })
+      } else {
+        success('MCP server saved')
+      }
       setAdding(false)
       setForm(EMPTY_FORM)
       qc.invalidateQueries({ queryKey: key })
@@ -45,8 +49,12 @@ export function ToolsTab({ agent, canManage }: { agent: Agent; canManage: boolea
 
   const remove = useMutation({
     mutationFn: (name: string) => deleteToolProvider(agent.id, name),
-    onSuccess: () => {
-      success('MCP server removed')
+    onSuccess: (res) => {
+      if (res?.applied === false) {
+        toast('Removed from config — but still live on the agent until it reloads.', { tone: 'info' })
+      } else {
+        success('MCP server removed')
+      }
       qc.invalidateQueries({ queryKey: key })
     },
     onError: (e) => toastError(providerErrText(e)),

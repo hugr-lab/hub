@@ -93,6 +93,7 @@ func (a *HubApp) mutateToolProvider(w http.ResponseWriter, r *http.Request, del 
 			gatewayError(w, http.StatusBadRequest, "bad_request", "name and endpoint are required")
 			return
 		}
+		in.Transport = strings.ToLower(strings.TrimSpace(in.Transport))
 		if in.Transport == "" {
 			in.Transport = "http"
 		}
@@ -118,6 +119,18 @@ func (a *HubApp) mutateToolProvider(w http.ResponseWriter, r *http.Request, del 
 		a.logger.Info("tool-provider read failed", "agent", agentID, "error", err)
 		gatewayError(w, http.StatusBadGateway, "read_failed", "could not read agent config")
 		return
+	}
+
+	// Guard: an upsert must not hijack the name of a built-in (stdio / non-HTTP)
+	// provider — editProviderList replaces by name, so this would silently swap
+	// out e.g. bash-mcp for a remote endpoint.
+	if !del {
+		for _, p := range mergedTP {
+			if providerName(p) == name && !isHTTPProviderEntry(p) {
+				gatewayError(w, http.StatusConflict, "name_conflict", "a built-in provider named "+name+" already exists")
+				return
+			}
+		}
 	}
 
 	// Apply the edit to the FULL provider list (stdio + http together).
@@ -230,6 +243,17 @@ func editProviderList(list []any, name string, spec map[string]any, del bool) (n
 		next = append(next, spec) // add new
 	}
 	return next, found
+}
+
+// isHTTPProviderEntry reports whether a tool_providers entry is a remote
+// HTTP/SSE MCP (vs a stdio / built-in provider).
+func isHTTPProviderEntry(p any) bool {
+	if m, ok := p.(map[string]any); ok {
+		if t, ok := m["transport"].(string); ok {
+			return isHTTPTransportLabel(strings.ToLower(t))
+		}
+	}
+	return false
 }
 
 // providerName extracts the "name" field of a tool_providers entry.

@@ -65,6 +65,18 @@ func TestEditProviderList(t *testing.T) {
 	})
 }
 
+func TestIsHTTPProviderEntry(t *testing.T) {
+	if !isHTTPProviderEntry(httpP("x", "https://h/mcp")) {
+		t.Error("http entry should be an HTTP provider")
+	}
+	if isHTTPProviderEntry(stdio("bash-mcp")) {
+		t.Error("stdio entry (no transport) should NOT be an HTTP provider")
+	}
+	if !isHTTPProviderEntry(map[string]any{"name": "x", "transport": "SSE"}) {
+		t.Error("case-insensitive transport should be recognized")
+	}
+}
+
 func TestIsHTTPTransportLabel(t *testing.T) {
 	for _, ok := range []string{"http", "streamable-http", "sse"} {
 		if !isHTTPTransportLabel(ok) {
