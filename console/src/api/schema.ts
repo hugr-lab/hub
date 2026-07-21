@@ -131,6 +131,9 @@ export interface NodeDetail {
   saveKind: SaveKind | null
   /** GraphQL type name a field save targets (`_schema_update_field_desc(type_name)`). */
   typeName?: string
+  /** field-save target name when it differs from the display `name` (relations:
+   *  the node title is the relation name, but the edit targets `fieldName`). */
+  saveName?: string
 }
 
 export interface SaveDescriptionInput {
@@ -766,8 +769,11 @@ async function logicalRelationDetail(
     description,
     fields: [],
     relations,
-    saveKind: 'field',
+    // The description belongs to the generated field (`fieldName`), not the
+    // relation name — save targets fieldName. No fieldName ⇒ nothing to edit.
+    saveKind: spec.fieldName ? 'field' : null,
     typeName: spec.owner,
+    saveName: spec.fieldName,
   }
 }
 
@@ -1079,7 +1085,14 @@ function demoDetail(node: SchemaNode): NodeDetail {
     case 'logicalFunction':
       return { ...base, badges: [{ text: 'FUNCTION', tone: 'amber' }], saveKind: null }
     case 'logicalRelation':
-      return { ...base, name: spec.name, badges: [{ text: spec.kind, tone: 'blue' }], saveKind: 'field', typeName: spec.owner }
+      return {
+        ...base,
+        name: spec.name,
+        badges: [{ text: spec.kind, tone: 'blue' }],
+        saveKind: spec.fieldName ? 'field' : null,
+        typeName: spec.owner,
+        saveName: spec.fieldName,
+      }
   }
 }
 

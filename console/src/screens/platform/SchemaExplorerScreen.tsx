@@ -349,7 +349,10 @@ function DetailPanel({ node, tree }: { node: SchemaNode | null; tree: SchemaTree
     if (!detail.saveKind) return
     const input: SaveDescriptionInput = {
       kind: detail.saveKind,
-      target: detail.saveKind === 'field' ? { name: detail.name, typeName: detail.typeName } : { name: detail.name },
+      target:
+        detail.saveKind === 'field'
+          ? { name: detail.saveName ?? detail.name, typeName: detail.typeName }
+          : { name: detail.name },
       description: descDraft,
     }
     saveMut.mutate(input)
