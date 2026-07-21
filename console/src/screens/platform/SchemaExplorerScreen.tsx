@@ -36,10 +36,12 @@ const KIND_CHIP: Record<NodeKind, { label: string; tone: Tone } | null> = {
   object: { label: 'OBJ', tone: 'accent' },
   view: { label: 'VIEW', tone: 'green' },
   function: { label: 'FN', tone: 'amber' },
-  field: { label: 'F', tone: 'neutral' },
+  // Plain fields carry no chip — the label + type + hugr_type badge say enough
+  // (an "F" on every row is just noise).
+  field: null,
   arg: { label: 'ARG', tone: 'neutral' },
   inputField: { label: 'IN', tone: 'neutral' },
-  enumValue: { label: 'EV', tone: 'neutral' },
+  enumValue: null,
   relation: { label: 'REL', tone: 'blue' },
   group: null,
 }
@@ -108,17 +110,16 @@ function TreeRow({
           </Badge>
         )}
 
-        <span className="min-w-0 truncate font-mono text-xs text-text">{node.label}</span>
+        <span className="whitespace-nowrap font-mono text-xs text-text">{node.label}</span>
         {node.badges?.map((b, i) => (
           <Badge key={i} tone={b.tone as Tone} className="flex-none px-1 py-0 text-[9px]">
             {b.text}
           </Badge>
         ))}
-        {node.typeLabel ? (
-          <span className="min-w-0 flex-1 truncate font-mono text-2xs text-text3">{node.typeLabel}</span>
-        ) : (
-          <span className="flex-1" />
+        {node.typeLabel && (
+          <span className="whitespace-nowrap font-mono text-2xs text-text3">{node.typeLabel}</span>
         )}
+        <span className="flex-1" />
 
         {node.hasDescription && (
           <span title="Has description" className="h-[5px] w-[5px] flex-none rounded-full bg-accent" />
@@ -212,7 +213,7 @@ export function SchemaExplorerScreen() {
           </button>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
+        <div className="min-h-0 flex-1 overflow-auto px-2 pb-3">
           {rootQ.isLoading ? (
             <div className="flex items-center gap-2 px-2 py-6 text-sm text-text3">
               <Spinner /> Loading schema…
@@ -224,7 +225,10 @@ export function SchemaExplorerScreen() {
               description={rootQ.error instanceof Error ? rootQ.error.message : undefined}
             />
           ) : (
-            <div className="flex flex-col">
+            // w-max so deeply-indented rows grow past the panel and the
+            // container scrolls horizontally; min-w-full keeps highlights full-
+            // width when content is narrow.
+            <div className="flex w-max min-w-full flex-col">
               {(rootQ.data ?? []).map((node) => (
                 <TreeRow
                   key={node.id}
@@ -293,7 +297,12 @@ function DetailPanel({ node, tree }: { node: SchemaNode | null; tree: SchemaTree
         key: 'name',
         header: 'Name',
         width: 'minmax(0,1fr)',
-        cell: (f) => <span className="break-all font-mono text-xs font-semibold">{f.name}</span>,
+        cell: (f) => (
+          <div className="flex min-w-0 flex-col">
+            <span className="break-all font-mono text-xs font-semibold">{f.name}</span>
+            {f.extra && <span className="font-mono text-2xs text-text3">{f.extra}</span>}
+          </div>
+        ),
       },
       {
         key: 'type',
@@ -399,13 +408,36 @@ function DetailPanel({ node, tree }: { node: SchemaNode | null; tree: SchemaTree
         )}
       </div>
 
-      {/* fields / args */}
+      {/* arguments */}
+      {detail.args && detail.args.length > 0 && (
+        <div className="flex flex-col gap-1.5">
+          <span className="text-sm font-bold">Arguments ({detail.args.length})</span>
+          <DataTable columns={fieldCols} rows={detail.args} getKey={(f) => f.name} />
+        </div>
+      )}
+
+      {/* fields */}
       {detail.fields.length > 0 && (
         <div className="flex flex-col gap-1.5">
           <span className="text-sm font-bold">
-            {detail.kind === 'function' ? 'Arguments' : 'Fields'} ({detail.fields.length})
+            {detail.fieldsLabel ?? 'Fields'} ({detail.fields.length})
           </span>
           <DataTable columns={fieldCols} rows={detail.fields} getKey={(f) => f.name} />
+        </div>
+      )}
+
+      {/* enum values */}
+      {detail.enumValues && detail.enumValues.length > 0 && (
+        <div className="flex flex-col gap-1.5">
+          <span className="text-sm font-bold">Values ({detail.enumValues.length})</span>
+          <div className="overflow-hidden rounded-card border border-border">
+            {detail.enumValues.map((ev) => (
+              <div key={ev.name} className="flex items-baseline gap-2 border-b border-border px-3 py-1.5 last:border-b-0">
+                <span className="font-mono text-xs font-semibold">{ev.name}</span>
+                {ev.description && <span className="text-2xs text-text3">{ev.description}</span>}
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
