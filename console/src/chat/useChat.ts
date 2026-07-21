@@ -62,6 +62,11 @@ export function useChat(client: ChatClient, chatId: string | null) {
   // auto-reconnects) doesn't flip to the error state.
   const [unreachable, setUnreachable] = useState(false)
   const everConnected = useRef(false)
+  // Mirrors `connected` for imperative reads (sendMessage) without adding it to
+  // effect deps. A `reconnect` bump re-runs the connect effect immediately —
+  // used to skip the backoff wait when the first message warms a cold session.
+  const connectedRef = useRef(false)
+  const [reconnect, setReconnect] = useState(0)
   const [loadedArtifacts, setLoadedArtifacts] = useState<Artifact[]>([])
   const [tasks, setTasks] = useState<SessionTask[]>([])
   const [archivedTaskCount, setArchivedTaskCount] = useState(0)
@@ -101,6 +106,7 @@ export function useChat(client: ChatClient, chatId: string | null) {
     setConnected(false)
     setUnreachable(false)
     everConnected.current = false
+    connectedRef.current = false
     const ac = new AbortController()
 
     ;(async () => {
@@ -114,10 +120,12 @@ export function useChat(client: ChatClient, chatId: string | null) {
         signal: ac.signal,
         onOpen: () => {
           everConnected.current = true
+          connectedRef.current = true
           setConnected(true)
           setUnreachable(false)
         },
         onError: () => {
+          connectedRef.current = false
           setConnected(false)
           if (!everConnected.current) setUnreachable(true)
         },
@@ -134,7 +142,7 @@ export function useChat(client: ChatClient, chatId: string | null) {
       .catch(() => setLoadedArtifacts([]))
 
     return () => ac.abort()
-  }, [client, chatId, append])
+  }, [client, chatId, append, reconnect])
 
   // Scheduled tasks for this chat's session — fetched on mount and (in the live
   // view) lightly polled, since a fire / a new schedule changes the list.
@@ -198,6 +206,11 @@ export function useChat(client: ChatClient, chatId: string | null) {
     async (text: string) => {
       if (!chatId || !text.trim()) return
       await client.postMessage(chatId, text.trim())
+      // A brand-new chat has no live session, so the stream never connected and
+      // is idling in reconnect backoff. The message just warmed the session —
+      // kick an immediate reconnect so its echo + the reply stream in now
+      // instead of after the backoff delay.
+      if (!connectedRef.current) setReconnect((n) => n + 1)
     },
     [client, chatId],
   )

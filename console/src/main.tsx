@@ -13,6 +13,10 @@ import { AppModeProvider, baseForMode, detectAppMode } from './lib/appMode'
 // workspace). The router basename tracks the mount; assets stay under /console/.
 const mode = detectAppMode()
 
+// The browser-tab title reflects the surface: the personal workspace is a chat
+// app, not the management console.
+document.title = mode === 'app' ? 'Hugr Chat' : 'Hugr Hub Console'
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>

@@ -1,6 +1,8 @@
+import { useEffect } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { AuthProvider } from './lib/auth'
 import { useSession } from './lib/session'
+import { baseForMode, useAppMode } from './lib/appMode'
 import { AuthGate } from './components/shell/AuthGate'
 import { AppShell } from './components/shell/AppShell'
 import { RequireAdmin } from './components/shell/RequireAdmin'
@@ -20,6 +22,24 @@ import { AgentTypesScreen } from './screens/platform/AgentTypesScreen'
 function RootRedirect() {
   const { persona } = useSession()
   return <Navigate to={defaultRoute(persona)} replace />
+}
+
+/**
+ * The /console management surface is admin-only (gated on the `hub:management.admin`
+ * capability, surfaced as `session.isAdmin`). A non-admin who lands here — a
+ * direct link or a post-login return — is bounced to their /app workspace. The
+ * server already enforces admin on every management data endpoint; this is the
+ * UX gate so non-admins never see the console shell. No-op in /app mode.
+ */
+function ConsoleGuard({ children }: { children: React.ReactNode }) {
+  const mode = useAppMode()
+  const { isAdmin } = useSession()
+  const bounce = mode === 'console' && !isAdmin
+  useEffect(() => {
+    if (bounce) window.location.replace(baseForMode('app') + '/')
+  }, [bounce])
+  if (bounce) return null
+  return <>{children}</>
 }
 
 function AppRoutes() {
@@ -98,7 +118,9 @@ export function App() {
   return (
     <AuthProvider>
       <AuthGate>
-        <AppRoutes />
+        <ConsoleGuard>
+          <AppRoutes />
+        </ConsoleGuard>
       </AuthGate>
     </AuthProvider>
   )

@@ -36,7 +36,7 @@ export function Sidebar() {
           <img src="/console/logo.svg" alt="hugr" className="h-7 w-7" />
           <div className="flex flex-1 flex-col leading-none">
             <span className="text-sm font-bold tracking-[-0.01em]">hugr hub</span>
-            <span className="eyebrow mt-0.5">{appMode ? 'workspace' : 'console'}</span>
+            <span className="eyebrow mt-0.5">{appMode ? 'chat' : 'console'}</span>
           </div>
           <CollapseToggle collapsed={false} onClick={toggleCollapsed} />
         </div>

@@ -165,7 +165,7 @@ interface SessionStatusBucket {
  * aggregation. Best-effort: if the caller's role can't read the agent session
  * store, returns `{}` so the fleet still renders (session chips read 0).
  */
-async function fetchActiveSessionsByAgent(): Promise<Record<string, number>> {
+export async function fetchActiveSessionsByAgent(): Promise<Record<string, number>> {
   try {
     const d = await postGraphQL<{
       hub: { agent: { db: { sessions_bucket_aggregation: SessionStatusBucket[] } } }

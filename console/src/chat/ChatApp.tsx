@@ -69,6 +69,13 @@ export function ChatApp(props: ChatAppProps) {
   const groups = useMemo<ChatGroup[]>(() => groupChats(chats, projects), [chats, projects])
   const activeChat = chats.find((c) => c.id === chatId) ?? null
 
+  // Is the active chat's agent container up? Drives the "stopped" vs "warming up"
+  // hint. Unknown (agent absent from the pickable list / list still loading) is
+  // treated as running so a fresh chat's not-yet-connected stream never flashes
+  // the scary "it looks stopped" message for an agent that is actually running.
+  const activeAgent = (agentsQ.data ?? []).find((a) => a.id === activeChat?.agent_id)
+  const agentRunning = activeAgent ? activeAgent.status === 'running' || activeAgent.status === 'starting' : true
+
   const chat = useChat(client, chatId ?? null)
 
   // Panel state — live XOR artifacts; hidden in narrow mode.
@@ -216,6 +223,7 @@ export function ChatApp(props: ChatAppProps) {
           running={chat.running}
           loading={!chat.connected}
           unreachable={chat.unreachable}
+          agentRunning={agentRunning}
           chatId={chatId}
           chatName={activeChat?.name ?? 'Chat'}
           agentName={activeChat?.agent_name ?? activeChat?.agent_id}

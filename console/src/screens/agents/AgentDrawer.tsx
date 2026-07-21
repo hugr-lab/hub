@@ -24,21 +24,30 @@ import {
   type Agent,
   type AccessRole,
 } from '@/api/agents'
+import { useAppMode } from '@/lib/appMode'
 import { SkillsTab } from './SkillsTab'
 import { ToolsTab } from './ToolsTab'
 
 type AgentTab = 'overview' | 'config' | 'access' | 'skills' | 'tools' | 'logs'
 
-const TABS: TabDef<AgentTab>[] = [
-  { value: 'overview', label: 'Overview' },
-  { value: 'config', label: 'Config override' },
-  { value: 'access', label: 'Access grants' },
-  { value: 'skills', label: 'Skills' },
-  { value: 'tools', label: 'MCP tools' },
-]
-
-// Logs read the container directly (admin-only endpoint), so the tab is admin-only.
-const ADMIN_TABS: TabDef<AgentTab>[] = [...TABS, { value: 'logs', label: 'Logs' }]
+/**
+ * Which drawer tabs are visible. Mode- and role-aware:
+ * - `config` (Config override) is management surface — hidden in the /app
+ *   personal workspace entirely.
+ * - `tools` (MCP servers) is owner-only in /app: members don't even list them.
+ *   In the /console management surface it stays visible (view is member+).
+ * - `logs` reads the container directly (admin endpoint) — admin only.
+ */
+function tabsFor(opts: { appMode: boolean; isAdmin: boolean; isOwner: boolean }): TabDef<AgentTab>[] {
+  const { appMode, isAdmin, isOwner } = opts
+  const tabs: TabDef<AgentTab>[] = [{ value: 'overview', label: 'Overview' }]
+  if (!appMode) tabs.push({ value: 'config', label: 'Config override' })
+  tabs.push({ value: 'access', label: 'Access grants' })
+  tabs.push({ value: 'skills', label: 'Skills' })
+  if (!appMode || isOwner) tabs.push({ value: 'tools', label: 'MCP tools' })
+  if (isAdmin) tabs.push({ value: 'logs', label: 'Logs' })
+  return tabs
+}
 
 function subtitleOf(a: Agent): string {
   return [a.id, a.version, a.created_at && `created ${a.created_at}`].filter(Boolean).join(' · ')
@@ -118,15 +127,20 @@ function AgentDrawerBody({
   lifecyclePending: boolean
 }) {
   const [tab, setTab] = useState<AgentTab>('overview')
+  const appMode = useAppMode() === 'app'
 
+  const isOwner = agent.access_role === 'owner'
   const canStart = isAdmin && agent.runtime_status !== 'running' && agent.desired_status !== 'disabled'
   const canStop = isAdmin && agent.runtime_status === 'running'
   // Owner or admin may export/install/publish skills; members see the list only.
-  const canManageSkills = isAdmin || agent.access_role === 'owner'
+  const canManageSkills = isAdmin || isOwner
+  const tabs = tabsFor({ appMode, isAdmin, isOwner })
+  const showConfig = !appMode
+  const showTools = !appMode || isOwner
 
   return (
     <div className="flex flex-col gap-4">
-      <Tabs tabs={isAdmin ? ADMIN_TABS : TABS} value={tab} onChange={setTab} />
+      <Tabs tabs={tabs} value={tab} onChange={setTab} />
       {tab === 'overview' && (
         <OverviewTab
           agent={agent}
@@ -140,10 +154,10 @@ function AgentDrawerBody({
           onDelete={onDelete}
         />
       )}
-      {tab === 'config' && <ConfigTab agent={agent} isAdmin={isAdmin} />}
+      {tab === 'config' && showConfig && <ConfigTab agent={agent} isAdmin={isAdmin} />}
       {tab === 'access' && <AccessTab agent={agent} isAdmin={isAdmin} />}
       {tab === 'skills' && <SkillsTab agent={agent} canManage={canManageSkills} isAdmin={isAdmin} />}
-      {tab === 'tools' && <ToolsTab agent={agent} canManage={canManageSkills} />}
+      {tab === 'tools' && showTools && <ToolsTab agent={agent} canManage={canManageSkills} />}
       {tab === 'logs' && isAdmin && <LogsTab agent={agent} />}
     </div>
   )
@@ -224,7 +238,8 @@ function OverviewTab({
 }) {
   const facts = [
     { k: 'hugr role', v: agent.hugr_role },
-    { k: 'owner', v: agent.owner },
+    // Agents can have multiple owners (Access grants tab); show the caller's grant.
+    { k: 'your access', v: agent.access_role ?? 'member' },
     { k: 'model', v: agent.model },
     { k: 'sessions', v: String(agent.sessions) },
     { k: 'desired', v: agent.desired_status },
