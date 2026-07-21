@@ -14,6 +14,7 @@ import {
   type Column,
 } from '@/components/ui'
 import { useSession } from '@/lib/session'
+import { useAppMode } from '@/lib/appMode'
 import {
   listAgents,
   startAgent,
@@ -34,13 +35,21 @@ export function AgentsScreen() {
   // admin is on the admin persona; the /app workspace + "view as owner" get the
   // personal, mine-scoped surface.
   const { effectiveAdmin: isAdmin } = useSession()
+  const appMode = useAppMode() === 'app'
   const qc = useQueryClient()
   const { success, error } = useToast()
 
-  const { data: agents = [], isLoading, isError } = useQuery({
+  const { data: rawAgents = [], isLoading, isError } = useQuery({
     queryKey: ['agents', isAdmin],
     queryFn: () => listAgents(isAdmin),
   })
+
+  // The personal /app workspace only ever surfaces agents the user is a member
+  // or owner of. `my_agent_instances` already scopes to grants for OIDC users;
+  // this filter also holds if the caller ever reaches an admin/whole-fleet row.
+  const agents = appMode
+    ? rawAgents.filter((a) => a.access_role === 'member' || a.access_role === 'owner')
+    : rawAgents
 
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [wizardOpen, setWizardOpen] = useState(false)
@@ -111,10 +120,12 @@ export function AgentsScreen() {
       cell: (a) => <span className="truncate font-mono text-xs text-text2">{a.hugr_role}</span>,
     },
     {
-      key: 'owner',
-      header: 'Owner',
+      // An agent can have several owners (see the drawer's Access grants tab);
+      // this column shows the caller's own grant on it, not a single "owner".
+      key: 'access',
+      header: 'Access',
       width: '0.9fr',
-      cell: (a) => <span className="truncate text-text2">{a.owner || '—'}</span>,
+      cell: (a) => <Badge tone={a.access_role === 'owner' ? 'accent' : 'neutral'}>{a.access_role ?? 'member'}</Badge>,
     },
     {
       key: 'sessions',

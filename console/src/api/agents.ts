@@ -1,6 +1,7 @@
 import { postGraphQL } from '@/lib/graphql'
 import { restRaw } from '@/lib/rest'
 import { withDemo } from '@/lib/demo'
+import { fetchActiveSessionsByAgent } from './monitoring'
 
 /* ────────────────────────────────────────────────────────────────────────
  * Agents — namespace `hub`
@@ -273,9 +274,16 @@ export async function listAgents(all = false): Promise<Agent[]> {
   return withDemo(
     () => demoAgents.slice(),
     async () => {
-      const d = await postGraphQL<{ hub: Record<string, AgentInstanceRow[]> }>(
-        `query Agents { hub { ${fn} { id agent_type_id display_name hugr_role status access_role } } }`,
-      )
+      // Session counts live in the agent session store (not on the lean
+      // instances view) — fetch the per-agent active-session aggregation in
+      // parallel and fold it in. Best-effort: it returns {} if the caller's
+      // role can't read the store, leaving counts at 0.
+      const [d, sessionsByAgent] = await Promise.all([
+        postGraphQL<{ hub: Record<string, AgentInstanceRow[]> }>(
+          `query Agents { hub { ${fn} { id agent_type_id display_name hugr_role status access_role } } }`,
+        ),
+        fetchActiveSessionsByAgent(),
+      ])
       return (d.hub[fn] ?? []).map<Agent>((r) => ({
         id: r.id,
         agent_id: r.id,
@@ -283,7 +291,7 @@ export async function listAgents(all = false): Promise<Agent[]> {
         hugr_role: r.hugr_role,
         agent_type_id: r.agent_type_id,
         owner: '',
-        sessions: 0,
+        sessions: sessionsByAgent[r.id] ?? 0,
         desired_status: coerceDesired(r.status),
         runtime_status: coerceRuntime(r.status),
         connected: coerceRuntime(r.status) === 'running',

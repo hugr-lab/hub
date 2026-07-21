@@ -10,6 +10,7 @@ export function Conversation({
   running,
   loading = false,
   unreachable = false,
+  agentRunning = true,
   chatId,
   chatName,
   agentName,
@@ -31,6 +32,8 @@ export function Conversation({
   loading?: boolean
   /** True when the stream never connected — the agent is likely stopped. */
   unreachable?: boolean
+  /** Whether the agent's container is up. Gates "stopped" vs "warming up". */
+  agentRunning?: boolean
   chatId?: string | null
   chatName: string
   agentName?: string
@@ -146,11 +149,19 @@ export function Conversation({
           className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto px-[18px] pb-2 pt-[18px]"
         >
           {view.items.length === 0 &&
-            (unreachable ? (
+            (unreachable && !agentRunning ? (
               <div className="m-auto flex max-w-xs flex-col items-center gap-1.5 text-center text-xs text-text3">
                 <span className="h-[7px] w-[7px] rounded-full bg-red" />
                 Can’t reach {agentName ?? 'the agent'} — it looks stopped.
                 <span className="text-2xs">Start the agent to load history and continue.</span>
+              </div>
+            ) : unreachable ? (
+              // Agent is up but the stream hasn't connected — a new chat's session
+              // is warming up. Not an error: sending a message begins the turn.
+              <div className="m-auto flex max-w-xs flex-col items-center gap-1.5 text-center text-xs text-text3">
+                <span className="h-3 w-3 animate-spin rounded-full border-[1.5px] border-border2 border-t-accent" />
+                Connecting to {agentName ?? 'the agent'}…
+                <span className="text-2xs">Send a message to begin — the agent may take a moment to warm up.</span>
               </div>
             ) : loading ? (
               <div className="m-auto flex items-center gap-2 text-xs text-text3">
