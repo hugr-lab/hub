@@ -13,6 +13,7 @@ import { AgentsScreen } from './screens/AgentsScreen'
 import { SkillsScreen } from './screens/SkillsScreen'
 import { MeScreen } from './screens/MeScreen'
 import { DataSourcesScreen } from './screens/platform/DataSourcesScreen'
+import { DuckLakeScreen } from './screens/platform/DuckLakeScreen'
 import { CatalogsScreen } from './screens/platform/CatalogsScreen'
 import { RolesScreen } from './screens/platform/RolesScreen'
 import { ApiKeysScreen } from './screens/platform/ApiKeysScreen'
@@ -64,6 +65,14 @@ function AppRoutes() {
           element={
             <RequireAdmin>
               <DataSourcesScreen />
+            </RequireAdmin>
+          }
+        />
+        <Route
+          path="/platform/ducklake"
+          element={
+            <RequireAdmin>
+              <DuckLakeScreen />
             </RequireAdmin>
           }
         />
