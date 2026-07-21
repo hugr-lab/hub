@@ -2,727 +2,151 @@ import { postGraphQL } from '@/lib/graphql'
 import { withDemo, isDemoMode } from '@/lib/demo'
 
 /**
- * Schema Explorer data layer.
+ * Schema Explorer data layer — two lazily-expanded trees, both scoped to the
+ * calling user (the OIDC bearer is forwarded, so role visibility applies).
  *
- * The console browses Hugr's *unified GraphQL schema* as a lazily-expanded tree
- * (Query / Mutation → modules → generated ops → fields / relations / args) and
- * lets an admin edit descriptions that feed the LLM schema summaries via the
- * `core._schema_update_{type,field,module,catalog}_desc` mutations.
+ * - **logical** — hugr's logical data model via the `_catalog` meta-queries
+ *   (`_catalog` → `_module` → `_dataObject` / `_function`). The default view.
+ * - **graphql** — the generated GraphQL schema via standard introspection
+ *   (`__schema` roots → `__type`), enriched with hugr extensions
+ *   (`hugr_type` / `catalog`).
  *
- * REAL wiring: the tree is best-effort GraphQL introspection (`__type`), which
- * cannot fully reconstruct Hugr's module classification (table vs view vs
- * function) or its relation graph — those live in `core.meta` / the describe
- * functions. Those gaps are marked `// TODO(real)`. The DEMO mock is a full,
- * interactive stand-in so the screen looks and behaves correctly offline.
+ * Every fetcher takes an optional `role`: when set it sends
+ * `X-Hugr-Impersonated-Role`, so the very same trees can later back the
+ * role-access preview on the permissions screen. Undefined = the caller's own
+ * view.
  */
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
+export type SchemaTree = 'logical' | 'graphql'
 
-export type SchemaNodeKind =
-  | 'query'
-  | 'mutation'
+export type NodeKind =
+  | 'root'
   | 'module'
-  | 'table'
+  | 'object'
   | 'view'
   | 'function'
   | 'field'
+  | 'arg'
+  | 'inputField'
+  | 'enumValue'
   | 'relation'
-
-export interface SchemaNode {
-  id: string
-  name: string
-  kind: SchemaNodeKind
-  /** GraphQL type / return type, shown muted after the name (e.g. `[data_sources]`, `String!`). */
-  typeLabel?: string
-  /** true when the node carries a saved description (renders the accent dot). */
-  hasDescription?: boolean
-  /** true when the node can be expanded to load children. */
-  expandable?: boolean
-  childrenLoaded?: boolean
-  children?: SchemaNode[]
-  args?: SchemaNode[]
-  fields?: SchemaNode[]
-  relations?: SchemaNode[]
-  /** module the node belongs to — resolves the save target. */
-  module?: string
-}
+  | 'group'
 
 export type BadgeTone = 'neutral' | 'green' | 'amber' | 'red' | 'blue' | 'accent'
 
-export interface DetailBadge {
+export interface NodeBadge {
   text: string
   tone: BadgeTone
 }
+
+/** How to fetch a node's children (undefined → leaf). */
+export type LoadSpec =
+  | { t: 'gqlType'; name: string }
+  | { t: 'gqlField'; returnName: string; returnKind: string; args: RawArg[]; fieldId: string }
+  | { t: 'static'; children: SchemaNode[] }
+  | { t: 'logicalModule'; name: string }
+  | { t: 'logicalObjectExpand'; name: string }
+  | { t: 'logicalTypes'; scope: 'SYSTEM' | 'SOURCE' }
+
+/** How to render the detail panel when a node is selected (undefined → none). */
+export type DetailSpec =
+  | { t: 'gqlType'; name: string }
+  | { t: 'gqlField'; typeName: string; name: string; typeLabel: string }
+  | { t: 'logicalObject'; name: string }
+  | { t: 'logicalModule'; name: string }
+  | { t: 'logicalFunction'; module: string; name: string }
+  | {
+      t: 'logicalRelation'
+      owner: string
+      name: string
+      fieldName: string
+      kind: string
+      direction: string
+      sourceKeys: string[]
+      destinationKeys: string[]
+      destination: string
+      through: string | null
+    }
+
+export interface SchemaNode {
+  id: string
+  label: string
+  kind: NodeKind
+  /** muted type-ref rendered after the label. */
+  typeLabel?: string
+  badges?: NodeBadge[]
+  hasDescription?: boolean
+  expandable: boolean
+  selectable: boolean
+  load?: LoadSpec
+  detail?: DetailSpec
+}
+
+interface RawArg {
+  name: string
+  description: string | null
+  defaultValue: string | null
+  type: IntroTypeRef
+}
+
+// ── detail panel ───────────────────────────────────────────────────────────
 
 export interface DetailField {
   ordinal: number
   name: string
   type: string
   description: string
+  /** muted sub-line, e.g. `select · 3 args`. */
+  extra?: string
 }
 
 export interface DetailRelation {
   name: string
   target: string
   direction: 'out' | 'in'
-}
-
-export interface NodeDetail {
-  id: string
-  name: string
-  kind: SchemaNodeKind
-  badges: DetailBadge[]
-  meta: string
-  description: string
-  fields: DetailField[]
-  relations: DetailRelation[]
-  /** which `_schema_update_*_desc` mutation backs this node's description save (null = read-only). */
-  saveKind: SaveKind | null
-  /** GraphQL type name the field save targets (`_schema_update_field_desc(type_name)`). */
-  typeName?: string
-}
-
-export interface SchemaHit {
-  id: string
-  name: string
-  kind: 'table' | 'view' | 'function'
-  module: string
-  fieldCount: number
+  kind?: string
 }
 
 export type SaveKind = 'type' | 'field' | 'module' | 'catalog'
 
+export interface NodeDetail {
+  id: string
+  name: string
+  kind: NodeKind
+  badges: NodeBadge[]
+  meta: string
+  description: string
+  /** main fields (object fields / logical columns / a field's return-type fields). */
+  fields: DetailField[]
+  /** section label for `fields` (e.g. "Fields" / "Return fields"). */
+  fieldsLabel?: string
+  /** argument list (functions, parameterized views, field args). */
+  args?: DetailField[]
+  /** enum values (ENUM types). */
+  enumValues?: { name: string; description: string }[]
+  relations: DetailRelation[]
+  primaryKey?: string[]
+  dataSource?: string
+  /** which `_schema_update_*_desc` mutation persists this description (null = read-only). */
+  saveKind: SaveKind | null
+  /** GraphQL type name a field save targets (`_schema_update_field_desc(type_name)`). */
+  typeName?: string
+  /** field-save target name when it differs from the display `name` (relations:
+   *  the node title is the relation name, but the edit targets `fieldName`). */
+  saveName?: string
+}
+
 export interface SaveDescriptionInput {
   kind: SaveKind
-  /** entity name; `typeName` is required when kind === 'field'. */
   target: { name: string; typeName?: string }
   description: string
-  /** long form fed to the summarizer — defaults to `description` when omitted. */
   longDescription?: string
 }
 
-// ---------------------------------------------------------------------------
-// Demo mock — a substantial unified schema (Query/Mutation → core/analytics/geo)
-// ---------------------------------------------------------------------------
+// ── helpers ──────────────────────────────────────────────────────────────
 
-interface MockField {
-  name: string
-  type: string
-  description?: string
-}
-interface MockRelation {
-  name: string
-  target: string
-  direction: 'out' | 'in'
-}
-interface MockType {
-  name: string
-  kind: 'table' | 'view' | 'function'
-  description?: string
-  returns?: string
-  fields: MockField[]
-  relations?: MockRelation[]
-}
-interface MockModule {
-  name: string
-  description?: string
-  types: MockType[]
-}
-
-const QUERY_MODULES: MockModule[] = [
-  {
-    name: 'core',
-    description:
-      'Platform administration surface: data sources, catalogs, roles, permissions and schema metadata.',
-    types: [
-      {
-        name: 'data_sources',
-        kind: 'table',
-        description:
-          'Registered data sources (postgres, duckdb, http, …) with their connection and module settings.',
-        fields: [
-          { name: 'name', type: 'String!', description: 'Primary key — unique source name.' },
-          { name: 'type', type: 'String!', description: 'Connector type, e.g. postgres, duckdb, http.' },
-          { name: 'prefix', type: 'String' },
-          { name: 'path', type: 'String', description: 'DSN / connection path.' },
-          { name: 'description', type: 'String' },
-          { name: 'as_module', type: 'Boolean' },
-          { name: 'read_only', type: 'Boolean' },
-          { name: 'disabled', type: 'Boolean' },
-          { name: 'self_defined', type: 'Boolean' },
-        ],
-        relations: [{ name: 'catalogs', target: 'catalog_sources', direction: 'out' }],
-      },
-      {
-        name: 'catalog_sources',
-        kind: 'table',
-        description: 'Attachable catalogs (localFS / uri) linked to data sources.',
-        fields: [
-          { name: 'name', type: 'String!' },
-          { name: 'type', type: 'String!', description: 'localFS or uri.' },
-          { name: 'path', type: 'String' },
-          { name: 'description', type: 'String' },
-        ],
-        relations: [{ name: 'data_sources', target: 'data_sources', direction: 'in' }],
-      },
-      {
-        name: 'role_permissions',
-        kind: 'view',
-        description:
-          'Effective role → (type, field) permission rows. ALLOW-by-default; a row only hides, disables or row-filters.',
-        fields: [
-          { name: 'role', type: 'String!' },
-          { name: 'type_name', type: 'String!' },
-          { name: 'field_name', type: 'String!' },
-          { name: 'hidden', type: 'Boolean' },
-          { name: 'disabled', type: 'Boolean' },
-          { name: 'filter', type: 'JSON', description: 'Row-level-security expression (interpolates auth claims).' },
-        ],
-        relations: [{ name: 'role_def', target: 'roles', direction: 'out' }],
-      },
-      {
-        name: 'data_source_status',
-        kind: 'function',
-        returns: 'String',
-        description: 'Live connection status for a data source (drives the health dot).',
-        fields: [{ name: 'name', type: 'String!', description: 'Data source name.' }],
-      },
-    ],
-  },
-  {
-    name: 'analytics',
-    description: 'Product analytics: events, sessions, users and derived rollups.',
-    types: [
-      {
-        name: 'events',
-        kind: 'table',
-        description: 'Raw product event stream — one row per tracked interaction.',
-        fields: [
-          { name: 'event_id', type: 'ID!' },
-          { name: 'user_id', type: 'String!' },
-          { name: 'event_type', type: 'String!', description: 'e.g. page_view, signup, purchase.' },
-          { name: 'occurred_at', type: 'Timestamp!' },
-          { name: 'properties', type: 'JSON' },
-          { name: 'revenue', type: 'Float' },
-        ],
-        relations: [
-          { name: 'user', target: 'users', direction: 'out' },
-          { name: 'session', target: 'sessions', direction: 'out' },
-        ],
-      },
-      {
-        name: 'sessions',
-        kind: 'table',
-        description: 'User sessions bounding a run of events.',
-        fields: [
-          { name: 'session_id', type: 'ID!' },
-          { name: 'user_id', type: 'String!' },
-          { name: 'started_at', type: 'Timestamp!' },
-          { name: 'ended_at', type: 'Timestamp' },
-          { name: 'device', type: 'String' },
-          { name: 'event_count', type: 'Int' },
-        ],
-        relations: [
-          { name: 'user', target: 'users', direction: 'out' },
-          { name: 'events', target: 'events', direction: 'in' },
-        ],
-      },
-      {
-        name: 'users',
-        kind: 'table',
-        description: 'Analytics user dimension.',
-        fields: [
-          { name: 'user_id', type: 'ID!' },
-          { name: 'email', type: 'String!' },
-          { name: 'plan', type: 'String' },
-          { name: 'country', type: 'String' },
-          { name: 'created_at', type: 'Timestamp!' },
-        ],
-        relations: [
-          { name: 'events', target: 'events', direction: 'in' },
-          { name: 'sessions', target: 'sessions', direction: 'in' },
-        ],
-      },
-      {
-        name: 'daily_active_users',
-        kind: 'view',
-        description: 'Daily / weekly / monthly active-user rollup.',
-        fields: [
-          { name: 'day', type: 'Date!' },
-          { name: 'dau', type: 'Int!' },
-          { name: 'wau', type: 'Int' },
-          { name: 'mau', type: 'Int' },
-        ],
-      },
-      {
-        name: 'funnel',
-        kind: 'function',
-        returns: '[funnel_step]',
-        description: 'Ordered-step conversion funnel over a time window.',
-        fields: [
-          { name: 'steps', type: '[String!]!', description: 'Ordered event types.' },
-          { name: 'window_days', type: 'Int', description: 'Attribution window (default 30).' },
-        ],
-      },
-    ],
-  },
-  {
-    name: 'geo',
-    description: 'Spatial reference data — regions and cities with geometry.',
-    types: [
-      {
-        name: 'regions',
-        kind: 'table',
-        description: 'Administrative regions with boundary geometry.',
-        fields: [
-          { name: 'region_id', type: 'ID!' },
-          { name: 'name', type: 'String!' },
-          { name: 'iso_code', type: 'String' },
-          { name: 'geom', type: 'Geometry' },
-          { name: 'population', type: 'BigInt' },
-        ],
-        relations: [{ name: 'cities', target: 'cities', direction: 'in' }],
-      },
-      {
-        name: 'cities',
-        kind: 'table',
-        description: 'Cities with point locations, linked to a region.',
-        fields: [
-          { name: 'city_id', type: 'ID!' },
-          { name: 'name', type: 'String!' },
-          { name: 'region_id', type: 'String!' },
-          { name: 'population', type: 'Int' },
-          { name: 'location', type: 'Point' },
-          { name: 'timezone', type: 'String' },
-        ],
-        relations: [{ name: 'region', target: 'regions', direction: 'out' }],
-      },
-      {
-        name: 'region_stats',
-        kind: 'view',
-        description: 'Per-region aggregate counts.',
-        fields: [
-          { name: 'region_id', type: 'String!' },
-          { name: 'city_count', type: 'Int!' },
-          { name: 'total_population', type: 'BigInt!' },
-        ],
-      },
-      {
-        name: 'nearest_cities',
-        kind: 'function',
-        returns: '[cities]',
-        description: 'K nearest cities to a lat/lon point.',
-        fields: [
-          { name: 'lat', type: 'Float!' },
-          { name: 'lon', type: 'Float!' },
-          { name: 'limit', type: 'Int' },
-        ],
-      },
-    ],
-  },
-]
-
-const MUTATION_MODULES: MockModule[] = [
-  {
-    name: 'core',
-    description: 'Administrative mutations over the platform tables + schema maintenance.',
-    types: [
-      {
-        name: 'insert_data_sources',
-        kind: 'function',
-        returns: 'data_sources',
-        description: 'Register a new data source (supports nested catalogs).',
-        fields: [{ name: 'data', type: 'data_sources_mut_input!' }],
-      },
-      {
-        name: 'update_data_sources',
-        kind: 'function',
-        returns: 'data_sources',
-        fields: [
-          { name: 'filter', type: 'data_sources_filter' },
-          { name: 'data', type: 'data_sources_mut_input!' },
-        ],
-      },
-      {
-        name: 'delete_data_sources',
-        kind: 'function',
-        returns: 'OperationResult',
-        fields: [{ name: 'filter', type: 'data_sources_filter' }],
-      },
-      {
-        name: '_schema_reindex',
-        kind: 'function',
-        returns: 'OperationResult',
-        description: 'Recompute embeddings for schema entities.',
-        fields: [
-          { name: 'name', type: 'String' },
-          { name: 'batch_size', type: 'Int' },
-        ],
-      },
-    ],
-  },
-  {
-    name: 'analytics',
-    description: 'Analytics write surface.',
-    types: [
-      {
-        name: 'insert_events',
-        kind: 'function',
-        returns: 'events',
-        fields: [{ name: 'data', type: '[events_mut_input!]!' }],
-      },
-      {
-        name: 'update_sessions',
-        kind: 'function',
-        returns: 'sessions',
-        fields: [
-          { name: 'filter', type: 'sessions_filter' },
-          { name: 'data', type: 'sessions_mut_input!' },
-        ],
-      },
-    ],
-  },
-]
-
-// Node ids: `${root}` · `${root}:${module}` · `${root}:${module}:${type}` ·
-// `${typeId}#${field}` (field) · `${typeId}~${relation}` (relation).
-const MOCK_INDEX = new Map<string, { children: SchemaNode[]; detail: NodeDetail }>()
-
-function kindChipTone(kind: SchemaNodeKind): BadgeTone {
-  switch (kind) {
-    case 'query':
-    case 'table':
-      return 'accent'
-    case 'mutation':
-    case 'function':
-      return 'amber'
-    case 'view':
-      return 'green'
-    case 'module':
-    case 'relation':
-      return 'blue'
-    default:
-      return 'neutral'
-  }
-}
-
-function typeBadges(t: MockType, moduleName: string): DetailBadge[] {
-  const head =
-    t.kind === 'table'
-      ? { text: '◎ OBJECT', tone: 'accent' as BadgeTone }
-      : { text: t.kind.toUpperCase(), tone: kindChipTone(t.kind) }
-  const badges: DetailBadge[] = [head, { text: `module: ${moduleName}`, tone: 'neutral' }]
-  if (t.returns) badges.push({ text: `returns: ${t.returns}`, tone: 'neutral' })
-  return badges
-}
-
-function buildType(rootId: string, moduleName: string, t: MockType): SchemaNode {
-  const typeId = `${rootId}:${moduleName}:${t.name}`
-  const isFn = t.kind === 'function'
-
-  const fieldNodes: SchemaNode[] = t.fields.map((f) => ({
-    id: `${typeId}#${f.name}`,
-    name: f.name,
-    kind: 'field',
-    typeLabel: f.type,
-    hasDescription: !!f.description,
-    expandable: false,
-    module: moduleName,
-  }))
-
-  const relationNodes: SchemaNode[] = (t.relations ?? []).map((r) => ({
-    id: `${typeId}~${r.name}`,
-    name: r.name,
-    kind: 'relation',
-    typeLabel: `${r.direction === 'in' ? '←' : '→'} ${r.target}`,
-    expandable: false,
-    module: moduleName,
-  }))
-
-  const children = [...fieldNodes, ...relationNodes]
-
-  const detailFields: DetailField[] = t.fields.map((f, i) => ({
-    ordinal: i + 1,
-    name: f.name,
-    type: f.type,
-    description: f.description ?? '',
-  }))
-  const detailRelations: DetailRelation[] = (t.relations ?? []).map((r) => ({
-    name: r.name,
-    target: r.target,
-    direction: r.direction,
-  }))
-
-  const meta = isFn
-    ? `${t.fields.length} arg${t.fields.length === 1 ? '' : 's'} · returns ${t.returns ?? 'void'}`
-    : `${t.fields.length} field${t.fields.length === 1 ? '' : 's'} · ${detailRelations.length} relation${
-        detailRelations.length === 1 ? '' : 's'
-      }`
-
-  MOCK_INDEX.set(typeId, {
-    children,
-    detail: {
-      id: typeId,
-      name: t.name,
-      kind: t.kind,
-      badges: typeBadges(t, moduleName),
-      meta,
-      description: t.description ?? '',
-      fields: detailFields,
-      relations: detailRelations,
-      saveKind: 'type',
-    },
-  })
-
-  // Field-level detail (editable via _schema_update_field_desc).
-  t.fields.forEach((f) => {
-    const fid = `${typeId}#${f.name}`
-    MOCK_INDEX.set(fid, {
-      children: [],
-      detail: {
-        id: fid,
-        name: f.name,
-        kind: 'field',
-        badges: [
-          { text: f.type, tone: 'neutral' },
-          { text: `${isFn ? 'arg of' : 'field of'} ${t.name}`, tone: 'neutral' },
-        ],
-        meta: `${isFn ? 'argument' : 'field'} · ${moduleName}.${t.name}`,
-        description: f.description ?? '',
-        fields: [],
-        relations: [],
-        saveKind: 'field',
-        typeName: t.name,
-      },
-    })
-  })
-
-  return {
-    id: typeId,
-    name: t.name,
-    kind: t.kind,
-    typeLabel: isFn ? t.returns : undefined,
-    hasDescription: !!t.description,
-    expandable: children.length > 0,
-    module: moduleName,
-  }
-}
-
-function buildRoot(rootId: 'query' | 'mutation', modules: MockModule[]): SchemaNode {
-  const moduleNodes: SchemaNode[] = modules.map((m) => {
-    const moduleId = `${rootId}:${m.name}`
-    const typeNodes = m.types.map((t) => buildType(rootId, m.name, t))
-    MOCK_INDEX.set(moduleId, {
-      children: typeNodes,
-      detail: {
-        id: moduleId,
-        name: m.name,
-        kind: 'module',
-        badges: [{ text: 'MODULE', tone: 'blue' }],
-        meta: `${m.types.length} object${m.types.length === 1 ? '' : 's'}`,
-        description: m.description ?? '',
-        fields: [],
-        relations: [],
-        saveKind: 'module',
-      },
-    })
-    return {
-      id: moduleId,
-      name: m.name,
-      kind: 'module',
-      typeLabel: `${m.types.length} objects`,
-      hasDescription: !!m.description,
-      expandable: true,
-      module: m.name,
-    }
-  })
-
-  MOCK_INDEX.set(rootId, {
-    children: moduleNodes,
-    detail: {
-      id: rootId,
-      name: rootId === 'query' ? 'Query' : 'Mutation',
-      kind: rootId,
-      badges: [{ text: rootId === 'query' ? 'QUERY ROOT' : 'MUTATION ROOT', tone: kindChipTone(rootId) }],
-      meta: `${modules.length} modules`,
-      description: '',
-      fields: [],
-      relations: [],
-      saveKind: null,
-    },
-  })
-
-  return {
-    id: rootId,
-    name: rootId === 'query' ? 'Query' : 'Mutation',
-    kind: rootId,
-    typeLabel: 'unified schema',
-    expandable: true,
-  }
-}
-
-let mockRoots: SchemaNode[] | null = null
-function mockGraph(): SchemaNode[] {
-  if (!mockRoots) {
-    MOCK_INDEX.clear()
-    mockRoots = [buildRoot('query', QUERY_MODULES), buildRoot('mutation', MUTATION_MODULES)]
-  }
-  return mockRoots
-}
-
-function mockTypeNodes(): SchemaNode[] {
-  mockGraph()
-  // Flatten every module's type nodes (Query root only, to avoid duplicates).
-  const flat: SchemaNode[] = []
-  QUERY_MODULES.forEach((m) => {
-    const modChildren = MOCK_INDEX.get(`query:${m.name}`)?.children ?? []
-    modChildren.forEach((c) => flat.push({ ...c }))
-  })
-  return flat
-}
-
-// ---------------------------------------------------------------------------
-// Public fetchers
-// ---------------------------------------------------------------------------
-
-/** Top of the tree: the Query and Mutation operation roots (lazy children). */
-export async function loadRootModules(): Promise<SchemaNode[]> {
-  return withDemo(
-    () => mockGraph().map((n) => ({ ...n })),
-    async () => {
-      // TODO(real): Hugr's module structure is not standard introspection. We
-      // return the two operation roots and let `loadNodeChildren` introspect
-      // `__type(Query|Mutation)` for the module fields.
-      const roots: SchemaNode[] = [
-        { id: 'Query', name: 'Query', kind: 'query', typeLabel: 'unified schema', expandable: true },
-        { id: 'Mutation', name: 'Mutation', kind: 'mutation', typeLabel: 'unified schema', expandable: true },
-      ]
-      return roots
-    },
-  )
-}
-
-/** Flat list of every table / view / function (Model view + search source). */
-export async function loadModelTypes(): Promise<SchemaNode[]> {
-  return withDemo(
-    () => mockTypeNodes().map((n) => ({ ...n })),
-    async () => {
-      // TODO(real): enumerate types across modules via introspection.
-      return []
-    },
-  )
-}
-
-/** Children of a node, fetched on expand. */
-export async function loadNodeChildren(nodeId: string): Promise<SchemaNode[]> {
-  return withDemo(
-    () => (MOCK_INDEX.get(nodeId)?.children ?? []).map((n) => ({ ...n })),
-    async () => introspectChildren(nodeId),
-  )
-}
-
-/** Detail (badges + description + fields + relations) for the selected node. */
-export async function getNodeDetail(nodeId: string): Promise<NodeDetail> {
-  return withDemo(
-    () => {
-      const found = MOCK_INDEX.get(nodeId)
-      if (found) return { ...found.detail }
-      return emptyDetail(nodeId)
-    },
-    async () => introspectDetail(nodeId),
-  )
-}
-
-/** Filter tables / views / functions by name + kind (left-panel search). */
-export async function searchSchema(query: string, kind: 'all' | 'table' | 'view' | 'function'): Promise<SchemaHit[]> {
-  return withDemo(
-    () => {
-      const q = query.trim().toLowerCase()
-      const hits: SchemaHit[] = []
-      QUERY_MODULES.forEach((m) =>
-        m.types.forEach((t) => {
-          if (kind !== 'all' && t.kind !== kind) return
-          if (q && !t.name.toLowerCase().includes(q) && !m.name.toLowerCase().includes(q)) return
-          hits.push({
-            id: `query:${m.name}:${t.name}`,
-            name: t.name,
-            kind: t.kind,
-            module: m.name,
-            fieldCount: t.fields.length,
-          })
-        }),
-      )
-      return hits
-    },
-    async () => {
-      // TODO(real): search should hit `core.meta` / describe output; introspection
-      // cannot classify view vs table vs function precisely.
-      void query
-      void kind
-      return []
-    },
-  )
-}
-
-/**
- * Persist an edited description — feeds the LLM schema summaries. Routes to the
- * right `core._schema_update_{type|field|module|catalog}_desc` mutation.
- */
-export async function saveDescription(
-  input: SaveDescriptionInput,
-): Promise<{ success: boolean; message: string }> {
-  const longDescription = input.longDescription ?? input.description
-  if (isDemoMode()) {
-    // Small delay to exercise the pending state; echo the real op in the toast.
-    await new Promise((r) => setTimeout(r, 200))
-    return { success: true, message: `${saveOpName(input)} → saved` }
-  }
-
-  if (input.kind === 'field') {
-    const d = await postGraphQL<{ function: { core: { _schema_update_field_desc: OpResult } } }>(
-      `mutation ($type_name:String!,$name:String!,$description:String!,$long_description:String!){
-        function { core { _schema_update_field_desc(type_name:$type_name, name:$name, description:$description, long_description:$long_description){ success message } } }
-      }`,
-      {
-        type_name: input.target.typeName ?? '',
-        name: input.target.name,
-        description: input.description,
-        long_description: longDescription,
-      },
-    )
-    return opResult(d.function.core._schema_update_field_desc)
-  }
-
-  const fn = `_schema_update_${input.kind}_desc`
-  const d = await postGraphQL<{ function: { core: Record<string, OpResult> } }>(
-    `mutation ($name:String!,$description:String!,$long_description:String!){
-      function { core { ${fn}(name:$name, description:$description, long_description:$long_description){ success message } } }
-    }`,
-    { name: input.target.name, description: input.description, long_description: longDescription },
-  )
-  return opResult(d.function.core[fn])
-}
-
-/** A mono, human-readable echo of the backing mutation (used in the toast). */
-export function saveOpName(input: SaveDescriptionInput): string {
-  if (input.kind === 'field') {
-    return `_schema_update_field_desc(type_name:"${input.target.typeName ?? ''}", name:"${input.target.name}")`
-  }
-  return `_schema_update_${input.kind}_desc(name:"${input.target.name}")`
-}
-
-// ---------------------------------------------------------------------------
-// Real (best-effort) introspection helpers
-// ---------------------------------------------------------------------------
-
-interface OpResult {
-  success: boolean
-  message: string
-}
-function opResult(r?: OpResult): { success: boolean; message: string } {
-  return { success: r?.success ?? false, message: r?.message ?? '' }
+function roleHeaders(role?: string): Record<string, string> | undefined {
+  return role ? { 'X-Hugr-Impersonated-Role': role } : undefined
 }
 
 interface IntroTypeRef {
@@ -730,20 +154,13 @@ interface IntroTypeRef {
   name: string | null
   ofType: IntroTypeRef | null
 }
-interface IntroField {
-  name: string
-  description: string | null
-  args: { name: string }[]
-  type: IntroTypeRef
-}
-
-const REF_FRAGMENT = `fragment Ref on __Type { kind name ofType { kind name ofType { kind name ofType { kind name } } } }`
 
 function unwrap(t: IntroTypeRef | null): IntroTypeRef | null {
   let cur = t
   while (cur && cur.ofType && (cur.kind === 'NON_NULL' || cur.kind === 'LIST')) cur = cur.ofType
   return cur
 }
+
 function renderTypeRef(t: IntroTypeRef | null): string {
   if (!t) return ''
   if (t.kind === 'NON_NULL') return `${renderTypeRef(t.ofType)}!`
@@ -751,115 +168,895 @@ function renderTypeRef(t: IntroTypeRef | null): string {
   return t.name ?? '?'
 }
 
-async function introspectType(name: string): Promise<IntroField[]> {
-  const d = await postGraphQL<{ __type: { fields: IntroField[] | null } | null }>(
-    `query IntrospectType($name:String!){ __type(name:$name){ name kind fields { name description args { name } type { ...Ref } } } } ${REF_FRAGMENT}`,
-    { name },
-  )
-  return d.__type?.fields ?? []
+const HUGR_TYPE_TONE: Record<string, BadgeTone> = {
+  select: 'accent',
+  select_one: 'accent',
+  aggregate: 'blue',
+  bucket_agg: 'blue',
+  function: 'amber',
+  function_call: 'amber',
+  mutation: 'amber',
 }
 
-async function introspectChildren(nodeId: string): Promise<SchemaNode[]> {
-  // Leaf field ids look like `Type.field`; they have no children.
-  if (nodeId.includes('.')) return []
-  const isRoot = nodeId === 'Query' || nodeId === 'Mutation'
-  let fields: IntroField[]
-  try {
-    fields = await introspectType(nodeId)
-  } catch {
-    return []
+function hugrBadge(hugrType?: string): NodeBadge[] {
+  if (!hugrType) return []
+  return [{ text: hugrType, tone: HUGR_TYPE_TONE[hugrType] ?? 'neutral' }]
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Roots
+// ═══════════════════════════════════════════════════════════════════════════
+
+export async function loadRoots(tree: SchemaTree, role?: string): Promise<SchemaNode[]> {
+  return tree === 'logical' ? loadLogicalRoots(role) : loadGraphqlRoots(role)
+}
+
+export async function loadChildren(node: SchemaNode, role?: string): Promise<SchemaNode[]> {
+  if (!node.load) return []
+  switch (node.load.t) {
+    case 'static':
+      return node.load.children
+    case 'gqlType':
+      return gqlTypeChildren(node.id, node.load.name, role)
+    case 'gqlField':
+      return gqlFieldChildren(node.load, role)
+    case 'logicalModule':
+      return logicalModuleChildren(node.id, node.load.name, role)
+    case 'logicalObjectExpand':
+      return logicalObjectExpandChildren(node.id, node.load.name, role)
+    case 'logicalTypes':
+      return logicalTypesChildren(node.id, node.load.scope, role)
   }
-  return fields
-    .filter((f) => !f.name.startsWith('__'))
-    .map((f) => {
-      const u = unwrap(f.type)
-      const isObject = !!u && u.kind === 'OBJECT' && !!u.name && !u.name.startsWith('__')
-      if (isObject) {
-        // TODO(real): classify module vs table/view/function via core.meta; we
-        // approximate — direct children of a root are modules, deeper are tables.
-        const kind: SchemaNodeKind = isRoot ? 'module' : f.args.length ? 'function' : 'table'
-        return {
-          id: u!.name as string,
-          name: f.name,
-          kind,
-          typeLabel: renderTypeRef(f.type),
-          expandable: true,
+}
+
+/** Sort tree nodes alphabetically by label (case-insensitive). */
+function sortNodes(nodes: SchemaNode[]): SchemaNode[] {
+  return [...nodes].sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GraphQL tree — __schema / __type introspection
+// ═══════════════════════════════════════════════════════════════════════════
+
+const REF = `kind name ofType { kind name ofType { kind name ofType { kind name } } }`
+
+async function loadGraphqlRoots(role?: string): Promise<SchemaNode[]> {
+  return withDemo(
+    () => demoGraphqlRoots(),
+    async () => {
+      const d = await postGraphQL<{
+        __schema: {
+          queryType: { name: string } | null
+          mutationType: { name: string } | null
+          subscriptionType: { name: string } | null
         }
-      }
-      return {
-        id: `${nodeId}.${f.name}`,
-        name: f.name,
-        kind: 'field',
-        typeLabel: renderTypeRef(f.type),
-        expandable: false,
-      }
-    })
+      }>(
+        `{ __schema { queryType { name } mutationType { name } subscriptionType { name } } }`,
+        {},
+        roleHeaders(role),
+      )
+      const roots: Array<[string, string | null | undefined]> = [
+        ['Query', d.__schema.queryType?.name],
+        ['Mutation', d.__schema.mutationType?.name],
+        ['Subscription', d.__schema.subscriptionType?.name],
+      ]
+      return roots
+        .filter(([, name]) => !!name)
+        .map(([label, name]) => ({
+          id: `g:${label}`,
+          label,
+          kind: 'root' as const,
+          typeLabel: name as string,
+          expandable: true,
+          selectable: true,
+          load: { t: 'gqlType' as const, name: name as string },
+          detail: { t: 'gqlType' as const, name: name as string },
+        }))
+    },
+  )
 }
 
-async function introspectDetail(nodeId: string): Promise<NodeDetail> {
-  // Leaf field: `Type.field`.
-  const dot = nodeId.lastIndexOf('.')
-  if (dot > 0 && nodeId !== 'Query' && nodeId !== 'Mutation') {
-    const typeName = nodeId.slice(0, dot)
-    const fieldName = nodeId.slice(dot + 1)
-    return {
-      id: nodeId,
-      name: fieldName,
-      kind: 'field',
-      badges: [{ text: `field of ${typeName}`, tone: 'neutral' }],
-      meta: `field · ${typeName}`,
-      description: '', // TODO(real): editable descriptions live in core.meta, not introspection.
-      fields: [],
-      relations: [],
-      saveKind: 'field',
-      typeName,
-    }
-  }
+interface IntroField {
+  name: string
+  description: string | null
+  hugr_type: string | null
+  catalog: string | null
+  type: IntroTypeRef
+  args: RawArg[]
+}
 
-  let fields: IntroField[]
-  try {
-    fields = await introspectType(nodeId)
-  } catch {
-    return emptyDetail(nodeId)
-  }
-  const scalarFields = fields.filter((f) => {
-    const u = unwrap(f.type)
-    return !u || u.kind !== 'OBJECT'
-  })
-  const objectFields = fields.filter((f) => {
-    const u = unwrap(f.type)
-    return u && u.kind === 'OBJECT' && u.name && !u.name.startsWith('__')
-  })
-  const isRoot = nodeId === 'Query' || nodeId === 'Mutation'
+async function introspectType(name: string, role?: string): Promise<{
+  kind: string
+  description: string | null
+  hugr_type: string | null
+  catalog: string | null
+  module: string | null
+  fields: IntroField[] | null
+  inputFields: RawArg[] | null
+  enumValues: { name: string; description: string | null }[] | null
+}> {
+  const d = await postGraphQL<{ __type: any }>(
+    `query ($name: String!) {
+      __type(name: $name) {
+        kind description hugr_type catalog module
+        fields { name description hugr_type catalog type { ${REF} } args { name description defaultValue type { ${REF} } } }
+        inputFields { name description defaultValue type { ${REF} } }
+        enumValues { name description }
+      }
+    }`,
+    { name },
+    roleHeaders(role),
+  )
+  const t = d.__type ?? {}
   return {
-    id: nodeId,
-    name: nodeId,
-    kind: isRoot ? (nodeId === 'Query' ? 'query' : 'mutation') : 'table',
-    badges: [{ text: isRoot ? 'ROOT' : '◎ OBJECT', tone: isRoot ? 'neutral' : 'accent' }],
-    meta: `${scalarFields.length} fields · ${objectFields.length} relations`,
-    description: '', // TODO(real): pull from core.meta.
-    fields: scalarFields.map((f, i) => ({
-      ordinal: i + 1,
-      name: f.name,
-      type: renderTypeRef(f.type),
-      description: f.description ?? '',
+    kind: t.kind ?? 'OBJECT',
+    description: t.description ?? null,
+    hugr_type: t.hugr_type ?? null,
+    catalog: t.catalog ?? null,
+    module: t.module ?? null,
+    fields: t.fields ?? null,
+    inputFields: t.inputFields ?? null,
+    enumValues: t.enumValues ?? null,
+  }
+}
+
+async function gqlTypeChildren(parentId: string, typeName: string, role?: string): Promise<SchemaNode[]> {
+  const t = await introspectType(typeName, role)
+  if (t.kind === 'ENUM') {
+    return sortNodes(
+      (t.enumValues ?? []).map((ev) => ({
+        id: `${parentId}>${ev.name}`,
+        label: ev.name,
+        kind: 'enumValue' as const,
+        expandable: false,
+        selectable: false,
+      })),
+    )
+  }
+  if (t.kind === 'INPUT_OBJECT') {
+    return sortNodes((t.inputFields ?? []).map((f) => inputFieldNode(parentId, f, role)))
+  }
+  // OBJECT / INTERFACE
+  return sortNodes(
+    (t.fields ?? []).filter((f) => !f.name.startsWith('__')).map((f) => gqlFieldNode(parentId, typeName, f, role)),
+  )
+}
+
+function gqlFieldNode(parentId: string, ownerType: string, f: IntroField, _role?: string): SchemaNode {
+  const u = unwrap(f.type)
+  const returnKind = u?.kind ?? 'SCALAR'
+  const returnName = u?.name ?? ''
+  // Introspection meta-types (`__Type` etc.) are legitimate return types (e.g.
+  // `_types: [__Type!]`) — allow expanding them; only field *names* starting
+  // with `__` are filtered out (see gqlTypeChildren).
+  const returnExpandable = (returnKind === 'OBJECT' || returnKind === 'INTERFACE') && !!returnName
+  const hasArgs = f.args.length > 0
+  const id = `${parentId}>${f.name}`
+  return {
+    id,
+    label: f.name,
+    kind: 'field',
+    typeLabel: renderTypeRef(f.type),
+    badges: hugrBadge(f.hugr_type ?? undefined),
+    hasDescription: !!f.description,
+    expandable: hasArgs || returnExpandable,
+    selectable: true,
+    load:
+      hasArgs || returnExpandable
+        ? { t: 'gqlField', returnName, returnKind, args: f.args, fieldId: id }
+        : undefined,
+    detail: { t: 'gqlField', typeName: ownerType, name: f.name, typeLabel: renderTypeRef(f.type) },
+  }
+}
+
+async function gqlFieldChildren(
+  spec: Extract<LoadSpec, { t: 'gqlField' }>,
+  role?: string,
+): Promise<SchemaNode[]> {
+  const out: SchemaNode[] = []
+  if (spec.args.length > 0) {
+    const argNodes = spec.args.map((a) => argNode(`${spec.fieldId}>args`, a, role))
+    out.push({
+      id: `${spec.fieldId}>args`,
+      label: `args (${spec.args.length})`,
+      kind: 'group',
+      expandable: true,
+      selectable: false,
+      load: { t: 'static', children: argNodes },
+    })
+  }
+  const returnExpandable =
+    (spec.returnKind === 'OBJECT' || spec.returnKind === 'INTERFACE') && !!spec.returnName
+  if (returnExpandable) {
+    const fields = await gqlTypeChildren(`${spec.fieldId}>ret`, spec.returnName, role)
+    out.push(...fields)
+  }
+  return out
+}
+
+function argNode(parentId: string, a: RawArg, _role?: string): SchemaNode {
+  const u = unwrap(a.type)
+  const expandable = u?.kind === 'INPUT_OBJECT' || u?.kind === 'ENUM'
+  return {
+    id: `${parentId}>${a.name}`,
+    label: a.name,
+    kind: 'arg',
+    typeLabel: renderTypeRef(a.type) + (a.defaultValue ? ` = ${a.defaultValue}` : ''),
+    expandable,
+    selectable: false,
+    load: expandable ? { t: 'gqlType', name: u?.name ?? '' } : undefined,
+  }
+}
+
+function inputFieldNode(parentId: string, f: RawArg, _role?: string): SchemaNode {
+  const u = unwrap(f.type)
+  const expandable = u?.kind === 'INPUT_OBJECT' || u?.kind === 'ENUM'
+  return {
+    id: `${parentId}>${f.name}`,
+    label: f.name,
+    kind: 'inputField',
+    typeLabel: renderTypeRef(f.type) + (f.defaultValue ? ` = ${f.defaultValue}` : ''),
+    expandable,
+    selectable: false,
+    load: expandable ? { t: 'gqlType', name: u?.name ?? '' } : undefined,
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Logical tree — _catalog / _module / _dataObject / _function
+// ═══════════════════════════════════════════════════════════════════════════
+
+interface LModule {
+  name: string
+  dataObjects: { name: string; type: string; description?: string | null; dataSourceName?: string | null }[]
+  functions: { name: string; type: string; isTable: boolean; dataSourceName?: string | null }[]
+  modules: { name: string }[]
+}
+
+const MODULE_BODY = `dataObjects { name type description dataSourceName } functions { name type isTable dataSourceName } modules { name }`
+
+async function loadLogicalRoots(role?: string): Promise<SchemaNode[]> {
+  return withDemo(
+    () => demoLogicalRoots(),
+    async () => {
+      const d = await postGraphQL<{ _catalog: LModule & { dataSources: string[] } }>(
+        `{ _catalog { name dataSources ${MODULE_BODY} } }`,
+        {},
+        roleHeaders(role),
+      )
+      return d._catalog ? moduleBodyToNodes('l', d._catalog, true) : []
+    },
+  )
+}
+
+async function logicalModuleChildren(parentId: string, name: string, role?: string): Promise<SchemaNode[]> {
+  const d = await postGraphQL<{ _module: LModule | null }>(
+    `query ($name: String!) { _module(name: $name) { name ${MODULE_BODY} } }`,
+    { name },
+    roleHeaders(role),
+  )
+  if (!d._module) return []
+  return moduleBodyToNodes(parentId, d._module, false)
+}
+
+/**
+ * Build a module's children as fixed-order category groups — Modules,
+ * DataObjects, Functions (each holding alphabetically-sorted items). At the
+ * catalog root, also expose the global System / Source type lists (lazy, via
+ * `_types(scope)`).
+ */
+function moduleBodyToNodes(parentId: string, m: LModule, isRoot: boolean): SchemaNode[] {
+  const modules = sortNodes(
+    (m.modules ?? []).map((sm) => ({
+      id: `${parentId}>m:${sm.name}`,
+      label: shortModuleName(sm.name, m.name),
+      kind: 'module' as const,
+      expandable: true,
+      selectable: true,
+      load: { t: 'logicalModule' as const, name: sm.name },
+      detail: { t: 'logicalModule' as const, name: sm.name },
     })),
-    relations: objectFields.map((f) => ({
-      name: f.name,
-      target: unwrap(f.type)?.name ?? '',
-      direction: 'out' as const,
+  )
+  // Objects expand into Relations / Fields groups (drill through the relation
+  // graph recursively); the data source is shown after the type.
+  const objects = sortNodes(
+    (m.dataObjects ?? []).map((o) => ({
+      id: `${parentId}>o:${o.name}`,
+      label: o.name,
+      kind: (o.type === 'VIEW' ? 'view' : 'object') as NodeKind,
+      typeLabel: withSource(o.type, o.dataSourceName),
+      hasDescription: !!o.description,
+      expandable: true,
+      selectable: true,
+      load: { t: 'logicalObjectExpand' as const, name: o.name },
+      detail: { t: 'logicalObject' as const, name: o.name },
     })),
-    // TODO(real): a root/module has no `_schema_update_type_desc` target; only
-    // real object types do. We default to 'type' for object nodes.
+  )
+  const functions = sortNodes(
+    (m.functions ?? []).map((f) => ({
+      id: `${parentId}>f:${f.name}`,
+      label: f.name,
+      kind: 'function' as const,
+      typeLabel: withSource(f.isTable ? 'table function' : f.type.toLowerCase(), f.dataSourceName),
+      expandable: false,
+      selectable: true,
+      detail: { t: 'logicalFunction' as const, module: m.name, name: f.name },
+    })),
+  )
+
+  const groups: SchemaNode[] = []
+  if (modules.length) groups.push(staticGroup(parentId, 'modules', 'Modules', modules))
+  if (objects.length) groups.push(staticGroup(parentId, 'objects', 'DataObjects', objects))
+  if (functions.length) groups.push(staticGroup(parentId, 'functions', 'Functions', functions))
+  if (isRoot) {
+    groups.push(typesGroup(parentId, 'system', 'System Types', 'SYSTEM'))
+    groups.push(typesGroup(parentId, 'source', 'Source Types', 'SOURCE'))
+  }
+  return groups
+}
+
+/** A fixed category header holding pre-built, sorted children. */
+function staticGroup(parentId: string, key: string, label: string, children: SchemaNode[]): SchemaNode {
+  return {
+    id: `${parentId}>g:${key}`,
+    label: `${label} · ${children.length}`,
+    kind: 'group',
+    expandable: children.length > 0,
+    selectable: false,
+    load: { t: 'static', children },
+  }
+}
+
+/** A category header whose type list is fetched lazily via `_types(scope)`. */
+function typesGroup(parentId: string, key: string, label: string, scope: 'SYSTEM' | 'SOURCE'): SchemaNode {
+  return {
+    id: `${parentId}>g:${key}`,
+    label,
+    kind: 'group',
+    expandable: true,
+    selectable: false,
+    load: { t: 'logicalTypes', scope },
+  }
+}
+
+const EXPANDABLE_KINDS = new Set(['OBJECT', 'INTERFACE', 'INPUT_OBJECT', 'ENUM'])
+
+async function logicalTypesChildren(
+  parentId: string,
+  scope: 'SYSTEM' | 'SOURCE',
+  role?: string,
+): Promise<SchemaNode[]> {
+  // scope is a fixed enum literal (SYSTEM | SOURCE) — inline it (meta-query enum
+  // args are unreliable via GraphQL variables), so no injection surface.
+  const d = await postGraphQL<{ _types: { name: string; kind: string }[] | null }>(
+    `{ _types(scope: ${scope}) { name kind } }`,
+    {},
+    roleHeaders(role),
+  )
+  return sortNodes(
+    (d._types ?? []).map((t) => {
+      const expandable = EXPANDABLE_KINDS.has(t.kind)
+      return {
+        id: `${parentId}>t:${t.name}`,
+        label: t.name,
+        kind: 'object' as NodeKind,
+        typeLabel: t.kind,
+        expandable,
+        selectable: true,
+        load: expandable ? ({ t: 'gqlType', name: t.name } as const) : undefined,
+        detail: { t: 'gqlType', name: t.name } as const,
+      }
+    }),
+  )
+}
+
+/** Trim `parent.child` → `child` for readability when nested under its parent. */
+function shortModuleName(full: string, parent: string): string {
+  if (parent && full.startsWith(parent + '.')) return full.slice(parent.length + 1)
+  return full
+}
+
+interface LRelation {
+  name: string
+  direction: string
+  kind: string
+  fieldName: string
+  sourceKeys?: string[]
+  destinationKeys?: string[]
+  dataObject: { name: string; type?: string; dataSourceName?: string | null } | null
+  through: { name: string; type?: string; dataSourceName?: string | null } | null
+}
+
+interface LObjField {
+  name: string
+  description: string | null
+  hugr_type?: string | null
+  type: IntroTypeRef
+}
+
+function withSource(type: string, source?: string | null): string {
+  return source ? `${type} · ${source}` : type
+}
+
+/**
+ * A data object's children: a Relations group (each relation drills into the
+ * far object, recursively) and a Fields group. Fields that reference another
+ * data object (relations, `@join`, table-function-call joins) are themselves
+ * expandable and drill into that object.
+ */
+async function logicalObjectExpandChildren(parentId: string, objName: string, role?: string): Promise<SchemaNode[]> {
+  const d = await postGraphQL<{
+    _dataObject: { relations: LRelation[]; fields: LObjField[] | null } | null
+  }>(
+    `query ($name: String!) {
+      _dataObject(name: $name) {
+        relations {
+          name direction kind fieldName sourceKeys destinationKeys
+          dataObject { name type dataSourceName }
+          through { name type dataSourceName }
+        }
+        fields { name description hugr_type type { ${REF} } }
+      }
+    }`,
+    { name: objName },
+    roleHeaders(role),
+  )
+  const o = d._dataObject
+  if (!o) return []
+  // Key relation nodes by index — neither `_Relation.name` (repeats across a
+  // table's relations) nor `fieldName` (a relation can span 2+ key fields) is
+  // guaranteed unique; a stable index is.
+  const relNodes = sortNodes((o.relations ?? []).map((r, i) => relationNode(parentId, objName, r, i)))
+  const fieldNodes = sortNodes(
+    (o.fields ?? []).filter((f) => !f.name.startsWith('__')).map((f) => objFieldNode(parentId, objName, f)),
+  )
+  const groups: SchemaNode[] = []
+  if (relNodes.length) groups.push(staticGroup(parentId, 'rel', 'Relations', relNodes))
+  if (fieldNodes.length) groups.push(staticGroup(parentId, 'fld', 'Fields', fieldNodes))
+  return groups
+}
+
+const REL_TONE: Record<string, BadgeTone> = { M2M: 'blue', JOIN: 'amber', FK: 'neutral' }
+
+/** A table / view leaf that drills into its own Relations + Fields. */
+function objectNode(
+  parentId: string,
+  key: string,
+  name: string,
+  type: string | undefined,
+  source: string | undefined | null,
+  extraBadges: NodeBadge[] = [],
+): SchemaNode {
+  return {
+    id: `${parentId}>${key}:${name}`,
+    label: name,
+    kind: (type === 'VIEW' ? 'view' : 'object') as NodeKind,
+    typeLabel: withSource(type ?? 'TABLE', source),
+    badges: extraBadges,
+    expandable: true,
+    selectable: true,
+    load: { t: 'logicalObjectExpand', name },
+    detail: { t: 'logicalObject', name },
+  }
+}
+
+/**
+ * A relation node opens into its destination table (and the M2M junction table,
+ * if any) — each drillable. Selecting it shows the relation's own properties
+ * (keys / kind / direction) and edits the description of the field it generates.
+ */
+function relationNode(parentId: string, owner: string, r: LRelation, index: number): SchemaNode {
+  const dest = r.dataObject
+  const src = dest?.dataSourceName
+  const arrow = r.direction === 'BACK' ? '←' : '→'
+  const id = `${parentId}>r:${index}:${r.name}`
+  const children: SchemaNode[] = []
+  if (dest?.name) children.push(objectNode(id, 'dest', dest.name, dest.type, dest.dataSourceName))
+  if (r.through?.name)
+    children.push(objectNode(id, 'm2m', r.through.name, r.through.type, r.through.dataSourceName, [{ text: 'junction', tone: 'blue' }]))
+  return {
+    id,
+    // Label is the relation name; the accessor field + target go in the type
+    // line (a relation may span 2+ key fields, so it isn't just one field).
+    label: r.name,
+    kind: 'relation',
+    typeLabel: `${r.fieldName ? `${r.fieldName} ` : ''}${arrow} ${dest?.name ?? '?'}${src ? ` · ${src}` : ''}`,
+    badges: [{ text: r.kind, tone: REL_TONE[r.kind] ?? 'neutral' }],
+    expandable: children.length > 0,
+    selectable: true,
+    load: children.length ? { t: 'static', children } : undefined,
+    detail: {
+      t: 'logicalRelation',
+      owner,
+      name: r.name,
+      fieldName: r.fieldName,
+      kind: r.kind,
+      direction: r.direction,
+      sourceKeys: r.sourceKeys ?? [],
+      destinationKeys: r.destinationKeys ?? [],
+      destination: dest?.name ?? '',
+      through: r.through?.name ?? null,
+    },
+  }
+}
+
+function objFieldNode(parentId: string, ownerName: string, f: LObjField): SchemaNode {
+  const u = unwrap(f.type)
+  const retName = u?.name ?? ''
+  const retKind = u?.kind
+  // A field references a data object when it returns an OBJECT whose name is not
+  // an engine-generated helper (`_xxx_aggregation`, `_join`, …) — i.e. a real
+  // table/view: relations, `@join` fields, table-function-call joins.
+  const isObjRef = (retKind === 'OBJECT' || retKind === 'INTERFACE') && !!retName && !retName.startsWith('_')
+  return {
+    id: `${parentId}>f:${f.name}`,
+    label: f.name,
+    kind: 'field',
+    typeLabel: renderTypeRef(f.type),
+    badges: hugrBadge(f.hugr_type ?? undefined),
+    hasDescription: !!f.description,
+    expandable: isObjRef,
+    selectable: true,
+    load: isObjRef ? { t: 'logicalObjectExpand', name: retName } : undefined,
+    detail: { t: 'gqlField', typeName: ownerName, name: f.name, typeLabel: renderTypeRef(f.type) },
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Detail
+// ═══════════════════════════════════════════════════════════════════════════
+
+export async function loadDetail(node: SchemaNode, role?: string): Promise<NodeDetail | null> {
+  if (!node.detail) return null
+  // The demo tree is static (no backend); synthesise a detail from the node so
+  // selecting a node offline doesn't hit the network.
+  if (isDemoMode()) return demoDetail(node)
+  const spec = node.detail
+  switch (spec.t) {
+    case 'gqlType':
+      return gqlTypeDetail(spec.name, node, role)
+    case 'gqlField':
+      return gqlFieldDetail(spec, node, role)
+    case 'logicalModule':
+      return logicalModuleDetail(spec.name, node, role)
+    case 'logicalObject':
+      return logicalObjectDetail(spec.name, node, role)
+    case 'logicalFunction':
+      return logicalFunctionDetail(spec.module, spec.name, node, role)
+    case 'logicalRelation':
+      return logicalRelationDetail(spec, node, role)
+  }
+}
+
+async function logicalRelationDetail(
+  spec: Extract<DetailSpec, { t: 'logicalRelation' }>,
+  node: SchemaNode,
+  role?: string,
+): Promise<NodeDetail> {
+  // The relation materialises a field on the owner object — read + edit that
+  // field's description via `_schema_update_field_desc(owner, fieldName)`.
+  let description = ''
+  try {
+    const t = await introspectType(spec.owner, role)
+    description = (t.fields ?? []).find((f) => f.name === spec.fieldName)?.description ?? ''
+  } catch {
+    /* leave blank */
+  }
+  const relations: DetailRelation[] = [
+    {
+      name: spec.fieldName,
+      target: spec.destination,
+      direction: spec.direction === 'BACK' ? 'in' : 'out',
+      kind: spec.kind,
+    },
+  ]
+  if (spec.through) relations.push({ name: 'through', target: spec.through, direction: 'out', kind: 'junction' })
+  const keys =
+    spec.sourceKeys.length || spec.destinationKeys.length
+      ? `keys: ${spec.sourceKeys.join(', ') || '—'} → ${spec.destinationKeys.join(', ') || '—'}`
+      : ''
+  const meta = [spec.fieldName ? `field: ${spec.fieldName}` : '', keys].filter(Boolean).join(' · ')
+  return {
+    id: node.id,
+    name: spec.name,
+    kind: 'relation',
+    badges: [
+      { text: spec.kind, tone: REL_TONE[spec.kind] ?? 'neutral' },
+      { text: spec.direction === 'BACK' ? 'BACK' : 'FORWARD', tone: 'neutral' },
+      { text: `on ${spec.owner}`, tone: 'neutral' },
+    ],
+    meta,
+    description,
+    fields: [],
+    relations,
+    // The description belongs to the generated field (`fieldName`), not the
+    // relation name — save targets fieldName. No fieldName ⇒ nothing to edit.
+    saveKind: spec.fieldName ? 'field' : null,
+    typeName: spec.owner,
+    saveName: spec.fieldName,
+  }
+}
+
+/** hugr_type · N args sub-line for a field row. */
+function fieldExtra(f: IntroField): string | undefined {
+  const parts: string[] = []
+  if (f.hugr_type) parts.push(f.hugr_type)
+  if (f.args.length) parts.push(`${f.args.length} arg${f.args.length === 1 ? '' : 's'}`)
+  return parts.length ? parts.join(' · ') : undefined
+}
+
+function toDetailFields(fields: IntroField[]): DetailField[] {
+  return fields.map((f, i) => ({
+    ordinal: i + 1,
+    name: f.name,
+    type: renderTypeRef(f.type),
+    description: f.description ?? '',
+    extra: fieldExtra(f),
+  }))
+}
+
+function toArgFields(args: RawArg[]): DetailField[] {
+  return args.map((a, i) => ({
+    ordinal: i + 1,
+    name: a.name,
+    type: renderTypeRef(a.type),
+    description: a.description ?? '',
+    extra: a.defaultValue ? `default: ${a.defaultValue}` : undefined,
+  }))
+}
+
+const KIND_TONE: Record<string, BadgeTone> = { OBJECT: 'accent', INPUT_OBJECT: 'blue', ENUM: 'amber', SCALAR: 'neutral', INTERFACE: 'accent', UNION: 'blue' }
+
+async function gqlTypeDetail(name: string, node: SchemaNode, role?: string): Promise<NodeDetail> {
+  const t = await introspectType(name, role)
+  const badges: NodeBadge[] = [{ text: t.kind, tone: KIND_TONE[t.kind] ?? 'neutral' }]
+  if (t.hugr_type) badges.push({ text: t.hugr_type, tone: HUGR_TYPE_TONE[t.hugr_type] ?? 'neutral' })
+  if (t.catalog) badges.push({ text: `catalog: ${t.catalog}`, tone: 'neutral' })
+  if (t.module) badges.push({ text: `module: ${t.module}`, tone: 'neutral' })
+
+  const fields =
+    t.kind === 'INPUT_OBJECT'
+      ? toArgFields(t.inputFields ?? [])
+      : toDetailFields((t.fields ?? []).filter((f) => !f.name.startsWith('__')))
+  const metaBits = [
+    fields.length ? `${fields.length} fields` : '',
+    t.enumValues?.length ? `${t.enumValues.length} values` : '',
+  ].filter(Boolean)
+
+  const isRoot = node.kind === 'root'
+  return {
+    id: node.id,
+    name: node.label,
+    kind: node.kind,
+    badges,
+    meta: metaBits.join(' · '),
+    description: t.description ?? '',
+    fields,
+    fieldsLabel: 'Fields',
+    enumValues: (t.enumValues ?? []).map((e) => ({ name: e.name, description: e.description ?? '' })),
+    relations: [],
     saveKind: isRoot ? null : 'type',
   }
 }
 
-function emptyDetail(nodeId: string): NodeDetail {
+async function gqlFieldDetail(
+  spec: Extract<DetailSpec, { t: 'gqlField' }>,
+  node: SchemaNode,
+  role?: string,
+): Promise<NodeDetail> {
+  // Read the field off its owner type: description + args, and (if it returns an
+  // object) the return type's fields, so selecting a field shows what it yields.
+  let field: IntroField | undefined
+  try {
+    const t = await introspectType(spec.typeName, role)
+    field = (t.fields ?? []).find((f) => f.name === spec.name)
+  } catch {
+    /* leave undefined */
+  }
+  const retName = field ? unwrap(field.type)?.name ?? '' : ''
+  const retKind = field ? unwrap(field.type)?.kind : undefined
+  let retFields: IntroField[] = []
+  if (retName && (retKind === 'OBJECT' || retKind === 'INTERFACE')) {
+    try {
+      const rt = await introspectType(retName, role)
+      retFields = (rt.fields ?? []).filter((f) => !f.name.startsWith('__'))
+    } catch {
+      /* leave empty */
+    }
+  }
+  const badges: NodeBadge[] = [{ text: spec.typeLabel, tone: 'neutral' }, { text: `field of ${spec.typeName}`, tone: 'neutral' }]
+  if (field?.hugr_type) badges.unshift({ text: field.hugr_type, tone: HUGR_TYPE_TONE[field.hugr_type] ?? 'neutral' })
   return {
-    id: nodeId,
-    name: nodeId,
-    kind: 'table',
+    id: node.id,
+    name: spec.name,
+    kind: 'field',
+    badges,
+    meta: retName ? `returns ${renderTypeRef(field!.type)}` : '',
+    description: field?.description ?? '',
+    args: field?.args.length ? toArgFields(field.args) : undefined,
+    fields: toDetailFields(retFields),
+    fieldsLabel: 'Return fields',
+    relations: [],
+    saveKind: 'field',
+    typeName: spec.typeName,
+  }
+}
+
+async function logicalModuleDetail(name: string, node: SchemaNode, role?: string): Promise<NodeDetail> {
+  let description = ''
+  try {
+    const d = await postGraphQL<{ _module: { description: string | null } | null }>(
+      `query ($name: String!) { _module(name: $name) { description } }`,
+      { name },
+      roleHeaders(role),
+    )
+    description = d._module?.description ?? ''
+  } catch {
+    /* leave blank */
+  }
+  return {
+    id: node.id,
+    name,
+    kind: 'module',
+    badges: [{ text: 'MODULE', tone: 'blue' }],
+    meta: name,
+    description,
+    fields: [],
+    relations: [],
+    saveKind: 'module',
+  }
+}
+
+async function logicalObjectDetail(name: string, node: SchemaNode, role?: string): Promise<NodeDetail> {
+  const d = await postGraphQL<{
+    _dataObject: {
+      type: string
+      description: string | null
+      primaryKey: string[] | null
+      dataSourceName: string | null
+      properties: Record<string, boolean> | null
+      fields: LObjField[] | null
+      args: LObjField[] | null
+      relations: LRelation[]
+    } | null
+  }>(
+    `query ($name: String!) {
+      _dataObject(name: $name) {
+        type description primaryKey dataSourceName
+        properties { isCube isM2M isHypertable softDelete hasVectors }
+        fields { name description type { ${REF} } }
+        args { name description type { ${REF} } }
+        relations { name direction kind fieldName dataObject { name } through { name } }
+      }
+    }`,
+    { name },
+    roleHeaders(role),
+  )
+  const o = d._dataObject
+  const badges: NodeBadge[] = [{ text: o?.type === 'VIEW' ? 'VIEW' : '◎ TABLE', tone: o?.type === 'VIEW' ? 'green' : 'accent' }]
+  if (o?.properties) {
+    for (const [k, on] of Object.entries(o.properties)) if (on) badges.push({ text: k, tone: 'blue' })
+  }
+  const toLObjFields = (list: LObjField[] | null | undefined): DetailField[] =>
+    (list ?? []).map((f, i) => ({ ordinal: i + 1, name: f.name, type: renderTypeRef(f.type), description: f.description ?? '' }))
+  return {
+    id: node.id,
+    name,
+    kind: node.kind,
+    badges,
+    meta: o?.dataSourceName ? `source: ${o.dataSourceName}` : '',
+    description: o?.description ?? '',
+    fields: toLObjFields(o?.fields),
+    fieldsLabel: 'Fields',
+    args: o?.args?.length ? toLObjFields(o.args) : undefined,
+    relations: (o?.relations ?? []).map((r) => ({
+      name: r.fieldName || r.name,
+      target: r.dataObject?.name ?? '',
+      direction: r.direction === 'BACK' ? ('in' as const) : ('out' as const),
+      kind: r.kind,
+    })),
+    primaryKey: o?.primaryKey ?? undefined,
+    dataSource: o?.dataSourceName ?? undefined,
+    saveKind: 'type',
+  }
+}
+
+async function logicalFunctionDetail(module: string, name: string, node: SchemaNode, role?: string): Promise<NodeDetail> {
+  const d = await postGraphQL<{
+    _function: {
+      type: string
+      isTable: boolean
+      description: string | null
+      args: { name: string; description: string | null; type: IntroTypeRef }[]
+      returns: IntroTypeRef | null
+    } | null
+  }>(
+    `query ($module: String!, $name: String!) {
+      _function(module: $module, name: $name) {
+        type isTable description
+        args { name description type { ${REF} } }
+        returns { ${REF} }
+      }
+    }`,
+    { module, name },
+    roleHeaders(role),
+  )
+  const fn = d._function
+  return {
+    id: node.id,
+    name,
+    kind: 'function',
+    badges: [
+      { text: fn?.type ?? 'FUNCTION', tone: 'amber' },
+      ...(fn?.isTable ? [{ text: 'table', tone: 'green' as BadgeTone }] : []),
+    ],
+    meta: fn?.returns ? `returns ${renderTypeRef(fn.returns)}` : '',
+    description: fn?.description ?? '',
+    args: fn?.args?.length
+      ? fn.args.map((a, i) => ({ ordinal: i + 1, name: a.name, type: renderTypeRef(a.type), description: a.description ?? '' }))
+      : undefined,
+    fields: [],
+    relations: [],
+    saveKind: null,
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Description save (unchanged wiring; the backing API is expected to change)
+// ═══════════════════════════════════════════════════════════════════════════
+
+interface OpResult {
+  success: boolean
+  message: string
+}
+
+export async function saveDescription(input: SaveDescriptionInput): Promise<OpResult> {
+  const longDescription = input.longDescription ?? input.description
+  return withDemo(
+    () => ({ success: true, message: `${saveOpName(input)} → saved` }),
+    async () => {
+      if (input.kind === 'field') {
+        const d = await postGraphQL<{ function: { core: { _schema_update_field_desc: OpResult } } }>(
+          `mutation ($type_name:String!,$name:String!,$description:String!,$long_description:String!){
+            function { core { _schema_update_field_desc(type_name:$type_name, name:$name, description:$description, long_description:$long_description){ success message } } }
+          }`,
+          {
+            type_name: input.target.typeName ?? '',
+            name: input.target.name,
+            description: input.description,
+            long_description: longDescription,
+          },
+        )
+        return d.function.core._schema_update_field_desc
+      }
+      const fn = `_schema_update_${input.kind}_desc`
+      const d = await postGraphQL<{ function: { core: Record<string, OpResult> } }>(
+        `mutation ($name:String!,$description:String!,$long_description:String!){
+          function { core { ${fn}(name:$name, description:$description, long_description:$long_description){ success message } } }
+        }`,
+        { name: input.target.name, description: input.description, long_description: longDescription },
+      )
+      return d.function.core[fn]
+    },
+  )
+}
+
+export function saveOpName(input: SaveDescriptionInput): string {
+  if (input.kind === 'field') {
+    return `_schema_update_field_desc(type_name:"${input.target.typeName ?? ''}", name:"${input.target.name}")`
+  }
+  return `_schema_update_${input.kind}_desc(name:"${input.target.name}")`
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Demo (compact — both trees browsable offline)
+// ═══════════════════════════════════════════════════════════════════════════
+
+function demoDetail(node: SchemaNode): NodeDetail {
+  const base: NodeDetail = {
+    id: node.id,
+    name: node.label,
+    kind: node.kind,
     badges: [],
     meta: '',
     description: '',
@@ -867,4 +1064,93 @@ function emptyDetail(nodeId: string): NodeDetail {
     relations: [],
     saveKind: null,
   }
+  const spec = node.detail
+  if (!spec) return base
+  switch (spec.t) {
+    case 'gqlType':
+      return { ...base, badges: [{ text: node.kind === 'root' ? 'ROOT' : '◎ OBJECT', tone: 'accent' }], saveKind: node.kind === 'root' ? null : 'type' }
+    case 'gqlField':
+      return { ...base, name: spec.name, badges: [{ text: spec.typeLabel, tone: 'neutral' }], saveKind: 'field', typeName: spec.typeName }
+    case 'logicalObject':
+      return {
+        ...base,
+        badges: [{ text: '◎ TABLE', tone: 'accent' }],
+        meta: 'source: demo',
+        primaryKey: ['id'],
+        relations: [{ name: 'related', target: 'other_object', direction: 'out', kind: 'FK' }],
+        saveKind: 'type',
+      }
+    case 'logicalModule':
+      return { ...base, badges: [{ text: 'MODULE', tone: 'blue' }], saveKind: 'module' }
+    case 'logicalFunction':
+      return { ...base, badges: [{ text: 'FUNCTION', tone: 'amber' }], saveKind: null }
+    case 'logicalRelation':
+      return {
+        ...base,
+        name: spec.name,
+        badges: [{ text: spec.kind, tone: 'blue' }],
+        saveKind: spec.fieldName ? 'field' : null,
+        typeName: spec.owner,
+        saveName: spec.fieldName,
+      }
+  }
+}
+
+function demoGraphqlRoots(): SchemaNode[] {
+  return (['Query', 'Mutation', 'Subscription'] as const).map((label) => {
+    const children = label === 'Query' ? demoGqlQueryModules() : []
+    return {
+      id: `g:${label}`,
+      label,
+      kind: 'root' as const,
+      typeLabel: label,
+      expandable: children.length > 0,
+      selectable: true,
+      load: { t: 'static' as const, children },
+      detail: { t: 'gqlType' as const, name: label },
+    }
+  })
+}
+
+function demoGqlQueryModules(): SchemaNode[] {
+  return ['core', 'analytics', 'geo'].map((m) => ({
+    id: `g:Query>${m}`,
+    label: m,
+    kind: 'field' as const,
+    typeLabel: `_module_${m}_query`,
+    badges: [{ text: 'select', tone: 'accent' as BadgeTone }],
+    expandable: false,
+    selectable: true,
+    detail: { t: 'gqlType' as const, name: `_module_${m}_query` },
+  }))
+}
+
+function demoLogicalRoots(): SchemaNode[] {
+  const mk = (name: string): SchemaNode => ({
+    id: `l>m:${name}`,
+    label: name,
+    kind: 'module',
+    expandable: true,
+    selectable: true,
+    load: { t: 'static', children: demoLogicalObjects(name) },
+    detail: { t: 'logicalModule', name },
+  })
+  return [mk('core'), mk('analytics'), mk('geo')]
+}
+
+function demoLogicalObjects(mod: string): SchemaNode[] {
+  const objs: Record<string, string[]> = {
+    core: ['core_data_sources', 'core_catalog_sources', 'core_roles'],
+    analytics: ['events', 'sessions', 'users'],
+    geo: ['regions', 'cities'],
+  }
+  return (objs[mod] ?? []).map((name) => ({
+    id: `l>m:${mod}>o:${name}`,
+    label: name,
+    kind: 'object' as const,
+    typeLabel: 'TABLE',
+    expandable: false,
+    selectable: true,
+    detail: { t: 'logicalObject' as const, name },
+  }))
 }
