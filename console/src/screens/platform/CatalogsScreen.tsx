@@ -270,7 +270,7 @@ export function CatalogsScreen() {
   return (
     <Page>
       <PageHeader
-        title="Catalogs"
+        title="Catalog Sources"
         subtitle="Schema definition sources linked to data sources."
         actions={
           <Button variant="primary" size="sm" onClick={() => setForm(emptyCatForm())}>
