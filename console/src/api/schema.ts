@@ -58,6 +58,7 @@ export type DetailSpec =
   | {
       t: 'logicalRelation'
       owner: string
+      name: string
       fieldName: string
       kind: string
       direction: string
@@ -599,9 +600,10 @@ async function logicalObjectExpandChildren(parentId: string, objName: string, ro
   )
   const o = d._dataObject
   if (!o) return []
-  // Key relation nodes by fieldName (unique) — `_Relation.name` is the FK/edge
-  // name and repeats across a table's relations (id collisions → shared select).
-  const relNodes = sortNodes((o.relations ?? []).map((r) => relationNode(parentId, objName, r)))
+  // Key relation nodes by index — neither `_Relation.name` (repeats across a
+  // table's relations) nor `fieldName` (a relation can span 2+ key fields) is
+  // guaranteed unique; a stable index is.
+  const relNodes = sortNodes((o.relations ?? []).map((r, i) => relationNode(parentId, objName, r, i)))
   const fieldNodes = sortNodes(
     (o.fields ?? []).filter((f) => !f.name.startsWith('__')).map((f) => objFieldNode(parentId, objName, f)),
   )
@@ -640,20 +642,22 @@ function objectNode(
  * if any) — each drillable. Selecting it shows the relation's own properties
  * (keys / kind / direction) and edits the description of the field it generates.
  */
-function relationNode(parentId: string, owner: string, r: LRelation): SchemaNode {
+function relationNode(parentId: string, owner: string, r: LRelation, index: number): SchemaNode {
   const dest = r.dataObject
   const src = dest?.dataSourceName
   const arrow = r.direction === 'BACK' ? '←' : '→'
-  const id = `${parentId}>r:${r.fieldName || r.name}`
+  const id = `${parentId}>r:${index}:${r.name}`
   const children: SchemaNode[] = []
   if (dest?.name) children.push(objectNode(id, 'dest', dest.name, dest.type, dest.dataSourceName))
   if (r.through?.name)
     children.push(objectNode(id, 'm2m', r.through.name, r.through.type, r.through.dataSourceName, [{ text: 'junction', tone: 'blue' }]))
   return {
     id,
-    label: r.fieldName || r.name,
+    // Label is the relation name; the accessor field + target go in the type
+    // line (a relation may span 2+ key fields, so it isn't just one field).
+    label: r.name,
     kind: 'relation',
-    typeLabel: `${arrow} ${dest?.name ?? '?'}${src ? ` · ${src}` : ''}`,
+    typeLabel: `${r.fieldName ? `${r.fieldName} ` : ''}${arrow} ${dest?.name ?? '?'}${src ? ` · ${src}` : ''}`,
     badges: [{ text: r.kind, tone: REL_TONE[r.kind] ?? 'neutral' }],
     expandable: children.length > 0,
     selectable: true,
@@ -661,7 +665,8 @@ function relationNode(parentId: string, owner: string, r: LRelation): SchemaNode
     detail: {
       t: 'logicalRelation',
       owner,
-      fieldName: r.fieldName || r.name,
+      name: r.name,
+      fieldName: r.fieldName,
       kind: r.kind,
       direction: r.direction,
       sourceKeys: r.sourceKeys ?? [],
@@ -747,16 +752,17 @@ async function logicalRelationDetail(
     spec.sourceKeys.length || spec.destinationKeys.length
       ? `keys: ${spec.sourceKeys.join(', ') || '—'} → ${spec.destinationKeys.join(', ') || '—'}`
       : ''
+  const meta = [spec.fieldName ? `field: ${spec.fieldName}` : '', keys].filter(Boolean).join(' · ')
   return {
     id: node.id,
-    name: spec.fieldName,
+    name: spec.name,
     kind: 'relation',
     badges: [
       { text: spec.kind, tone: REL_TONE[spec.kind] ?? 'neutral' },
       { text: spec.direction === 'BACK' ? 'BACK' : 'FORWARD', tone: 'neutral' },
-      { text: `field of ${spec.owner}`, tone: 'neutral' },
+      { text: `on ${spec.owner}`, tone: 'neutral' },
     ],
-    meta: keys,
+    meta,
     description,
     fields: [],
     relations,
@@ -1073,7 +1079,7 @@ function demoDetail(node: SchemaNode): NodeDetail {
     case 'logicalFunction':
       return { ...base, badges: [{ text: 'FUNCTION', tone: 'amber' }], saveKind: null }
     case 'logicalRelation':
-      return { ...base, name: spec.fieldName, badges: [{ text: spec.kind, tone: 'blue' }], saveKind: 'field', typeName: spec.owner }
+      return { ...base, name: spec.name, badges: [{ text: spec.kind, tone: 'blue' }], saveKind: 'field', typeName: spec.owner }
   }
 }
 
